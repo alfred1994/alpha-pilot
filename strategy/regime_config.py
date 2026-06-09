@@ -24,6 +24,13 @@ from config import (
 
 logger = logging.getLogger("strategy.regime_config")
 
+TRADE_SCORE_MIN = 45
+TRADE_SCORE_MAX = 75
+TRADE_TOP_K_MIN = 1
+TRADE_TOP_K_MAX = 5
+TRADE_WEIGHT_MIN = 0.03
+TRADE_WEIGHT_MAX = 0.25
+
 
 @dataclass
 class StrategyConfig:
@@ -240,11 +247,24 @@ def format_config_report(config: StrategyConfig) -> str:
     return "\n".join(lines)
 
 
-def get_trade_params(regime: str = "sideways") -> dict:
+def _load_adaptive_state() -> dict:
+    """从SQLite读取自适应状态，失败时返回空"""
+    try:
+        from data.database import Database
+        with Database() as db:
+            return db.get_adaptive_state() or {}
+    except Exception:
+        return {}
+
+
+def get_trade_params(regime: str = "sideways", adaptive_state: dict = None) -> dict:
     """
     获取交易参数（动态TopK）
 
     熊市不是不买，而是小仓位、高标准。
+
+    如果存在自适应状态，则把最低分、候选数量和仓位缩放叠加到
+    当前市场环境参数上。
 
     Returns:
         {"top_k": int, "min_score": float, "max_weight": float}
@@ -255,7 +275,37 @@ def get_trade_params(regime: str = "sideways") -> dict:
         "rebound":  {"top_k": 3, "min_score": 56, "max_weight": 0.10},
         "bear":     {"top_k": 1, "min_score": 62, "max_weight": 0.05},
     }
-    result = params.get(regime, params["sideways"])
+    result = dict(params.get(regime, params["sideways"]))
+    if adaptive_state is None:
+        adaptive_state = _load_adaptive_state()
+    if adaptive_state:
+        adaptive_min_score = adaptive_state.get("current_min_score")
+        if adaptive_min_score is not None:
+            result["min_score"] = max(
+                TRADE_SCORE_MIN,
+                min(TRADE_SCORE_MAX, result["min_score"] + adaptive_min_score - PICKER_MIN_SCORE),
+            )
+
+        top_k_delta = adaptive_state.get(
+            "current_top_k_delta",
+            adaptive_state.get("top_k_delta", 0),
+        )
+        result["top_k"] = max(
+            TRADE_TOP_K_MIN,
+            min(TRADE_TOP_K_MAX, int(result["top_k"] + top_k_delta)),
+        )
+        result["top_k_delta"] = top_k_delta
+
+        position_scale = adaptive_state.get(
+            "current_position_scale",
+            adaptive_state.get("position_scale", 1.0),
+        )
+        result["max_weight"] = max(
+            TRADE_WEIGHT_MIN,
+            min(TRADE_WEIGHT_MAX, result["max_weight"] * position_scale),
+        )
+        result["position_scale"] = position_scale
+
     logger.info(f"交易参数: {regime} → Top{result['top_k']} 最低{result['min_score']} 仓位上限{result['max_weight']:.0%}")
     return result
 

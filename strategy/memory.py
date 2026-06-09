@@ -62,14 +62,15 @@ class TradeMemory:
         # context 是一段文本，直接放入LLM prompt
     """
 
-    def __init__(self):
+    def __init__(self, db_path: str = None):
+        self.db_path = db_path
         self._db = None
 
     def _get_db(self):
         """获取数据库连接"""
         if self._db is None:
             from data.database import Database
-            self._db = Database()
+            self._db = Database(db_path=self.db_path)
             self._db.__enter__()
         return self._db
 

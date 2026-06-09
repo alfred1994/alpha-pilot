@@ -1,7 +1,7 @@
 """
 模拟盘账户模块
 JSON持久化存储，支持买入/卖出/查持仓/查净值
-数据保存到 data/paper_account.json
+数据保存到 data/paper_account.json，并同步账户状态到 SQLite
 """
 import json
 import os
@@ -52,10 +52,12 @@ class PaperAccount:
     # 【Phase1-Task5】添加线程锁，防止并发读写JSON文件导致数据损坏
     _lock = threading.RLock()  # 可重入锁：sell()内调用_save()需要嵌套加锁
 
-    def __init__(self, filepath: str = None):
+    def __init__(self, filepath: str = None, db_path: str = None):
         self.filepath = filepath or PAPER_ACCOUNT_FILE
+        self.db_path = db_path
         self._ensure_data_dir()
         self._load()
+        self._sync_state_to_sqlite()
 
     def _ensure_data_dir(self):
         os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
@@ -105,6 +107,27 @@ class PaperAccount:
         with self._lock:
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
+        self._sync_state_to_sqlite(data)
+
+    def _sync_state_to_sqlite(self, data: dict = None):
+        """同步账户状态到SQLite（失败不影响JSON主流程）"""
+        data = data or {
+            "initial_capital": self.initial_capital,
+            "cash": self.cash,
+            "positions": self.positions,
+            "trades": self.trades,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        try:
+            from data.database import Database
+            with Database(db_path=self.db_path) as db:
+                db.save_account_state({
+                    **data,
+                    "total_assets": self.total_assets(),
+                })
+        except Exception as e:
+            logger.warning(f"SQLite账户状态同步失败(不影响JSON): {e}")
 
     # ── 查询 ──────────────────────────────────────────────────────
 
@@ -246,7 +269,7 @@ class PaperAccount:
             # SQLite写入失败不影响已保存的JSON数据
             try:
                 from data.database import Database
-                with Database() as db:
+                with Database(db_path=self.db_path) as db:
                     db.save_trade_record(trade)
                     # 同步持仓到positions表
                     db.upsert_position({
@@ -337,7 +360,7 @@ class PaperAccount:
             # SQLite写入失败不影响已保存的JSON数据
             try:
                 from data.database import Database
-                with Database() as db:
+                with Database(db_path=self.db_path) as db:
                     db.save_trade_record(trade)
                     # 同步持仓变更到positions表
                     if is_full_sell:

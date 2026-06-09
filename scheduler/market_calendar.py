@@ -10,7 +10,6 @@
 数据源: Baostock 交易日历，本地缓存
 ====================================================================
 """
-import pandas as pd
 from datetime import datetime, timedelta, time as dt_time
 from typing import Optional, List
 from scheduler import logger

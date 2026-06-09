@@ -3,6 +3,7 @@
 数据源: AKShare新闻 + 微博财经API
 功能: 个股新闻、市场快讯、微博舆情
 """
+import os
 import json
 import requests
 import pandas as pd
@@ -10,7 +11,7 @@ from datetime import datetime
 from data import rate_limit, logger
 
 # 微博配置
-WEIBO_COOKIES_FILE = "/home/ubuntu/.hermes/weibo_cookies.json"
+WEIBO_COOKIES_FILE = os.path.expanduser("~/.hermes/weibo_cookies.json")
 WEIBO_FINANCE_GID = "4730324816239267"
 
 

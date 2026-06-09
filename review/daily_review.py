@@ -8,7 +8,7 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 
 from config import DATA_DIR, INITIAL_CAPITAL
 
@@ -90,8 +90,9 @@ class DailyReviewer:
         5. 持久化复盘记录
     """
 
-    def __init__(self, review_dir: str = None):
+    def __init__(self, review_dir: str = None, db_path: str = None):
         self.review_dir = review_dir or REVIEW_DIR
+        self.db_path = db_path
         os.makedirs(self.review_dir, exist_ok=True)
 
     def run_review(
@@ -330,7 +331,7 @@ class DailyReviewer:
         # 双写：复盘快照同步到 SQLite
         try:
             from data.database import Database
-            with Database() as db:
+            with Database(db_path=self.db_path) as db:
                 db.save_review_snapshot(result.date, data)
         except Exception as e:
             logger.warning(f"SQLite双写失败(不影响JSON): {e}")
@@ -637,19 +638,23 @@ class DailyReviewer:
         return "\n".join(lines)
 
 
-def run_daily_review():
+def run_daily_review(return_data: bool = False):
     """包装函数：自动从模拟账户收集数据并执行复盘"""
-    from execution.paper_account import PaperAccount
+    from execution.broker import get_broker_adapter
     from data.realtime import get_realtime
 
-    account = PaperAccount()
+    broker = get_broker_adapter()
+    account = broker.account if hasattr(broker, "account") else broker
     today = datetime.now().strftime("%Y-%m-%d")
 
     # 当前持仓
-    positions = account.positions or {}
+    positions = broker.get_positions() or {}
     # 当日交易记录
-    trades = account.trades or []
-    today_trades = [t for t in trades if t.get("date", "").startswith(today)]
+    trades = getattr(account, "trades", []) or []
+    today_trades = [
+        t for t in trades
+        if (t.get("timestamp") or t.get("created_at") or t.get("date") or "").startswith(today)
+    ]
 
     # 获取当前/最新价格
     codes = list(positions.keys())
@@ -668,10 +673,9 @@ def run_daily_review():
         trades=today_trades,
         prices=prices,
         prev_prices=prev_prices,
-        cash=account.cash,
-        initial_capital=account.initial_capital,
+        cash=broker.get_cash(),
+        initial_capital=getattr(account, "initial_capital", INITIAL_CAPITAL),
     )
-    reviewer._save_review(result)
 
     # 【TaskA】收盘复盘时回填LLM决策的outcome
     try:
@@ -679,7 +683,10 @@ def run_daily_review():
     except Exception as e:
         logger.warning(f"outcome回填失败(非致命): {e}")
 
-    return reviewer.format_review(result)
+    text = reviewer.format_review(result)
+    if return_data:
+        return {"text": text, "data": asdict(result)}
+    return text
 
 
 if __name__ == "__main__":

@@ -72,6 +72,16 @@ REBALANCE_MINUTE = 50
 # ══════════════════════════════════════════════════════════════════
 USE_LLM_TRADER = True             # True=用LLM决策, False=用加权打分
 USE_LLM_REGIME = True             # True=用LLM识别市场环境, False=用规则
+BROKER_MODE = os.environ.get("BROKER_MODE", "paper").lower()  # paper=模拟盘, real=预留实盘适配器
+
+# ══════════════════════════════════════════════════════════════════
+# 自动盯盘配置
+# ══════════════════════════════════════════════════════════════════
+AUTO_LOOP_INTERVAL = int(os.environ.get("AUTO_LOOP_INTERVAL", "60"))       # 自动盯盘主循环间隔(秒)
+AUTO_SCAN_INTERVAL = int(os.environ.get("AUTO_SCAN_INTERVAL", "1800"))     # 盘中扫描间隔(秒)
+AUTO_STOP_INTERVAL = int(os.environ.get("AUTO_STOP_INTERVAL", "60"))       # 止损巡检间隔(秒)
+AUTO_REVIEW_AFTER = os.environ.get("AUTO_REVIEW_AFTER", "15:05")           # 收盘复盘最早时间
+AUTO_NOTIFY_ENABLED = os.environ.get("AUTO_NOTIFY_ENABLED", "1") == "1"    # 自动盯盘关键动作通知
 
 # ══════════════════════════════════════════════════════════════════
 # 系统级风控参数

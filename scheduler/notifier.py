@@ -14,6 +14,7 @@ Telegram通知模块
 import os
 import requests
 import logging
+import html
 from datetime import datetime
 from typing import Optional
 
@@ -23,6 +24,11 @@ logger = logging.getLogger("scheduler.notifier")
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+
+
+def is_configured() -> bool:
+    """Telegram是否已配置"""
+    return bool(BOT_TOKEN and CHAT_ID)
 
 
 def send_message(text: str, parse_mode: str = "HTML", silent: bool = False) -> bool:
@@ -37,7 +43,7 @@ def send_message(text: str, parse_mode: str = "HTML", silent: bool = False) -> b
     Returns:
         bool: 是否发送成功
     """
-    if not BOT_TOKEN or not CHAT_ID:
+    if not is_configured():
         logger.warning("Telegram未配置, 跳过发送")
         return False
 
@@ -194,6 +200,77 @@ def send_error_alert(error_msg: str) -> bool:
     """发送错误告警"""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     text = f"⚠️ <b>系统告警</b> ({now})\n\n{error_msg}"
+    return send_message(text, parse_mode="HTML")
+
+
+def should_notify_auto_cycle(actions: list, error: str = "") -> bool:
+    """
+    判断自动盯盘本轮是否值得通知
+
+    只对关键动作通知，避免循环空转时刷屏。
+    """
+    if error:
+        return True
+    for action in actions or []:
+        text = str(action)
+        if "异常" in text:
+            return True
+        if "盘前数据预热完成" in text or "市场环境识别" in text:
+            return True
+        if "盘后复盘进化" in text:
+            return True
+        if "卖出" in text and "卖出0笔" not in text:
+            return True
+        if "模拟执行" in text and "成交0笔" not in text:
+            return True
+    return False
+
+
+def format_auto_cycle_message(date: str, status: str, actions: list,
+                              loop_count: int = 0, error: str = "") -> str:
+    """格式化自动盯盘通知"""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    title = "自动盯盘"
+    if error or any("异常" in str(a) for a in actions or []):
+        title = "自动盯盘告警"
+    elif any("模拟执行" in str(a) and "成交0笔" not in str(a) for a in actions or []):
+        title = "模拟交易成交"
+    elif any("盘后复盘进化" in str(a) for a in actions or []):
+        title = "盘后复盘进化"
+
+    lines = [
+        f"<b>{html.escape(title)}</b> ({now})",
+        f"日期: {html.escape(date or '')}",
+        f"市场状态: {html.escape(status or '')}",
+        f"循环次数: {loop_count}",
+        "",
+        "<b>动作</b>:",
+    ]
+    if actions:
+        for action in actions:
+            lines.append(f"- {html.escape(str(action))}")
+    else:
+        lines.append("- 本轮无需操作")
+
+    if error:
+        lines.extend(["", f"<b>错误</b>: {html.escape(error)}"])
+    return "\n".join(lines)
+
+
+def send_auto_cycle_report(date: str, status: str, actions: list,
+                           loop_count: int = 0, error: str = "",
+                           force: bool = False) -> bool:
+    """
+    发送自动盯盘关键动作通知
+
+    Telegram未配置时静默跳过，避免影响自动交易主循环。
+    """
+    if not force and not should_notify_auto_cycle(actions, error):
+        return False
+    if not is_configured():
+        logger.debug("Telegram未配置，自动盯盘通知静默跳过")
+        return False
+    text = format_auto_cycle_message(date, status, actions, loop_count, error)
     return send_message(text, parse_mode="HTML")
 
 

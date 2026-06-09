@@ -396,6 +396,19 @@ def make_decision(
     except Exception as e:
         logger.debug(f"加载隔夜快照失败(可忽略): {e}")
 
+    # 自动注入交易记忆：复盘教训必须能反哺下一次决策
+    if not memory_context:
+        try:
+            if memory is not None:
+                memory_context = memory.recall(stock_code=code, regime=regime)
+            else:
+                from strategy.memory import TradeMemory
+                with TradeMemory() as _memory:
+                    memory_context = _memory.recall(stock_code=code, regime=regime)
+        except Exception as e:
+            logger.debug(f"加载交易记忆失败(可忽略): {e}")
+            memory_context = ""
+
     # 构建prompt
     prompt = _build_decision_prompt(
         code, name, dimensions, regime, memory_context,

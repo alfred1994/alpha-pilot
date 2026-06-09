@@ -67,10 +67,14 @@ def analyze_decision_accuracy(db, days: int = 7) -> dict:
 
     # 查询已完成的决策
     cursor = db.conn.execute("""
-        SELECT code, action, outcome, pnl_pct, reasoning, regime, timestamp
-        FROM llm_decisions
-        WHERE outcome IS NOT NULL AND outcome != 'pending'
-        ORDER BY timestamp DESC
+        SELECT d.code, d.action, d.outcome, d.outcome_pct, d.reasoning,
+               COALESCE(m.regime, 'unknown') AS regime,
+               d.created_at
+        FROM llm_decisions d
+        LEFT JOIN market_regimes m ON m.date = d.date
+        WHERE d.outcome IS NOT NULL
+          AND LOWER(d.outcome) != 'pending'
+        ORDER BY d.created_at DESC
         LIMIT 50
     """)
     decisions = cursor.fetchall()
@@ -80,12 +84,12 @@ def analyze_decision_accuracy(db, days: int = 7) -> dict:
 
     # 统计
     total = len(decisions)
-    wins = [d for d in decisions if d[2] == "win"]
-    loses = [d for d in decisions if d[2] == "lose"]
+    wins = [d for d in decisions if str(d[2]).lower() in ("win", "wins")]
+    loses = [d for d in decisions if str(d[2]).lower() in ("lose", "loss", "losses")]
 
     win_rate = len(wins) / total if total > 0 else 0
-    avg_win_pnl = sum(d[3] or 0 for d in wins) / len(wins) if wins else 0
-    avg_lose_pnl = sum(d[3] or 0 for d in loses) / len(loses) if loses else 0
+    avg_win_pnl = (sum((d[3] or 0) / 100 for d in wins) / len(wins)) if wins else 0
+    avg_lose_pnl = (sum((d[3] or 0) / 100 for d in loses) / len(loses)) if loses else 0
 
     # 按市场环境分组
     by_regime = {}
@@ -93,7 +97,7 @@ def analyze_decision_accuracy(db, days: int = 7) -> dict:
         regime = d[5] or "unknown"
         if regime not in by_regime:
             by_regime[regime] = {"wins": 0, "loses": 0}
-        if d[2] == "win":
+        if str(d[2]).lower() in ("win", "wins"):
             by_regime[regime]["wins"] += 1
         else:
             by_regime[regime]["loses"] += 1
@@ -109,7 +113,8 @@ def analyze_decision_accuracy(db, days: int = 7) -> dict:
 最近5条亏损决策:
 """
     for d in loses[:5]:
-        analysis_prompt += f"- {d[0]} {d[1]} | 亏损{d[3]:+.1%} | 理由:{d[4][:80] if d[4] else '无'} | 环境:{d[5]}\n"
+        loss_pct = (d[3] or 0) / 100
+        analysis_prompt += f"- {d[0]} {d[1]} | 亏损{loss_pct:+.1%} | 理由:{d[4][:80] if d[4] else '无'} | 环境:{d[5]}\n"
 
     analysis_prompt += """
 请分析:

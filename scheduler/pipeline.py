@@ -124,6 +124,7 @@ class PipelineResult:
     decisions: list = field(default_factory=list)
     executed_orders: list = field(default_factory=list)
     risk_triggered: list = field(default_factory=list)
+    order_audit: list = field(default_factory=list)
     total_elapsed: float = 0.0
     errors: List[str] = field(default_factory=list)
 
@@ -639,39 +640,78 @@ def _load_trade_plan() -> Optional[dict]:
 # 交易执行（读取TradePlan执行）
 # ═══════════════════════════════════════════════════════════════════
 
-def execute_trades() -> PipelineResult:
-    """
-    执行交易（从TradePlan执行）
+def _default_realtime_func():
+    """获取默认实时行情函数"""
+    from data.realtime import get_realtime
+    return get_realtime
 
-    流程:
-    1. 加载TradePlan
-    2. 风控检查
-    3. 下单执行
+
+def _audit_order(result: PipelineResult, order: dict, status: str,
+                 reason: str, **details):
+    """记录订单执行审计，便于复盘分析未成交原因"""
+    result.order_audit.append({
+        "code": order.get("code", ""),
+        "name": order.get("name", ""),
+        "action": order.get("action", ""),
+        "status": status,
+        "reason": reason,
+        "score": order.get("score", 0),
+        "conviction": order.get("conviction", 0),
+        "target_weight": order.get("target_weight", 0),
+        **details,
+    })
+
+
+def execute_trade_plan(
+    plan_data: dict,
+    *,
+    broker=None,
+    realtime_func=None,
+    market_status: str = None,
+    drawdown_controller=None,
+    system_risk_controller=None,
+    update_memory: bool = True,
+) -> PipelineResult:
+    """
+    执行指定 TradePlan
+
+    Args:
+        plan_data: TradePlan字典
+        broker: 交易通道，None时使用默认BrokerAdapter
+        realtime_func: 行情函数，签名([code]) -> quote列表
+        market_status: 市场状态覆盖，None时自动获取
+        drawdown_controller: 回撤控制器，None时创建默认实例
+        system_risk_controller: 系统风控控制器，None时创建默认实例
+        update_memory: 是否执行决策结果回填
+
+    Returns:
+        PipelineResult
     """
     result = PipelineResult(date=datetime.now().strftime("%Y-%m-%d"))
     t0 = time.time()
 
-    # 加载TradePlan
-    plan_data = _load_trade_plan()
     if not plan_data:
-        result.errors.append("无今日TradePlan，请先运行扫描")
+        result.errors.append("无TradePlan，无法执行")
         return result
 
-    result.market_status = get_market_status()
+    result.market_status = market_status or get_market_status()
 
-    # 加载账户
-    from execution.paper_account import PaperAccount
-    account = PaperAccount()
+    # 加载交易通道（默认模拟盘）
+    if broker is None:
+        from execution.broker import get_broker_adapter
+        broker = get_broker_adapter()
+    account = broker.account if hasattr(broker, "account") else broker
+    realtime_func = realtime_func or _default_realtime_func()
 
     # 风控检查
     from risk.position import PositionManager
     from risk.drawdown import DrawdownController
     from risk.system_risk import SystemRiskController
     pm = PositionManager()
-    dc = DrawdownController()
-    sr = SystemRiskController()
+    dc = drawdown_controller or DrawdownController()
+    sr = system_risk_controller or SystemRiskController()
 
-    total_assets = account.total_assets()
+    total_assets = broker.total_assets()
     dc.update(total_assets)
 
     # 系统级风控更新
@@ -714,22 +754,21 @@ def execute_trades() -> PipelineResult:
     try:
         from risk.stop_loss import StopLossManager
         stop_loss_manager = StopLossManager()
-        positions = account.positions
+        positions = broker.get_positions()
 
         if positions:
             # 获取持仓股票实时价格
-            from data.realtime import get_realtime
             prices = {}
             for code in positions:
                 try:
-                    quotes = get_realtime([code])
+                    quotes = realtime_func([code])
                     if quotes and quotes[0].price > 0:
                         prices[code] = quotes[0].price
                 except Exception as e:
                     logger.debug(f"获取 {code} 实时价格失败: {e}")
 
             # 检查止损条件（内部会自动执行卖出）
-            stop_trades = account.check_stop_conditions(prices)
+            stop_trades = broker.check_stop_conditions(prices)
 
             # 记录止损执行结果
             for trade in stop_trades:
@@ -753,15 +792,14 @@ def execute_trades() -> PipelineResult:
             if stop_trades:
                 logger.info(f"闭环止损执行: {len(stop_trades)}笔止损卖出")
                 # 止损后总资产可能变化，更新风控
-                total_assets = account.total_assets()
+                total_assets = broker.total_assets()
     except Exception as e:
         logger.error(f"闭环止损执行异常: {e}")
         result.errors.append(f"止损检查异常: {e}")
 
     # 执行订单（SELL + BUY）
     from execution.order import OrderManager
-    from data.realtime import get_realtime
-    om = OrderManager()
+    om = OrderManager(account if hasattr(broker, "account") else None)
 
     orders = plan_data.get("orders", [])
     for order in orders:
@@ -773,22 +811,33 @@ def execute_trades() -> PipelineResult:
             # P1-3: 跳过已被止损卖出的
             if code in stop_sold_codes:
                 logger.info(f"SELL跳过: {code} 已被止损卖出")
+                _audit_order(result, order, "skipped", "已被止损卖出")
                 continue
-            if not account.has_position(code):
+            if not broker.has_position(code):
+                _audit_order(result, order, "skipped", "无持仓可卖")
                 continue
             try:
-                rt = get_realtime([code])
+                rt = realtime_func([code])
                 price = rt[0].price if rt and rt[0].price > 0 else 0
                 if price <= 0:
                     result.errors.append(f"{code} 卖出失败: 无法获取价格")
+                    _audit_order(result, order, "failed", "无法获取卖出价格")
                     continue
                 reason = order.get("reason", "LLM卖出建议")
-                trade = account.sell(code, price, account.positions[code]["shares"], reason=reason)
+                positions = broker.get_positions()
+                trade = broker.sell(code, price, positions[code]["shares"], reason=reason)
                 if trade:
                     result.executed_orders.append(trade)
+                    _audit_order(
+                        result, order, "filled", reason,
+                        price=price, shares=trade.get("shares", 0),
+                    )
                     logger.info(f"LLM卖出执行: {code} @ {price} ({reason})")
+                else:
+                    _audit_order(result, order, "failed", "卖出接口未返回成交", price=price)
             except Exception as e:
                 result.errors.append(f"{code} 卖出失败: {e}")
+                _audit_order(result, order, "failed", f"卖出异常: {e}")
 
         elif action == "BUY":
             code = order["code"]
@@ -798,11 +847,12 @@ def execute_trades() -> PipelineResult:
             # 系统级风控: 禁止开新仓时跳过所有BUY
             if not buy_allowed["allowed"]:
                 logger.info(f"BUY跳过: {code} - {buy_allowed['reason']}")
+                _audit_order(result, order, "blocked", f"禁止开新仓: {buy_allowed['reason']}")
                 continue
 
             # 获取实时价格
             try:
-                realtime = get_realtime([code])
+                realtime = realtime_func([code])
                 current_price = realtime[0].price if realtime else 0
                 if current_price <= 0 and realtime:
                     current_price = realtime[0].close_prev
@@ -812,6 +862,7 @@ def execute_trades() -> PipelineResult:
             if current_price <= 0:
                 logger.warning(f"{code} 无法获取实时价格，跳过")
                 result.errors.append(f"{code} 跳过: 无法获取价格")
+                _audit_order(result, order, "failed", "无法获取买入价格")
                 continue
 
             # 检查价格限制（允许适度偏离，避免盘后/波动误杀）
@@ -819,23 +870,39 @@ def execute_trades() -> PipelineResult:
                 hard_limit = max_price * 1.05
                 if current_price > hard_limit:
                     result.errors.append(f"{code} 现价{current_price}超过硬限价{hard_limit:.2f}")
+                    _audit_order(
+                        result, order, "blocked", "超过硬限价",
+                        price=current_price, hard_limit=round(hard_limit, 4),
+                    )
                     continue
 
             # 计算可买金额（含系统级仓位缩放）
             buy_amount = total_assets * target_weight * position_scale
-            available_cash = account.cash
+            available_cash = broker.get_cash()
             buy_amount = min(buy_amount, available_cash * 0.95)  # 留5%缓冲
 
             if buy_amount < 5000:  # 最小买入金额
                 result.errors.append(f"{code} 可买金额不足({buy_amount:.0f})")
+                _audit_order(
+                    result, order, "blocked", "可买金额不足",
+                    price=current_price,
+                    buy_amount=round(buy_amount, 2),
+                    available_cash=round(available_cash, 2),
+                )
                 continue
 
             # 计算可买股数(100股整数倍)
             shares = int(buy_amount / current_price / 100) * 100
             if shares < 100:
+                _audit_order(
+                    result, order, "blocked", "不足一手",
+                    price=current_price,
+                    buy_amount=round(buy_amount, 2),
+                    shares=shares,
+                )
                 continue
 
-            # 下单（模拟账户）
+            # 下单（默认模拟账户，经BrokerAdapter封装）
             try:
                 buy_order = om.create_buy_order(
                     code=code,
@@ -844,7 +911,18 @@ def execute_trades() -> PipelineResult:
                     shares=shares,
                     reason="TradePlan执行",
                 )
-                om.execute_order(buy_order, current_price=current_price)
+                if hasattr(broker, "account"):
+                    om.account = broker.account
+                    om.execute_order(buy_order, current_price=current_price)
+                else:
+                    trade = broker.buy(
+                        code=code,
+                        name=order.get("name", code),
+                        price=current_price,
+                        shares=shares,
+                        reason="TradePlan执行",
+                    )
+                    buy_order.status = "filled" if trade else "failed"
                 result.executed_orders.append({
                     "order_id": buy_order.order_id,
                     "code": code,
@@ -854,28 +932,70 @@ def execute_trades() -> PipelineResult:
                     "price": current_price,
                     "status": buy_order.status,
                 })
+                _audit_order(
+                    result, order, buy_order.status,
+                    "模拟买入成交" if buy_order.status == "filled" else "买入未成交",
+                    price=current_price,
+                    shares=buy_order.shares,
+                    buy_amount=round(buy_amount, 2),
+                    available_cash=round(available_cash, 2),
+                )
                 logger.info(f"买入 {code} {shares}股 @ {current_price}")
             except Exception as e:
                 result.errors.append(f"{code} 下单失败: {e}")
+                _audit_order(result, order, "failed", f"下单异常: {e}")
 
     result.total_elapsed = time.time() - t0
 
     # === P0修复: 决策结果回填 ===
     # 执行完交易后，更新待验证决策的outcome
-    try:
-        from strategy.memory import TradeMemory
-        with TradeMemory() as memory:
-            # 收集已获取的实时价格（止损阶段已获取的）
-            # 如果没有，不需要额外获取，update_pending_decisions会自行获取
-            memory.update_pending_decisions()
-    except Exception as e:
-        logger.warning(f"决策结果回填失败(非致命): {e}")
+    if update_memory:
+        try:
+            from strategy.memory import TradeMemory
+            with TradeMemory() as memory:
+                # 收集已获取的实时价格（止损阶段已获取的）
+                # 如果没有，不需要额外获取，update_pending_decisions会自行获取
+                memory.update_pending_decisions()
+        except Exception as e:
+            logger.warning(f"决策结果回填失败(非致命): {e}")
 
     return result
 
 
+def execute_trades() -> PipelineResult:
+    """
+    执行交易（从今日TradePlan文件执行）
+
+    流程:
+    1. 加载TradePlan
+    2. 风控检查
+    3. 下单执行
+    """
+    plan_data = _load_trade_plan()
+    if not plan_data:
+        result = PipelineResult(date=datetime.now().strftime("%Y-%m-%d"))
+        result.errors.append("无今日TradePlan，请先运行扫描")
+        return result
+    return execute_trade_plan(plan_data)
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 每日复盘（慢链路，LLM深度参与）
+
+def _load_today_order_audit(date: str, db_path: str = None) -> list:
+    """读取当天自动执行审计，供复盘沉淀未成交原因"""
+    try:
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            events = db.get_auto_events(date=date, event_type="auto_cycle", limit=200)
+        audit = []
+        for event in events:
+            details = event.get("details") or {}
+            audit.extend(details.get("order_audit") or [])
+        return audit
+    except Exception as e:
+        logger.debug(f"读取订单执行审计失败(非致命): {e}")
+        return []
 
 def run_review() -> PipelineResult:
     """每日复盘（慢链路，LLM深度分析）"""
@@ -884,19 +1004,68 @@ def run_review() -> PipelineResult:
 
     try:
         from review.daily_review import run_daily_review
-        review_text = run_daily_review()
+        review_payload = run_daily_review(return_data=True)
+        review_text = review_payload.get("text", "")
+        review_data = review_payload.get("data", {})
+        review_data["order_audit"] = _load_today_order_audit(result.date)
+        try:
+            from data.database import Database
+            with Database() as db:
+                db.save_review_snapshot(result.date, review_data)
+        except Exception as e:
+            logger.debug(f"订单审计复盘快照回写失败(非致命): {e}")
+        result.review_text = review_text
         result.steps.append(StepResult(
             name="复盘", success=True,
             elapsed=time.time() - t0,
             detail=str(review_text)[:500],
         ))
+
+        adaptive_data = {}
+        try:
+            from strategy.adaptive import AdaptiveEngine
+            adaptive = AdaptiveEngine()
+            adaptive_data = adaptive.analyze_and_adjust(days=10)
+            result.steps.append(StepResult(
+                name="自适应分析", success=True,
+                elapsed=time.time() - t0,
+                detail=f"status={adaptive_data.get('status', 'unknown')}",
+            ))
+        except Exception as e:
+            logger.warning(f"自适应分析失败(非致命): {e}")
+
+        try:
+            from review.llm_review import (
+                generate_llm_review,
+                extract_and_save_lessons,
+                run_decision_evolution_analysis,
+            )
+            llm_analysis = generate_llm_review(
+                result.date,
+                review_data,
+                adaptive_data=adaptive_data,
+            )
+            lesson_count = extract_and_save_lessons(
+                review_data,
+                llm_analysis=llm_analysis,
+                adaptive_data=adaptive_data,
+            )
+            evolution = run_decision_evolution_analysis()
+            result.steps.append(StepResult(
+                name="LLM复盘进化", success=True,
+                elapsed=time.time() - t0,
+                detail=f"教训{lesson_count}条 决策样本{evolution.get('total_decisions', 0)}条",
+            ))
+        except Exception as e:
+            logger.warning(f"LLM复盘进化失败(非致命): {e}")
     except Exception as e:
         result.errors.append(f"复盘失败: {e}")
 
     # 【TaskC】收盘时写入每日快照
     try:
-        from execution.paper_account import PaperAccount
-        account = PaperAccount()
+        from execution.broker import get_broker_adapter
+        broker = get_broker_adapter()
+        account = broker.account if hasattr(broker, "account") else broker
         today = datetime.now().strftime("%Y-%m-%d")
 
         # 尝试获取市场环境
@@ -912,21 +1081,21 @@ def run_review() -> PipelineResult:
             pass
 
         # 获取持仓市值（用买入价估算）
-        market_value = account.market_value()
-        total_assets = account.total_assets()
+        market_value = broker.market_value() if hasattr(broker, "market_value") else 0
+        total_assets = broker.total_assets()
 
         from data.database import Database
         with Database() as db:
             db.save_daily_snapshot({
                 "date": today,
-                "cash": account.cash,
+                "cash": broker.get_cash(),
                 "market_value": market_value,
                 "total_assets": total_assets,
-                "position_count": account.position_count,
+                "position_count": len(broker.get_positions()),
                 "market_regime": market_regime,
                 "regime_confidence": regime_confidence,
             })
-        logger.info(f"[收盘] 每日快照已写入: 资产={total_assets:,.0f} 持仓={account.position_count}只")
+        logger.info(f"[收盘] 每日快照已写入: 资产={total_assets:,.0f} 持仓={len(broker.get_positions())}只")
     except Exception as e:
         logger.warning(f"[收盘] 每日快照写入失败(非致命): {e}")
 

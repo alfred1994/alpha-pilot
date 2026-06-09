@@ -245,7 +245,8 @@ def format_llm_review_header(date: str, review_data: dict) -> str:
 
 
 def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
-                              adaptive_data: dict = None) -> int:
+                              adaptive_data: dict = None, memory=None,
+                              db_path: str = None) -> int:
     """
     从亏损/盈利交易中提取教训，存入记忆系统（LLM深度分析 + 规则降级）
 
@@ -253,12 +254,15 @@ def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
         review_data: 复盘数据
         llm_analysis: LLM分析文本
         adaptive_data: 自适应分析数据
+        memory: 外部传入的TradeMemory实例，None时自动创建
+        db_path: 记忆SQLite路径，仅在memory=None时生效
 
     Returns:
         保存的教训数量
     """
     trades = review_data.get("trade_reviews", [])
-    if not trades:
+    order_audit = review_data.get("order_audit", [])
+    if not trades and not order_audit:
         return 0
 
     # 分离亏损和盈利交易
@@ -281,7 +285,7 @@ def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
         elif pnl_pct > 0.08:
             winning_trades.append(t)
 
-    if not losing_trades and not winning_trades:
+    if not losing_trades and not winning_trades and not order_audit:
         return 0
 
     # 尝试 LLM 深度分析
@@ -289,50 +293,104 @@ def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
 
     # 保存教训
     saved_count = 0
+    close_memory = False
     try:
         from strategy.memory import TradeMemory
-        with TradeMemory() as memory:
-            if llm_lessons:
-                # LLM 分析结果
-                for item in llm_lessons:
-                    lesson_text = item.get("lesson", "")
-                    category = item.get("category", "general")
-                    if lesson_text:
-                        memory.save_lesson(
-                            category=category,
-                            content=lesson_text,
-                            importance=4 if category in ("risk", "exit") else 3,
-                        )
-                        saved_count += 1
-                        logger.info(f"LLM教训保存: {lesson_text[:50]}...")
-            else:
-                # 规则降级提取
-                saved_count = _extract_lessons_by_rules(
-                    memory, losing_trades, winning_trades
-                )
+        if memory is None:
+            memory = TradeMemory(db_path=db_path)
+            memory.__enter__()
+            close_memory = True
 
-            # 从自适应分析中提取教训
-            if adaptive_data and adaptive_data.get("status") == "ok":
-                for s in adaptive_data.get("suggestions", [])[:3]:
-                    if "⚠️" in s or "胜率" in s:
-                        memory.save_lesson(category="general", content=s, importance=3)
-                        saved_count += 1
+        if llm_lessons:
+            # LLM 分析结果
+            for item in llm_lessons:
+                lesson_text = item.get("lesson", "")
+                category = item.get("category", "general")
+                if lesson_text:
+                    memory.save_lesson(
+                        category=category,
+                        content=lesson_text,
+                        importance=4 if category in ("risk", "exit") else 3,
+                    )
+                    saved_count += 1
+                    logger.info(f"LLM教训保存: {lesson_text[:50]}...")
+        else:
+            # 规则降级提取
+            saved_count = _extract_lessons_by_rules(
+                memory, losing_trades, winning_trades
+            )
 
-            # LLM分析摘要
-            if llm_analysis:
-                summary = llm_analysis[:200].replace("\n", " ")
-                memory.save_lesson(
-                    category="general",
-                    content=f"LLM复盘摘要: {summary}",
-                    importance=2,
-                )
-                saved_count += 1
+        saved_count += _extract_order_audit_lessons(memory, order_audit)
+
+        # 从自适应分析中提取教训
+        if adaptive_data and adaptive_data.get("status") == "ok":
+            for s in adaptive_data.get("suggestions", [])[:3]:
+                if "⚠️" in s or "胜率" in s:
+                    memory.save_lesson(category="general", content=s, importance=3)
+                    saved_count += 1
+
+        # LLM分析摘要
+        if llm_analysis:
+            summary = llm_analysis[:200].replace("\n", " ")
+            memory.save_lesson(
+                category="general",
+                content=f"LLM复盘摘要: {summary}",
+                importance=2,
+            )
+            saved_count += 1
 
         logger.info(f"从复盘中提取并保存了{saved_count}条教训")
     except Exception as e:
         logger.warning(f"提取教训失败: {e}")
+    finally:
+        if close_memory and memory is not None:
+            memory.__exit__(None, None, None)
 
     return saved_count
+
+
+def _audit_lesson_category(reason: str, status: str) -> str:
+    """根据订单审计原因归类教训"""
+    reason = reason or ""
+    if "风控" in reason or "禁止开新仓" in reason or "系统" in reason:
+        return "risk"
+    if "限价" in reason or "价格" in reason or "行情" in reason:
+        return "entry"
+    if "资金" in reason or "一手" in reason or "金额" in reason or "现金" in reason:
+        return "position"
+    if status == "failed":
+        return "execution"
+    return "general"
+
+
+def _extract_order_audit_lessons(memory, order_audit: list) -> int:
+    """从订单审计中提取未成交/阻断教训"""
+    saved = 0
+    for item in order_audit or []:
+        status = item.get("status", "")
+        if status not in ("blocked", "skipped", "failed"):
+            continue
+        code = item.get("code", "")
+        name = item.get("name", code)
+        action = item.get("action", "")
+        reason = item.get("reason", "未知")
+        category = _audit_lesson_category(reason, status)
+        score = item.get("score", 0)
+        target_weight = item.get("target_weight", 0)
+        content = (
+            f"执行审计: {name}({code}) {action} 未成交 "
+            f"status={status} 原因: {reason}"
+        )
+        if score or target_weight:
+            content += f"；score={score} target_weight={target_weight}"
+        memory.save_lesson(
+            category=category,
+            content=content,
+            importance=4 if status == "failed" else 3,
+            related_trades=[code] if code else None,
+        )
+        saved += 1
+    return saved
 
 
 def _analyze_lessons_with_llm(losing_trades: list, winning_trades: list) -> list:

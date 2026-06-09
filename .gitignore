@@ -21,6 +21,7 @@ env/
 # 数据文件（含敏感信息）
 data/*.json
 data/*.db
+data/*.lock
 data/snapshots/
 data/signal_cache.json
 data/paper_account.json
@@ -28,6 +29,9 @@ data/adaptive_state.json
 data/circuit_breaker.json
 data/system_risk.json
 data/overnight_*.json
+data/reports/
+data/rehearsal/
+data/task_scripts/
 
 # 日志
 *.log

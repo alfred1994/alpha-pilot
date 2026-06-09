@@ -33,6 +33,10 @@ SCORE_MIN = 45
 SCORE_MAX = 75
 BUY_THRESHOLD_MIN = 50
 BUY_THRESHOLD_MAX = 70
+TOP_K_DELTA_MIN = -2
+TOP_K_DELTA_MAX = 2
+POSITION_SCALE_MIN = 0.50
+POSITION_SCALE_MAX = 1.20
 
 
 class AdaptiveEngine:
@@ -43,18 +47,26 @@ class AdaptiveEngine:
     所有调整都有边界限制，防止过度拟合。
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        adaptive_file: str = None,
+        review_dir: str = None,
+        data_dir: str = None,
+        db_path: str = None,
+        enable_versioning: bool = True,
+        enable_ab_testing: bool = True,
+    ):
+        self.adaptive_file = adaptive_file or ADAPTIVE_FILE
+        self.review_dir = review_dir or REVIEW_DIR
+        self.data_dir = data_dir or DATA_DIR
+        self.db_path = db_path
+        self.enable_versioning = enable_versioning
+        self.enable_ab_testing = enable_ab_testing
         self.state = self._load_state()
 
     def _load_state(self) -> dict:
         """加载自适应状态"""
-        if os.path.exists(ADAPTIVE_FILE):
-            try:
-                with open(ADAPTIVE_FILE) as f:
-                    return json.load(f)
-            except Exception:
-                pass
-        return {
+        default_state = {
             "version": 1,
             "last_update": None,
             "lookback_days": 10,          # 回看天数
@@ -64,19 +76,31 @@ class AdaptiveEngine:
             "current_weights": dict(SIGNAL_WEIGHTS),
             "current_buy_threshold": DECISION_BUY_THRESHOLD,
             "current_min_score": PICKER_MIN_SCORE,
+            "current_top_k_delta": 0,     # 候选数量偏移，低胜率时减少买入标的
+            "current_position_scale": 1.0, # 仓位缩放，低胜率时降低单笔仓位
             "weekly_stats": [],           # 周统计
         }
+        if os.path.exists(self.adaptive_file):
+            try:
+                with open(self.adaptive_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                for key, value in default_state.items():
+                    state.setdefault(key, value)
+                return state
+            except Exception:
+                pass
+        return default_state
 
     def _save_state(self):
         """保存自适应状态"""
-        os.makedirs(os.path.dirname(ADAPTIVE_FILE), exist_ok=True)
-        with open(ADAPTIVE_FILE, "w") as f:
+        os.makedirs(os.path.dirname(self.adaptive_file), exist_ok=True)
+        with open(self.adaptive_file, "w", encoding="utf-8") as f:
             json.dump(self.state, f, indent=2, ensure_ascii=False)
 
         # 双写：自适应状态同步到 SQLite
         try:
             from data.database import Database
-            with Database() as db:
+            with Database(db_path=self.db_path) as db:
                 db.save_adaptive_state(self.state)
         except Exception as e:
             logger.warning(f"SQLite双写失败(不影响JSON): {e}")
@@ -112,26 +136,33 @@ class AdaptiveEngine:
         old_params = self.get_adjusted_params()
 
         # 5-pre. 保存当前参数版本快照（P2-6 策略版本管理）
-        try:
-            from strategy.versioning import StrategyVersionManager
-            vm = StrategyVersionManager()
-            current_params = dict(old_params)
-            perf_data = {
-                "win_rate": overall.get("win_rate", 0),
-                "pnl_pct": overall.get("total_pnl_pct", 0),
-                "trade_count": overall.get("sell_trades", 0),
-                "profit_factor": overall.get("profit_factor", 0),
-            }
-            # 获取当前市场环境
-            regime = self.state.get("current_regime", "")
-            vm.save_version(
-                params=current_params,
-                regime=regime,
-                description=f"自适应调整前快照",
-                performance=perf_data,
-            )
-        except Exception as e:
-            logger.warning(f"策略版本快照保存失败(不影响调整): {e}")
+        if self.enable_versioning:
+            version_db = None
+            try:
+                from strategy.versioning import StrategyVersionManager
+                from data.database import Database
+                version_db = Database(db_path=self.db_path).__enter__()
+                vm = StrategyVersionManager(db=version_db)
+                current_params = dict(old_params)
+                perf_data = {
+                    "win_rate": overall.get("win_rate", 0),
+                    "pnl_pct": overall.get("total_pnl_pct", 0),
+                    "trade_count": overall.get("sell_trades", 0),
+                    "profit_factor": overall.get("profit_factor", 0),
+                }
+                # 获取当前市场环境
+                regime = self.state.get("current_regime", "")
+                vm.save_version(
+                    params=current_params,
+                    regime=regime,
+                    description=f"自适应调整前快照",
+                    performance=perf_data,
+                )
+            except Exception as e:
+                logger.warning(f"策略版本快照保存失败(不影响调整): {e}")
+            finally:
+                if version_db is not None:
+                    version_db.__exit__(None, None, None)
 
         adjustments = []
 
@@ -162,7 +193,7 @@ class AdaptiveEngine:
         self._save_state()
 
         # 8. AB测试集成：如果有显著调整，创建AB测试
-        if adjustments:
+        if adjustments and self.enable_ab_testing:
             new_params = self.get_adjusted_params()
             # 检查是否有显著变化（至少一个参数有实际调整）
             has_significant_change = any(
@@ -170,9 +201,12 @@ class AdaptiveEngine:
                 if "old" in adj and "new" in adj
             )
             if has_significant_change:
+                ab_db = None
                 try:
                     from strategy.ab_test import ABTestManager
-                    abm = ABTestManager(db=None)  # 自行创建连接
+                    from data.database import Database
+                    ab_db = Database(db_path=self.db_path).__enter__()
+                    abm = ABTestManager(db=ab_db)
                     regime = self.state.get("current_regime", "")
                     abm.create_test(
                         control_params=old_params,
@@ -183,37 +217,55 @@ class AdaptiveEngine:
                     logger.info("AB测试已创建: 对照组(旧参数) vs 实验组(新参数)")
                 except Exception as e:
                     logger.debug(f"AB测试创建跳过: {e}")
+                finally:
+                    if ab_db is not None:
+                        ab_db.__exit__(None, None, None)
 
         # 9. 评估运行中的AB测试，自动采用胜出参数
-        try:
-            from strategy.ab_test import ABTestManager
-            abm = ABTestManager(db=None)
-            concluded = abm.evaluate_all_running()
-            for test_result in concluded:
-                if test_result.get("winner") == "treatment":
-                    best = abm.get_test_params(test_result["test_id"], "treatment")
-                    if best:
+        if self.enable_ab_testing:
+            ab_db = None
+            try:
+                from strategy.ab_test import ABTestManager
+                from data.database import Database
+                ab_db = Database(db_path=self.db_path).__enter__()
+                abm = ABTestManager(db=ab_db)
+                concluded = abm.evaluate_all_running()
+                for test_result in concluded:
+                    if test_result.get("winner") == "treatment":
+                        best = abm.get_test_params(test_result["test_id"], "treatment")
+                        if best:
+                            logger.info(
+                                f"AB测试 {test_result['test_id']} 实验组胜出，"
+                                f"自动采用新参数"
+                            )
+                            self.state["current_weights"] = best.get(
+                                "signal_weights", self.state.get("current_weights")
+                            )
+                            self.state["current_buy_threshold"] = best.get(
+                                "buy_threshold", self.state.get("current_buy_threshold")
+                            )
+                            self.state["current_min_score"] = best.get(
+                                "min_score", self.state.get("current_min_score")
+                            )
+                            self.state["current_top_k_delta"] = best.get(
+                                "top_k_delta",
+                                best.get("current_top_k_delta", self.state.get("current_top_k_delta", 0)),
+                            )
+                            self.state["current_position_scale"] = best.get(
+                                "position_scale",
+                                best.get("current_position_scale", self.state.get("current_position_scale", 1.0)),
+                            )
+                    elif test_result.get("winner") == "control":
                         logger.info(
-                            f"AB测试 {test_result['test_id']} 实验组胜出，"
-                            f"自动采用新参数"
+                            f"AB测试 {test_result['test_id']} 对照组胜出，"
+                            f"保持当前参数"
                         )
-                        self.state["current_weights"] = best.get(
-                            "signal_weights", self.state.get("current_weights")
-                        )
-                        self.state["current_buy_threshold"] = best.get(
-                            "buy_threshold", self.state.get("current_buy_threshold")
-                        )
-                        self.state["current_min_score"] = best.get(
-                            "min_score", self.state.get("current_min_score")
-                        )
-                elif test_result.get("winner") == "control":
-                    logger.info(
-                        f"AB测试 {test_result['test_id']} 对照组胜出，"
-                        f"保持当前参数"
-                    )
-                # tie 情况不做任何调整
-        except Exception as e:
-            logger.debug(f"AB测试评估跳过: {e}")
+                    # tie 情况不做任何调整
+            except Exception as e:
+                logger.debug(f"AB测试评估跳过: {e}")
+            finally:
+                if ab_db is not None:
+                    ab_db.__exit__(None, None, None)
 
         report = {
             "status": "ok",
@@ -236,10 +288,10 @@ class AdaptiveEngine:
             date = (today - timedelta(days=i)).strftime("%Y-%m-%d")
             # 从复盘文件加载 (两种命名格式)
             for pattern in [f"{date}.json", f"review_{date}.json"]:
-                review_file = os.path.join(REVIEW_DIR, pattern)
+                review_file = os.path.join(self.review_dir, pattern)
                 if os.path.exists(review_file):
                     try:
-                        with open(review_file) as f:
+                        with open(review_file, "r", encoding="utf-8") as f:
                             review = json.load(f)
                         for t in review.get("trade_reviews", []):
                             trades.append({**t, "date": date})
@@ -247,10 +299,10 @@ class AdaptiveEngine:
                         pass
 
             # 从交易记录加载
-            trade_file = os.path.join(DATA_DIR, "trades", f"{date}.json")
+            trade_file = os.path.join(self.data_dir, "trades", f"{date}.json")
             if os.path.exists(trade_file):
                 try:
-                    with open(trade_file) as f:
+                    with open(trade_file, "r", encoding="utf-8") as f:
                         day_trades = json.load(f)
                     for t in (day_trades if isinstance(day_trades, list) else []):
                         trades.append({**t, "date": date})
@@ -421,8 +473,8 @@ class AdaptiveEngine:
         根据整体表现调整阈值
 
         规则:
-        - 胜率 < 35%: 买入阈值+2, 最低入选分+2 (更严格)
-        - 胜率 > 55%: 买入阈值-1, 最低入选分-1 (更宽松)
+        - 胜率 < 35%: 买入阈值+2, 最低入选分+2, TopK-1, 仓位*0.8
+        - 胜率 > 55%: 买入阈值-1, 最低入选分-1, TopK+1, 仓位+10%
         - 盈亏比 < 1.0: 止损收紧1%
         - 盈亏比 > 2.0: 止损放松1%
         """
@@ -475,6 +527,52 @@ class AdaptiveEngine:
                     "reason": f"胜率良好，适当放宽选股",
                 })
                 self.state["current_min_score"] = new_ms
+
+        # 候选数量调整：亏损期减少买入标的，表现恢复后逐步放开
+        current_top_k_delta = self.state.get("current_top_k_delta", 0)
+        if win_rate < 0.35:
+            new_top_k_delta = max(TOP_K_DELTA_MIN, current_top_k_delta - 1)
+            if new_top_k_delta != current_top_k_delta:
+                adjustments.append({
+                    "type": "top_k_delta",
+                    "old": current_top_k_delta,
+                    "new": new_top_k_delta,
+                    "reason": f"胜率低，减少下一轮候选买入数量",
+                })
+                self.state["current_top_k_delta"] = new_top_k_delta
+        elif win_rate > 0.55:
+            new_top_k_delta = min(TOP_K_DELTA_MAX, current_top_k_delta + 1)
+            if new_top_k_delta != current_top_k_delta:
+                adjustments.append({
+                    "type": "top_k_delta",
+                    "old": current_top_k_delta,
+                    "new": new_top_k_delta,
+                    "reason": f"胜率良好，适当增加候选买入数量",
+                })
+                self.state["current_top_k_delta"] = new_top_k_delta
+
+        # 仓位缩放调整：复盘结果直接影响下一轮单笔仓位上限
+        current_position_scale = self.state.get("current_position_scale", 1.0)
+        if win_rate < 0.35:
+            new_position_scale = max(POSITION_SCALE_MIN, round(current_position_scale * 0.8, 4))
+            if new_position_scale != current_position_scale:
+                adjustments.append({
+                    "type": "position_scale",
+                    "old": current_position_scale,
+                    "new": new_position_scale,
+                    "reason": f"胜率低，降低下一轮单笔仓位",
+                })
+                self.state["current_position_scale"] = new_position_scale
+        elif win_rate > 0.55 and pf > 1.2:
+            new_position_scale = min(POSITION_SCALE_MAX, round(current_position_scale + 0.1, 4))
+            if new_position_scale != current_position_scale:
+                adjustments.append({
+                    "type": "position_scale",
+                    "old": current_position_scale,
+                    "new": new_position_scale,
+                    "reason": f"胜率和盈亏比较好，逐步恢复单笔仓位",
+                })
+                self.state["current_position_scale"] = new_position_scale
 
         return adjustments
 
@@ -532,6 +630,8 @@ class AdaptiveEngine:
             "signal_weights": self.state.get("current_weights", SIGNAL_WEIGHTS),
             "buy_threshold": self.state.get("current_buy_threshold", DECISION_BUY_THRESHOLD),
             "min_score": self.state.get("current_min_score", PICKER_MIN_SCORE),
+            "top_k_delta": self.state.get("current_top_k_delta", 0),
+            "position_scale": self.state.get("current_position_scale", 1.0),
         }
 
     def format_report(self, report: Dict) -> str:

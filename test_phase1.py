@@ -96,11 +96,12 @@ try:
     with Database(db_path=tmp_db_path) as db:
         # 2.1 表创建
         tables = db.get_stats()
-        expected_tables = ["k_daily", "k_minute", "trades", "positions",
-                           "daily_snapshots", "market_regimes", "llm_decisions", "lessons"]
+        expected_tables = ["k_daily", "k_minute", "trades", "positions", "account_state",
+                           "daily_snapshots", "market_regimes", "llm_decisions", "lessons",
+                           "auto_events"]
         all_exist = all(t in tables for t in expected_tables)
         if all_exist:
-            ok(f"8张表全部创建成功: {', '.join(expected_tables)}")
+            ok(f"核心表全部创建成功: {', '.join(expected_tables)}")
         else:
             fail(f"表创建不完整: {list(tables.keys())}")
 
@@ -180,7 +181,22 @@ try:
         else:
             fail("positions 删除失败")
 
-        # 2.6 daily_snapshots CRUD
+        # 2.6 account_state CRUD
+        db.save_account_state({
+            "initial_capital": 1000000,
+            "cash": 800000,
+            "positions": {
+                "600519": {"shares": 100, "buy_price": 1710, "current_price": 1720},
+            },
+            "updated_at": "2024-01-02T15:00:00",
+        })
+        account_state = db.get_account_state()
+        if account_state and account_state["cash"] == 800000 and "600519" in account_state["positions"]:
+            ok(f"account_state 保存+读取: cash={account_state['cash']:.0f}")
+        else:
+            fail(f"account_state CRUD 异常: {account_state}")
+
+        # 2.7 daily_snapshots CRUD
         db.insert_snapshot({
             "date": "2024-01-02", "cash": 800000, "market_value": 200000,
             "total_assets": 1000000, "position_count": 1,
@@ -193,7 +209,7 @@ try:
         else:
             fail(f"snapshots CRUD 异常: {snap}")
 
-        # 2.7 market_regimes CRUD
+        # 2.8 market_regimes CRUD
         db.insert_market_regime({
             "date": "2024-01-02", "regime": "bull", "confidence": 0.75,
             "indicators": json.dumps({"rsi": 65, "macd": "golden_cross"}),
@@ -211,7 +227,7 @@ try:
         else:
             fail(f"market_regimes 最新查询异常: {latest}")
 
-        # 2.8 llm_decisions CRUD
+        # 2.9 llm_decisions CRUD
         dec_id = db.insert_llm_decision({
             "code": "600519", "date": "2024-01-02", "action": "BUY",
             "llm_prompt": "分析茅台", "llm_response": "建议买入",
@@ -230,7 +246,7 @@ try:
         else:
             fail(f"llm_decisions 更新失败: {updated_decs[0]}")
 
-        # 2.9 lessons CRUD
+        # 2.10 lessons CRUD
         les_id = db.insert_lesson({
             "date": "2024-01-02", "category": "mistake",
             "content": "追高买入导致亏损", "importance": 4,
@@ -251,7 +267,7 @@ try:
         else:
             fail("lessons 删除失败")
 
-        # 2.10 get_kline_cached 测试
+        # 2.11 get_kline_cached 测试
         call_count = [0]
 
         def mock_source(code, start_date, end_date):
@@ -277,12 +293,26 @@ try:
         else:
             fail(f"get_kline_cached 缓存逻辑异常: {len(result2)}条, 调用次数={call_count[0]}")
 
-        # 2.11 统计信息
+        # 2.12 统计信息
         stats = db.get_stats()
         if stats["k_daily"] >= 2 and stats["trades"] >= 0:
             ok(f"统计信息: k_daily={stats['k_daily']}, trades={stats['trades']}")
         else:
             fail(f"统计信息异常: {stats}")
+
+        # 2.13 auto_events CRUD
+        event_id = db.insert_auto_event({
+            "date": "2024-01-02",
+            "event_type": "auto_cycle",
+            "status": "盘中",
+            "actions": ["止损巡检: 持仓0只 卖出0笔"],
+            "details": {"loop_count": 1},
+        })
+        events = db.get_auto_events(date="2024-01-02")
+        if len(events) >= 1 and events[0]["id"] == event_id and events[0]["actions"]:
+            ok(f"auto_events 插入+查询: id={event_id}, actions={len(events[0]['actions'])}项")
+        else:
+            fail(f"auto_events CRUD 异常: {events}")
 
 finally:
     # 清理临时数据库
@@ -301,31 +331,74 @@ tmp_db2.close()
 os.unlink(tmp_db2_path)
 
 try:
-    with Database(db_path=tmp_db2_path) as db:
-        result = db.migrate_from_json()
-        if result["trades"] > 0:
-            ok(f"迁移交易记录: {result['trades']}条")
-        else:
-            fail(f"迁移交易记录: {result['trades']}条（期望>0）")
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        account_file = os.path.join(tmp_dir, "paper_account.json")
+        review_dir = os.path.join(tmp_dir, "reviews")
+        os.makedirs(review_dir, exist_ok=True)
 
-        if result["snapshots"] > 0:
-            ok(f"迁移快照: {result['snapshots']}条")
-        else:
-            fail(f"迁移快照: {result['snapshots']}条（期望>0）")
+        with open(account_file, "w", encoding="utf-8") as f:
+            json.dump({
+                "cash": 900000,
+                "positions": {
+                    "600519": {
+                        "name": "贵州茅台",
+                        "shares": 100,
+                        "buy_price": 1710,
+                        "buy_date": "2024-01-02",
+                        "cost": 171051.3,
+                        "highest_price": 1730,
+                        "current_price": 1720,
+                    }
+                },
+                "trade_history": [
+                    {
+                        "code": "600519",
+                        "name": "贵州茅台",
+                        "action": "buy",
+                        "price": 1710,
+                        "shares": 100,
+                        "amount": 171000,
+                        "commission": 51.3,
+                        "reason": "迁移测试买入",
+                        "timestamp": "2024-01-02T10:00:00",
+                    }
+                ],
+            }, f, ensure_ascii=False)
 
-        # 验证迁移后的数据
-        trades = db.get_trades(limit=20)
-        if len(trades) > 0 and trades[0]["code"]:
-            ok(f"迁移后查询交易: {len(trades)}条，首条={trades[0]['code']} {trades[0]['action']}")
-        else:
-            fail(f"迁移后查询异常: {trades}")
+        with open(os.path.join(review_dir, "review_2024-01-02.json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "date": "2024-01-02",
+                "cash": 900000,
+                "market_value": 172000,
+                "total_assets": 1072000,
+                "position_count": 1,
+            }, f, ensure_ascii=False)
 
-        # 验证快照
-        snaps = db.get_snapshots(limit=10)
-        if len(snaps) > 0:
-            ok(f"迁移后查询快照: {len(snaps)}条")
-        else:
-            fail("迁移后快照为空")
+        with Database(db_path=tmp_db2_path) as db:
+            result = db.migrate_from_json(account_file=account_file, review_dir=review_dir)
+            if result["trades"] > 0:
+                ok(f"迁移交易记录: {result['trades']}条")
+            else:
+                fail(f"迁移交易记录: {result['trades']}条（期望>0）")
+
+            if result["snapshots"] > 0:
+                ok(f"迁移快照: {result['snapshots']}条")
+            else:
+                fail(f"迁移快照: {result['snapshots']}条（期望>0）")
+
+            # 验证迁移后的数据
+            trades = db.get_trades(limit=20)
+            if len(trades) > 0 and trades[0]["code"]:
+                ok(f"迁移后查询交易: {len(trades)}条，首条={trades[0]['code']} {trades[0]['action']}")
+            else:
+                fail(f"迁移后查询异常: {trades}")
+
+            # 验证快照
+            snaps = db.get_snapshots(limit=10)
+            if len(snaps) > 0:
+                ok(f"迁移后查询快照: {len(snaps)}条")
+            else:
+                fail("迁移后快照为空")
 
 finally:
     if os.path.exists(tmp_db2_path):

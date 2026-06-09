@@ -67,13 +67,10 @@ def cmd_review():
 
     print("每日复盘...")
     result = run_review()
-    # 打印完整复盘报告（容错）
-    try:
-        from review.daily_review import run_daily_review
-        review_text = run_daily_review()
+    review_text = getattr(result, "review_text", "")
+    if review_text:
         print(review_text)
-    except Exception as e:
-        print(f"详细复盘失败(不影响主流程): {e}")
+    print(format_pipeline_report(result))
     return result
 
 
@@ -115,6 +112,263 @@ def cmd_full():
     result = run_daily_pipeline()
     print(format_pipeline_report(result))
     return result
+
+
+def cmd_auto(args):
+    """自动盯盘交易员"""
+    from scheduler.auto_trader import run_auto_loop
+
+    print("模拟盘自动盯盘交易员启动...")
+    result = run_auto_loop(
+        loop_interval=args.loop_interval,
+        scan_interval=args.scan_interval,
+        once=args.auto_once,
+        force_scan=args.force_scan,
+    )
+    return result
+
+
+def cmd_health():
+    """系统健康检查"""
+    from scheduler.health import run_health_check, format_health_report
+
+    items = run_health_check()
+    print(format_health_report(items))
+    return {"errors": [i.name for i in items if (not i.ok and i.required)]}
+
+
+def cmd_watchdog():
+    """自动盯盘运行态检查"""
+    from scheduler.watchdog import run_auto_watchdog, format_watchdog_report
+
+    items = run_auto_watchdog()
+    print(format_watchdog_report(items))
+    return {"errors": [i.name for i in items if i.severity == "critical"]}
+
+
+def cmd_doctor(args):
+    """自动盯盘巡检自愈"""
+    from scheduler.doctor import run_auto_doctor, format_doctor_report
+
+    result = run_auto_doctor(
+        recover=not args.no_recover,
+        force_scan=args.force_scan,
+        auto_pause_on_failure=not args.no_auto_pause_on_failure,
+        repair_closure=not args.no_closure_repair,
+    )
+    print(format_doctor_report(result))
+    return {"errors": result.get("after_critical", []) + result.get("closure_after_critical", [])}
+
+
+def cmd_windows_tasks(args):
+    """生成Windows无人值守计划任务脚本"""
+    from scheduler.windows_tasks import (
+        format_windows_task_summary,
+        generate_windows_task_scripts,
+    )
+
+    paths = generate_windows_task_scripts(
+        project_dir=os.path.dirname(os.path.abspath(__file__)),
+        output_dir=args.task_output_dir,
+        python_cmd=args.python_cmd,
+        task_prefix=args.task_prefix,
+        report_days=args.report_days,
+    )
+    print(format_windows_task_summary(paths))
+    return {"paths": paths}
+
+
+def cmd_unattended_status(args):
+    """检查Windows无人值守状态"""
+    from scheduler.windows_tasks import format_unattended_status, run_unattended_status
+
+    items = run_unattended_status(
+        project_dir=os.path.dirname(os.path.abspath(__file__)),
+        output_dir=args.task_output_dir,
+        task_prefix=args.task_prefix,
+    )
+    print(format_unattended_status(items))
+    return {"errors": [i.name for i in items if i.severity == "critical"]}
+
+
+def cmd_linux_tasks(args):
+    """生成Ubuntu/Hermes无人值守systemd用户任务脚本"""
+    from scheduler.linux_tasks import (
+        format_linux_task_summary,
+        generate_linux_task_scripts,
+    )
+
+    paths = generate_linux_task_scripts(
+        project_dir=os.path.dirname(os.path.abspath(__file__)),
+        output_dir=args.task_output_dir,
+        python_cmd=args.python_cmd,
+        service_prefix=args.service_prefix,
+        report_days=args.report_days,
+        hermes_env_file=args.hermes_env_file,
+    )
+    print(format_linux_task_summary(paths))
+    return {"paths": paths}
+
+
+def cmd_linux_unattended_status(args):
+    """检查Ubuntu/Hermes无人值守状态"""
+    from scheduler.linux_tasks import (
+        format_linux_unattended_status,
+        run_linux_unattended_status,
+    )
+
+    items = run_linux_unattended_status(
+        project_dir=os.path.dirname(os.path.abspath(__file__)),
+        output_dir=args.task_output_dir,
+        service_prefix=args.service_prefix,
+    )
+    print(format_linux_unattended_status(items))
+    return {"errors": [i.name for i in items if i.severity == "critical"]}
+
+
+def cmd_paper_ready(args):
+    """模拟盘AI交易员就绪检查"""
+    from scheduler.readiness import format_paper_readiness, run_paper_readiness
+
+    result = run_paper_readiness(
+        report_days=args.report_days,
+        report_end_date=args.report_end_date,
+        rehearsal_days=args.rehearsal_days,
+        task_output_dir=args.task_output_dir,
+        task_prefix=args.task_prefix,
+        service_prefix=args.service_prefix,
+        unattended_platform=args.unattended_platform,
+        project_dir=os.path.dirname(os.path.abspath(__file__)),
+    )
+    print(format_paper_readiness(result))
+    return {"errors": result["overall"].get("critical", [])}
+
+
+def cmd_paper_bootstrap(args):
+    """模拟盘AI交易员启动引导"""
+    from scheduler.bootstrap import format_paper_bootstrap, run_paper_bootstrap
+
+    result = run_paper_bootstrap(
+        project_dir=os.path.dirname(os.path.abspath(__file__)),
+        task_output_dir=args.task_output_dir,
+        python_cmd=args.python_cmd,
+        task_prefix=args.task_prefix,
+        service_prefix=args.service_prefix,
+        unattended_platform=args.unattended_platform,
+        hermes_env_file=args.hermes_env_file,
+        report_days=args.report_days,
+        report_end_date=args.report_end_date,
+        rehearsal_days=args.rehearsal_days,
+        rehearsal_start_date=args.rehearsal_start_date,
+    )
+    print(format_paper_bootstrap(result))
+    return {"errors": result.get("errors", [])}
+
+
+def cmd_auto_control(args, action: str):
+    """自动盯盘暂停/恢复/状态"""
+    from scheduler.control import (
+        format_auto_control_state,
+        get_auto_control_state,
+        pause_auto_trader,
+        resume_auto_trader,
+    )
+
+    if action == "pause":
+        state = pause_auto_trader(reason=args.reason or "manual pause")
+    elif action == "resume":
+        state = resume_auto_trader(reason=args.reason or "manual resume")
+    else:
+        state = get_auto_control_state()
+    print(format_auto_control_state(state))
+    return {"state": state}
+
+
+def cmd_ai_report(args):
+    """AI交易员模拟盘试运行报告"""
+    from review.ai_trader_report import generate_ai_trader_report
+
+    result = generate_ai_trader_report(
+        days=args.report_days,
+        end_date=args.report_end_date,
+        save=True,
+    )
+    print(result["markdown"])
+    paths = result.get("paths") or {}
+    if paths.get("markdown"):
+        print(f"\n报告已保存: {paths['markdown']}")
+    if paths.get("json"):
+        print(f"JSON已保存: {paths['json']}")
+    return result
+
+
+def cmd_ops_status(args):
+    """自动盯盘运维状态汇总"""
+    from scheduler.ops_status import format_ops_status, run_ops_status
+
+    result = run_ops_status(
+        report_days=args.report_days,
+        report_end_date=args.report_end_date,
+        save_report=True,
+    )
+    print(format_ops_status(result, include_sections=args.verbose))
+    return {"errors": ["ops_status"] if result["overall"]["level"] == "critical" else []}
+
+
+def cmd_closure_check(args):
+    """正式模拟盘日内闭环缺口诊断"""
+    from scheduler.closure_check import format_closure_check, run_closure_check
+
+    result = run_closure_check(date=args.closure_date)
+    print(format_closure_check(result))
+    return {"errors": result["overall"].get("critical", [])}
+
+
+def cmd_closure_repair(args):
+    """正式模拟盘闭环缺口自愈"""
+    from scheduler.closure_repair import format_closure_repair, run_closure_repair
+
+    result = run_closure_repair(
+        date=args.closure_date,
+        recover=not args.no_recover,
+    )
+    print(format_closure_repair(result))
+    return {"errors": result["after"]["overall"].get("critical", [])}
+
+
+def cmd_auto_rehearsal(args):
+    """自动盯盘连续演练"""
+    from scheduler.rehearsal import run_auto_rehearsal
+
+    result = run_auto_rehearsal(
+        days=args.rehearsal_days,
+        start_date=args.rehearsal_start_date,
+        save_report=True,
+    )
+    print(result["report"]["markdown"])
+    print(f"\n演练数据库: {result['db_path']}")
+    paths = result["report"].get("paths") or {}
+    if paths.get("markdown"):
+        print(f"演练报告: {paths['markdown']}")
+    return result
+
+
+def cmd_paper_observe(args):
+    """正式模拟盘有限轮观察"""
+    os.environ["BROKER_MODE"] = "paper"
+    from scheduler.paper_observer import format_paper_observer, run_paper_observer
+
+    result = run_paper_observer(
+        cycles=args.observe_cycles,
+        interval=args.observe_interval,
+        force_scan=args.force_scan,
+        log_file=args.observe_log,
+        save_report=not args.no_observe_report,
+        report_days=args.report_days,
+        report_end_date=args.report_end_date,
+    )
+    print(format_paper_observer(result))
+    return {"errors": result.get("errors", [])}
 
 
 def cmd_stop_check():
@@ -354,6 +608,26 @@ def main():
   python main.py --backtest --mode strategy --strategy zt_reversal --stocks 600519 000001
   python main.py --optimize --strategy zt_reversal --stocks 600519 000001 --rounds 3
   python main.py --after-market
+  python main.py --auto        # 自动盯盘循环（模拟盘）
+  python main.py --auto-once   # 自动盯盘单轮测试
+  python main.py --auto-rehearse # 连续多日自动盯盘演练（隔离数据库）
+  python main.py --paper-observe # 有限轮正式模拟盘观察（默认模拟盘）
+  python main.py --health      # 检查自动盯盘运行条件
+  python main.py --watchdog    # 检查自动盯盘是否停滞/漏扫/漏复盘
+  python main.py --doctor      # Watchdog巡检并尝试触发一轮自愈
+  python main.py --windows-tasks # 生成Windows计划任务脚本
+  python main.py --unattended-status # 检查无人值守脚本/任务/日志
+  python main.py --linux-tasks # 生成Ubuntu/Hermes systemd用户任务脚本
+  python main.py --linux-unattended-status # 检查Ubuntu/Hermes无人值守状态
+  python main.py --paper-ready --unattended-platform linux
+  python main.py --paper-ready # 模拟盘AI交易员上线前就绪检查
+  python main.py --paper-bootstrap # 生成脚本+演练+就绪门禁
+  python main.py --auto-pause --reason "观察行情"
+  python main.py --auto-resume
+  python main.py --ai-report   # 最近5天AI交易员试运行报告
+  python main.py --ops-status  # 健康/Watchdog/报告一页汇总
+  python main.py --closure-check # 检查今日正式模拟盘闭环缺口
+  python main.py --closure-repair # 在安全窗口内尝试补齐闭环缺口
         """,
     )
 
@@ -369,6 +643,26 @@ def main():
     group.add_argument("--optimize", action="store_true", help="策略优化模式")
     group.add_argument("--after-market", action="store_true", help="收盘后分析（外围市场+新闻）")
     group.add_argument("--stop-check", action="store_true", help="盘中止损巡检")
+    group.add_argument("--auto", action="store_true", help="自动盯盘交易员（循环运行，默认模拟盘）")
+    group.add_argument("--auto-once", action="store_true", help="自动盯盘交易员（只运行一轮，用于测试）")
+    group.add_argument("--auto-rehearse", action="store_true", help="连续多日自动盯盘演练（隔离数据库）")
+    group.add_argument("--paper-observe", action="store_true", help="有限轮正式模拟盘观察（写入正式库，默认模拟盘）")
+    group.add_argument("--health", action="store_true", help="系统健康检查")
+    group.add_argument("--watchdog", action="store_true", help="自动盯盘运行态检查")
+    group.add_argument("--doctor", action="store_true", help="自动盯盘巡检自愈")
+    group.add_argument("--windows-tasks", action="store_true", help="生成Windows无人值守计划任务脚本")
+    group.add_argument("--unattended-status", action="store_true", help="检查Windows无人值守脚本/任务/日志")
+    group.add_argument("--linux-tasks", action="store_true", help="生成Ubuntu/Hermes systemd用户任务脚本")
+    group.add_argument("--linux-unattended-status", action="store_true", help="检查Ubuntu/Hermes无人值守脚本/systemd/日志")
+    group.add_argument("--paper-ready", action="store_true", help="模拟盘AI交易员上线前就绪检查")
+    group.add_argument("--paper-bootstrap", action="store_true", help="模拟盘启动引导（脚本+演练+门禁）")
+    group.add_argument("--auto-pause", action="store_true", help="暂停盘中自动交易动作")
+    group.add_argument("--auto-resume", action="store_true", help="恢复盘中自动交易动作")
+    group.add_argument("--auto-control", action="store_true", help="查看自动盯盘控制状态")
+    group.add_argument("--ai-report", action="store_true", help="AI交易员模拟盘试运行报告")
+    group.add_argument("--ops-status", action="store_true", help="自动盯盘运维状态汇总")
+    group.add_argument("--closure-check", action="store_true", help="正式模拟盘日内闭环缺口诊断")
+    group.add_argument("--closure-repair", action="store_true", help="正式模拟盘闭环缺口自愈")
 
     parser.add_argument("--start-date", default="2024-01-01", help="回测开始日期")
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
@@ -377,6 +671,29 @@ def main():
     parser.add_argument("--stocks", nargs="+", help="回测股票列表")
     parser.add_argument("--strategy", default="zt_reversal", help="策略名称（用于 strategy 模式）")
     parser.add_argument("--rounds", type=int, default=3, help="优化轮数（用于 optimize 模式）")
+    parser.add_argument("--loop-interval", type=int, default=None, help="自动盯盘主循环间隔秒数")
+    parser.add_argument("--scan-interval", type=int, default=None, help="自动盯盘盘中扫描间隔秒数")
+    parser.add_argument("--force-scan", action="store_true", help="自动盯盘单轮中强制执行盘中扫描")
+    parser.add_argument("--no-recover", action="store_true", help="Doctor只巡检，不触发自愈")
+    parser.add_argument("--no-auto-pause-on-failure", action="store_true", help="Doctor自愈失败后不自动暂停")
+    parser.add_argument("--no-closure-repair", action="store_true", help="Doctor不执行闭环缺口自愈")
+    parser.add_argument("--task-output-dir", default=None, help="无人值守脚本输出目录")
+    parser.add_argument("--task-prefix", default="QuantPilot", help="Windows计划任务名前缀")
+    parser.add_argument("--service-prefix", default="quant-pilot", help="Linux systemd用户任务名前缀")
+    parser.add_argument("--hermes-env-file", default="$HOME/.hermes/.env", help="Hermes环境变量文件")
+    parser.add_argument("--unattended-platform", choices=["windows", "linux"], default="windows", help="paper-ready/bootstrap使用的无人值守平台")
+    parser.add_argument("--python-cmd", default="python", help="无人值守任务使用的Python命令")
+    parser.add_argument("--reason", default="", help="暂停/恢复原因")
+    parser.add_argument("--report-days", type=int, default=5, help="AI交易员报告回看天数")
+    parser.add_argument("--report-end-date", default=None, help="AI交易员报告结束日期 YYYY-MM-DD，默认今天")
+    parser.add_argument("--rehearsal-days", type=int, default=5, help="自动盯盘演练天数")
+    parser.add_argument("--rehearsal-start-date", default=None, help="自动盯盘演练起始日期 YYYY-MM-DD，默认今天")
+    parser.add_argument("--observe-cycles", type=int, default=3, help="正式模拟盘观察轮数")
+    parser.add_argument("--observe-interval", type=int, default=60, help="正式模拟盘观察轮间隔秒数")
+    parser.add_argument("--observe-log", default=None, help="正式模拟盘观察日志路径")
+    parser.add_argument("--no-observe-report", action="store_true", help="正式模拟盘观察结束后不生成报告")
+    parser.add_argument("--closure-date", default=None, help="闭环缺口诊断日期 YYYY-MM-DD，默认今天")
+    parser.add_argument("--verbose", action="store_true", help="输出详细分段报告")
 
     args = parser.parse_args()
 
@@ -411,11 +728,51 @@ def main():
     elif args.stop_check:
         cmd_stop_check()
         return
+    elif args.auto or args.auto_once:
+        result = cmd_auto(args)
+    elif args.auto_rehearse:
+        result = cmd_auto_rehearsal(args)
+    elif args.paper_observe:
+        result = cmd_paper_observe(args)
+    elif args.health:
+        result = cmd_health()
+    elif args.watchdog:
+        result = cmd_watchdog()
+    elif args.doctor:
+        result = cmd_doctor(args)
+    elif args.windows_tasks:
+        result = cmd_windows_tasks(args)
+    elif args.unattended_status:
+        result = cmd_unattended_status(args)
+    elif args.linux_tasks:
+        result = cmd_linux_tasks(args)
+    elif args.linux_unattended_status:
+        result = cmd_linux_unattended_status(args)
+    elif args.paper_ready:
+        result = cmd_paper_ready(args)
+    elif args.paper_bootstrap:
+        result = cmd_paper_bootstrap(args)
+    elif args.auto_pause:
+        result = cmd_auto_control(args, "pause")
+    elif args.auto_resume:
+        result = cmd_auto_control(args, "resume")
+    elif args.auto_control:
+        result = cmd_auto_control(args, "status")
+    elif args.ai_report:
+        result = cmd_ai_report(args)
+    elif args.ops_status:
+        result = cmd_ops_status(args)
+    elif args.closure_check:
+        result = cmd_closure_check(args)
+    elif args.closure_repair:
+        result = cmd_closure_repair(args)
     else:
         result = cmd_full()
 
     # 退出码
     if hasattr(result, "errors") and result.errors:
+        sys.exit(1)
+    if isinstance(result, dict) and result.get("errors"):
         sys.exit(1)
 
 

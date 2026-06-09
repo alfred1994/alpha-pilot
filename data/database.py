@@ -158,6 +158,19 @@ class Database:
             )
         """)
 
+        # ── 模拟账户状态 ──
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS account_state (
+                id              INTEGER PRIMARY KEY CHECK (id = 1),
+                initial_capital REAL,
+                cash            REAL,
+                total_assets    REAL,
+                position_count  INTEGER,
+                positions       TEXT,
+                updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # ── 市场环境 ──
         c.execute("""
             CREATE TABLE IF NOT EXISTS market_regimes (
@@ -208,6 +221,20 @@ class Database:
             )
         """)
 
+        # ── 自动盯盘运行事件 ──
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS auto_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                date        TEXT,
+                event_type  TEXT,
+                status      TEXT,
+                actions     TEXT,
+                details     TEXT,
+                error       TEXT,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # ── 索引 ──
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_code ON k_daily(code)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_date ON k_daily(date)")
@@ -216,6 +243,8 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_llm_decisions_code ON llm_decisions(code)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_llm_decisions_date ON llm_decisions(date)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_lessons_category ON lessons(category)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_date ON auto_events(date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_type ON auto_events(event_type)")
 
         # ── 复盘快照（统一存储） ──
         c.execute("""
@@ -697,7 +726,7 @@ class Database:
     # 数据迁移：从JSON文件迁入
     # ════════════════════════════════════════════════════════════════
 
-    def migrate_from_json(self) -> Dict[str, Any]:
+    def migrate_from_json(self, account_file: str = None, review_dir: str = None) -> Dict[str, Any]:
         """
         从JSON文件迁移到SQLite
 
@@ -705,30 +734,47 @@ class Database:
             1. data/paper_account.json → trades + positions
             2. data/reviews/*.json     → daily_snapshots
 
+        Args:
+            account_file: 模拟账户JSON路径，None时使用默认路径
+            review_dir: 复盘JSON目录，None时使用默认目录
+
         Returns:
             迁移统计 {"trades": N, "snapshots": N}
         """
         result = {"trades": 0, "snapshots": 0}
 
         # 1. 迁移 paper_account.json
-        account_file = os.path.join(config.DATA_DIR, "paper_account.json")
+        account_file = account_file or os.path.join(config.DATA_DIR, "paper_account.json")
         if os.path.exists(account_file):
             try:
                 with open(account_file, "r", encoding="utf-8") as f:
                     account = json.load(f)
 
-                # 迁移交易记录
-                for trade in account.get("trades", []):
+                # 迁移交易记录：兼容不同版本的账户字段命名
+                trade_records = (
+                    account.get("trades")
+                    or account.get("trade_history")
+                    or account.get("orders")
+                    or []
+                )
+                for trade in trade_records:
+                    action = trade.get("action") or trade.get("side") or trade.get("type") or ""
+                    created_at = (
+                        trade.get("timestamp")
+                        or trade.get("created_at")
+                        or trade.get("date")
+                        or datetime.now().isoformat()
+                    )
                     self.insert_trade({
                         "code": trade.get("code", ""),
                         "name": trade.get("name", ""),
-                        "action": trade.get("action", ""),
+                        "action": str(action).upper(),
                         "price": trade.get("price", 0),
                         "shares": trade.get("shares", 0),
                         "amount": trade.get("amount", 0),
                         "commission": trade.get("commission", 0),
                         "reason": trade.get("reason", ""),
-                        "created_at": trade.get("timestamp", ""),
+                        "created_at": created_at,
                     })
                     result["trades"] += 1
 
@@ -751,7 +797,7 @@ class Database:
                 logger.error(f"迁移账户数据失败: {e}")
 
         # 2. 迁移 reviews/*.json → daily_snapshots
-        review_dir = os.path.join(config.DATA_DIR, "reviews")
+        review_dir = review_dir or os.path.join(config.DATA_DIR, "reviews")
         if os.path.exists(review_dir):
             for filename in sorted(os.listdir(review_dir)):
                 if filename.startswith("review_") and filename.endswith(".json"):
@@ -784,9 +830,9 @@ class Database:
         c = self.conn.cursor()
         stats = {}
 
-        for table in ["k_daily", "k_minute", "trades", "positions",
+        for table in ["k_daily", "k_minute", "trades", "positions", "account_state",
                        "daily_snapshots", "market_regimes", "llm_decisions", "lessons",
-                       "review_snapshots", "adaptive_state"]:
+                       "review_snapshots", "adaptive_state", "auto_events"]:
             c.execute(f"SELECT COUNT(*) as cnt FROM {table}")
             stats[table] = c.fetchone()["cnt"]
 
@@ -807,12 +853,14 @@ class Database:
             f"分钟K线缓存:   {stats['k_minute']:>8}条",
             f"交易记录:       {stats['trades']:>8}条",
             f"持仓:           {stats['positions']:>8}条",
+            f"账户状态:       {stats['account_state']:>8}条",
             f"每日快照:       {stats['daily_snapshots']:>8}条",
             f"市场环境:       {stats['market_regimes']:>8}条",
             f"LLM决策:        {stats['llm_decisions']:>8}条",
             f"教训库:         {stats['lessons']:>8}条",
             f"复盘快照:       {stats['review_snapshots']:>8}条",
             f"自适应状态:     {stats['adaptive_state']:>8}条",
+            f"自动盯盘事件:   {stats['auto_events']:>8}条",
             f"数据库大小:     {stats.get('db_size_mb', 0):>8.2f} MB",
             "=" * 50,
         ]
@@ -822,6 +870,58 @@ class Database:
     # ════════════════════════════════════════════════════════════════
     # 统一数据层：双写接口
     # ════════════════════════════════════════════════════════════════
+
+    def save_account_state(self, state: Dict):
+        """
+        统一接口：保存模拟账户状态到 SQLite
+
+        Args:
+            state: 账户状态，包含 initial_capital/cash/positions 等
+        """
+        positions = state.get("positions", {}) or {}
+        total_assets = state.get("total_assets")
+        if total_assets is None:
+            market_value = sum(
+                (pos.get("current_price") or pos.get("buy_price") or 0) * pos.get("shares", 0)
+                for pos in positions.values()
+                if isinstance(pos, dict)
+            )
+            total_assets = state.get("cash", 0) + market_value
+
+        c = self.conn.cursor()
+        c.execute("""
+            INSERT OR REPLACE INTO account_state
+            (id, initial_capital, cash, total_assets, position_count, positions, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+        """, (
+            state.get("initial_capital", 0),
+            state.get("cash", 0),
+            total_assets,
+            len(positions),
+            json.dumps(positions, ensure_ascii=False),
+            state.get("updated_at", datetime.now().isoformat()),
+        ))
+        self.conn.commit()
+        logger.debug("模拟账户状态写入SQLite")
+
+    def get_account_state(self) -> Optional[Dict]:
+        """
+        统一接口：读取模拟账户状态
+
+        Returns:
+            账户状态 dict，不存在则返回 None
+        """
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM account_state WHERE id = 1")
+        row = c.fetchone()
+        if not row:
+            return None
+        item = dict(row)
+        try:
+            item["positions"] = json.loads(item.get("positions") or "{}")
+        except json.JSONDecodeError:
+            item["positions"] = {}
+        return item
 
     def save_trade_record(self, trade: Dict) -> int:
         """
@@ -919,6 +1019,72 @@ class Database:
             except (json.JSONDecodeError, KeyError):
                 return None
         return None
+
+    def insert_auto_event(self, event: Dict) -> int:
+        """
+        记录自动盯盘运行事件
+
+        Args:
+            event: 事件数据，可包含 date/event_type/status/actions/details/error
+        Returns:
+            新记录 id
+        """
+        c = self.conn.cursor()
+        c.execute("""
+            INSERT INTO auto_events
+            (date, event_type, status, actions, details, error, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            event.get("date", datetime.now().strftime("%Y-%m-%d")),
+            event.get("event_type", "auto_cycle"),
+            event.get("status", ""),
+            json.dumps(event.get("actions", []), ensure_ascii=False),
+            json.dumps(event.get("details", {}), ensure_ascii=False),
+            event.get("error", ""),
+            event.get("created_at", datetime.now().isoformat()),
+        ))
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_auto_events(self, date: str = None, event_type: str = None,
+                        limit: int = 100) -> List[Dict]:
+        """
+        查询自动盯盘运行事件
+
+        Args:
+            date: 日期过滤，None=不限
+            event_type: 事件类型过滤，None=不限
+            limit: 返回条数
+        Returns:
+            事件列表
+        """
+        conditions, params = [], []
+        if date:
+            conditions.append("date = ?")
+            params.append(date)
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+        where = " AND ".join(conditions) if conditions else "1=1"
+
+        c = self.conn.cursor()
+        c.execute(f"""
+            SELECT * FROM auto_events
+            WHERE {where}
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, params + [limit])
+
+        events = []
+        for row in c.fetchall():
+            item = dict(row)
+            for key, default in (("actions", []), ("details", {})):
+                try:
+                    item[key] = json.loads(item[key]) if item.get(key) else default
+                except json.JSONDecodeError:
+                    item[key] = default
+            events.append(item)
+        return events
 
 
 # 兼容旧代码：QuantDatabase 指向 Database
