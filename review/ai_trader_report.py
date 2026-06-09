@@ -50,9 +50,18 @@ def _calc_range(days: int, end_date: str = None) -> tuple:
     return start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
 
 
+_ALLOWED_TABLES = {"auto_events", "trades", "lessons", "review_snapshots",
+                   "llm_decisions", "daily_snapshots", "market_regimes"}
+_ALLOWED_COLUMNS = {"date", "created_at"}
+
+
 def _query_range(db: Database, table: str, date_column: str,
                  start_date: str, end_date: str, limit: int = 1000) -> List[Dict]:
-    """按日期范围读取表数据"""
+    """按日期范围读取表数据（白名单校验表名和列名防SQL注入）"""
+    if table not in _ALLOWED_TABLES:
+        raise ValueError(f"不允许的表名: {table}")
+    if date_column not in _ALLOWED_COLUMNS:
+        raise ValueError(f"不允许的列名: {date_column}")
     c = db.conn.cursor()
     c.execute(f"""
         SELECT * FROM {table}

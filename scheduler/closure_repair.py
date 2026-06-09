@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Callable, Dict
 
 from scheduler.closure_check import format_closure_check, run_closure_check
+from scheduler.utils import force_paper_mode
 
 
 RECOVERABLE_GAPS = {
@@ -24,21 +25,6 @@ RECOVERABLE_GAPS = {
     "盘后复盘",
     "教训沉淀",
 }
-
-
-def _force_paper_mode():
-    """强制当前进程使用模拟盘"""
-    os.environ["BROKER_MODE"] = "paper"
-    try:
-        import config
-        config.BROKER_MODE = "paper"
-    except Exception:
-        pass
-    try:
-        import execution.broker as broker
-        broker.BROKER_MODE = "paper"
-    except Exception:
-        pass
 
 
 def _first_recoverable_gap(closure: Dict) -> Dict:
@@ -100,7 +86,7 @@ def run_closure_repair(
 
     Args中的函数参数用于测试注入。默认不会安装任务，也不会连接实盘。
     """
-    _force_paper_mode()
+    force_paper_mode()
     now = now or datetime.now()
     target_date = date or now.strftime("%Y-%m-%d")
     closure_func = closure_func or run_closure_check

@@ -61,6 +61,7 @@ def _build_next_actions(
     paused: bool,
     report: Dict,
     closure_check: Dict = None,
+    platform: str = None,
 ) -> List[Dict]:
     """根据当前运维状态生成可执行下一步动作"""
     actions: List[Dict] = []
@@ -100,11 +101,15 @@ def _build_next_actions(
         if name in ("自动盘锁", "自动循环新鲜度", "自动盯盘状态")
     ]
     if auto_runtime_critical:
+        if platform == "linux":
+            cmd = "systemctl --user restart quant-pilot-auto.service"
+        else:
+            cmd = "powershell -ExecutionPolicy Bypass -File data\\\\task_scripts\\\\restart_auto.ps1"
         _add_action(
             actions,
             "critical",
             "重启自动盘长驻任务",
-            "powershell -ExecutionPolicy Bypass -File data\\task_scripts\\restart_auto.ps1",
+            cmd,
             f"长驻自动盘异常: {', '.join(auto_runtime_critical)}；若计划任务未安装，先用 --paper-observe 手动观察。",
         )
 

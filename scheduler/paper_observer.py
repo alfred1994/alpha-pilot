@@ -19,6 +19,7 @@ from scheduler.auto_trader import (
     _load_state,
     run_auto_cycle,
 )
+from scheduler.utils import force_paper_mode
 
 
 DEFAULT_OBSERVE_LOG = os.path.join(BASE_DIR, "logs", "paper_observe.log")
@@ -38,21 +39,6 @@ def _sequence_value(values: Optional[List], index: int):
     if index < len(values):
         return values[index]
     return values[-1]
-
-
-def _force_paper_mode():
-    """强制当前进程交易通道保持模拟盘"""
-    os.environ["BROKER_MODE"] = "paper"
-    try:
-        import config
-        config.BROKER_MODE = "paper"
-    except Exception:
-        pass
-    try:
-        import execution.broker as broker
-        broker.BROKER_MODE = "paper"
-    except Exception:
-        pass
 
 
 def run_paper_observer(
@@ -99,7 +85,7 @@ def run_paper_observer(
     Returns:
         观察摘要
     """
-    _force_paper_mode()
+    force_paper_mode()
 
     cycles = max(1, int(cycles or 1))
     interval = max(0, int(interval or 0))

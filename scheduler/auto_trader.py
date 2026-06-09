@@ -114,16 +114,29 @@ class AutoLoopLock:
     def heartbeat(self):
         if not self.acquired:
             return
+        tmp_file = self.lock_file + ".heartbeat"
         try:
+            # 先写入临时文件，避免写入过程中锁文件处于不完整状态
+            data = json.dumps(self._payload(), ensure_ascii=False, indent=2)
+            fd = os.open(tmp_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            try:
+                os.write(fd, data.encode("utf-8"))
+            finally:
+                os.close(fd)
+            # 原子替换锁文件（POSIX rename保证原子性）
+            os.replace(tmp_file, self.lock_file)
+            # 替换后验证token，检测是否被其他进程抢占
             payload = self._read_payload()
             if payload.get("token") != self.token:
                 logger.warning("自动盯盘锁已被其他进程接管，停止刷新心跳")
                 self.acquired = False
-                return
-            with open(self.lock_file, "w", encoding="utf-8") as f:
-                json.dump(self._payload(), f, ensure_ascii=False, indent=2)
         except Exception as e:
             logger.warning(f"自动盯盘锁心跳失败: {e}")
+        finally:
+            try:
+                os.remove(tmp_file)
+            except OSError:
+                pass
 
     def release(self):
         if not self.acquired:
@@ -249,6 +262,7 @@ def run_auto_cycle(
     state: Optional[AutoTraderState] = None,
     force_scan: bool = False,
     *,
+    scan_interval: int = None,
     status_override: str = None,
     trading_day_override: bool = None,
     today_override: str = None,
@@ -269,6 +283,7 @@ def run_auto_cycle(
     Args:
         state: 外部传入状态，None则自动读取
         force_scan: 忽略扫描间隔，强制盘中扫描
+        scan_interval: 盘中扫描间隔秒数，None时使用配置默认值
         status_override: 覆盖市场状态，仅用于测试/演练
         trading_day_override: 覆盖交易日判断，仅用于测试/演练
         today_override: 覆盖当前日期，仅用于测试/演练
@@ -302,6 +317,7 @@ def run_auto_cycle(
     state.loop_count += 1
     actions = []
     now_ts = now_ts_override if now_ts_override is not None else time.time()
+    exec_result = None
     control_state = get_auto_control_state(control_file=control_file)
     paused = bool(control_state.get("paused"))
 
@@ -346,7 +362,8 @@ def run_auto_cycle(
                     f"卖出{stop_result.get('sold', 0)}笔"
                 )
 
-            should_scan = force_scan or (now_ts - state.last_scan_at >= AUTO_SCAN_INTERVAL)
+            effective_scan_interval = scan_interval if scan_interval is not None else AUTO_SCAN_INTERVAL
+            should_scan = force_scan or (now_ts - state.last_scan_at >= effective_scan_interval)
             if should_scan:
                 scan_result = run_scan_func()
                 state.last_scan_at = now_ts
@@ -407,11 +424,7 @@ def run_auto_cycle(
                         "last_prefetch_date": state.last_prefetch_date,
                         "last_regime_date": state.last_regime_date,
                         "last_review_date": state.last_review_date,
-                        "order_audit": (
-                            getattr(locals().get("exec_result", None), "order_audit", [])
-                            if "exec_result" in locals()
-                            else []
-                        ),
+                        "order_audit": getattr(exec_result, "order_audit", []),
                     },
                     "error": state.last_error,
                 })
@@ -458,10 +471,6 @@ def run_auto_loop(loop_interval: int = None, scan_interval: int = None,
         force_scan: True=盘中强制扫描
         lock_file: 单实例锁文件路径，None时使用默认data/auto_trader.lock
     """
-    global AUTO_SCAN_INTERVAL
-    if scan_interval is not None:
-        AUTO_SCAN_INTERVAL = scan_interval
-
     interval = loop_interval or AUTO_LOOP_INTERVAL
     state = _load_state()
 
@@ -474,7 +483,7 @@ def run_auto_loop(loop_interval: int = None, scan_interval: int = None,
         while True:
             if loop_lock:
                 loop_lock.heartbeat()
-            result = run_auto_cycle(state=state, force_scan=force_scan)
+            result = run_auto_cycle(state=state, force_scan=force_scan, scan_interval=scan_interval)
             print(result["report"])
             state = AutoTraderState(**result["state"])
             if once:

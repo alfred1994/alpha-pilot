@@ -429,10 +429,19 @@ class Database:
         """, params + [limit])
         return [dict(row) for row in c.fetchall()]
 
+    # trades表允许更新的列名白名单
+    _TRADE_UPDATE_COLUMNS = {
+        "code", "name", "action", "price", "shares", "amount", "commission",
+        "reason", "signal_score", "signal_detail", "market_regime", "dimensions",
+    }
+
     def update_trade(self, trade_id: int, updates: Dict):
-        """更新交易记录"""
-        sets = ", ".join(f"{k}=?" for k in updates)
-        values = list(updates.values()) + [trade_id]
+        """更新交易记录（白名单校验列名防SQL注入）"""
+        safe_updates = {k: v for k, v in updates.items() if k in self._TRADE_UPDATE_COLUMNS}
+        if not safe_updates:
+            return
+        sets = ", ".join(f"{k}=?" for k in safe_updates)
+        values = list(safe_updates.values()) + [trade_id]
         c = self.conn.cursor()
         c.execute(f"UPDATE trades SET {sets} WHERE id=?", values)
         self.conn.commit()
@@ -623,10 +632,19 @@ class Database:
         """, params + [limit])
         return [dict(row) for row in c.fetchall()]
 
+    # llm_decisions表允许更新的列名白名单
+    _LLM_DECISION_UPDATE_COLUMNS = {
+        "code", "date", "action", "llm_prompt", "llm_response", "reasoning",
+        "confidence", "outcome", "outcome_pct", "trade_id",
+    }
+
     def update_llm_decision(self, decision_id: int, updates: Dict):
-        """更新LLM决策（如补充 outcome）"""
-        sets = ", ".join(f"{k}=?" for k in updates)
-        values = list(updates.values()) + [decision_id]
+        """更新LLM决策（如补充 outcome，白名单校验列名防SQL注入）"""
+        safe_updates = {k: v for k, v in updates.items() if k in self._LLM_DECISION_UPDATE_COLUMNS}
+        if not safe_updates:
+            return
+        sets = ", ".join(f"{k}=?" for k in safe_updates)
+        values = list(safe_updates.values()) + [decision_id]
         c = self.conn.cursor()
         c.execute(f"UPDATE llm_decisions SET {sets} WHERE id=?", values)
         self.conn.commit()

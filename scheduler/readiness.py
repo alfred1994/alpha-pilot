@@ -20,7 +20,7 @@ from config import BROKER_MODE
 from review.ai_trader_report import generate_ai_trader_report
 from scheduler.health import HealthItem, run_health_check
 from scheduler.rehearsal import REHEARSAL_DB, REHEARSAL_REPORT_DIR
-from scheduler.windows_tasks import UnattendedItem, run_unattended_status
+# windows_tasks延迟导入，避免Linux环境下加载Windows模块
 
 
 @dataclass
@@ -149,7 +149,7 @@ def _check_formal_report(report: Dict) -> ReadinessItem:
     )
 
 
-def _check_unattended(items: List[UnattendedItem], platform: str = "windows") -> ReadinessItem:
+def _check_unattended(items: List, platform: str = "windows") -> ReadinessItem:
     """汇总无人值守巡检结果"""
     critical = [i.name for i in items if i.severity == "critical"]
     warn = [i.name for i in items if i.severity == "warn"]
@@ -193,7 +193,7 @@ def run_paper_readiness(
     control_file: str = None,
     project_dir: str = None,
     health_items: List[HealthItem] = None,
-    unattended_items: List[UnattendedItem] = None,
+    unattended_items: List = None,
     formal_report: Dict = None,
     rehearsal_report: Dict = None,
 ) -> Dict:
@@ -238,6 +238,7 @@ def run_paper_readiness(
                 service_prefix=service_prefix,
             )
         else:
+            from scheduler.windows_tasks import run_unattended_status
             unattended_items = run_unattended_status(
                 project_dir=project_dir,
                 output_dir=task_output_dir,

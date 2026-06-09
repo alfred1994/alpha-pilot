@@ -682,7 +682,7 @@ def main():
     parser.add_argument("--service-prefix", default="quant-pilot", help="Linux systemd用户任务名前缀")
     parser.add_argument("--hermes-env-file", default="$HOME/.hermes/.env", help="Hermes环境变量文件")
     parser.add_argument("--unattended-platform", choices=["windows", "linux"], default="windows", help="paper-ready/bootstrap使用的无人值守平台")
-    parser.add_argument("--python-cmd", default="python", help="无人值守任务使用的Python命令")
+    parser.add_argument("--python-cmd", default="python3" if sys.platform != "win32" else "python", help="无人值守任务使用的Python命令")
     parser.add_argument("--reason", default="", help="暂停/恢复原因")
     parser.add_argument("--report-days", type=int, default=5, help="AI交易员报告回看天数")
     parser.add_argument("--report-end-date", default=None, help="AI交易员报告结束日期 YYYY-MM-DD，默认今天")

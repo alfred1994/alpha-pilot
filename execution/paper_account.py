@@ -107,7 +107,7 @@ class PaperAccount:
         with self._lock:
             with open(self.filepath, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-        self._sync_state_to_sqlite(data)
+            self._sync_state_to_sqlite(data)
 
     def _sync_state_to_sqlite(self, data: dict = None):
         """同步账户状态到SQLite（失败不影响JSON主流程）"""
