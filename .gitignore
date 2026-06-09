@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# 虚拟环境
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 数据文件（含敏感信息）
+data/*.json
+data/*.db
+data/snapshots/
+data/signal_cache.json
+data/paper_account.json
+data/adaptive_state.json
+data/circuit_breaker.json
+data/system_risk.json
+data/overnight_*.json
+
+# 日志
+*.log
+logs/
+
+# 环境变量（含API密钥）
+.env
+.env.*
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 杂志
+*.bak
+*.tmp
+data/reviews/
