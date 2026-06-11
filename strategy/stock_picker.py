@@ -232,6 +232,104 @@ def _get_survey_candidates() -> Dict[str, Candidate]:
     return candidates
 
 
+def _get_financing_candidates() -> Dict[str, Candidate]:
+    """
+    融资融券候选（新增维度）
+    融资余额增长 = 看好信号
+    """
+    from data.a_stock_data import get_margin_detail, normalize_code
+
+    candidates = {}
+
+    # 从涨停板/龙虎榜已有候选中筛选（避免全市场扫描）
+    # 先获取活跃股池
+    try:
+        active_stocks = _get_active_stocks(min_amount=5000, limit=100)
+        logger.info(f"融资融券扫描池: {len(active_stocks)}只")
+
+        count = 0
+        for code, name in list(active_stocks.items())[:50]:  # 限制50只，避免超时
+            try:
+                margin = get_margin_detail(normalize_code(code))
+                if not margin:
+                    continue
+
+                # 融资余额趋势打分
+                if margin["trend"] == "快速增长":
+                    score = 30
+                elif margin["trend"] == "增长":
+                    score = 20
+                elif margin["trend"] == "持平":
+                    score = 10
+                else:
+                    continue  # 下降趋势不加入候选
+
+                # 融资买入活跃度加分
+                if margin["financing_buy"] > 50_000_000:  # >5000万
+                    score += 5
+
+                c = Candidate(
+                    code=code, name=name, source=["融资融券"],
+                    industry=f"{margin['trend']}",
+                )
+                c.score = score
+                candidates[code] = c
+                count += 1
+
+                if count >= 10:  # 最多返回10只
+                    break
+
+            except Exception as e:
+                logger.debug(f"融资融券扫描失败 {code}: {e}")
+
+        logger.info(f"融资融券候选: {len(candidates)}只")
+    except Exception as e:
+        logger.warning(f"融资融券获取失败: {e}")
+
+    return candidates
+
+
+def _get_unlock_alert_candidates() -> Dict[str, Candidate]:
+    """
+    限售解禁预警（反向筛选）
+    未来30天有重大解禁（>5%）= 减分/排除
+    """
+    from data.a_stock_data import get_unlock_schedule, normalize_code
+
+    candidates = {}
+
+    # 从现有候选中检查解禁风险
+    # 这个函数返回的是需要警惕的股票（负面信号）
+    # 在merge时会降低它们的分数
+
+    try:
+        active_stocks = _get_active_stocks(min_amount=5000, limit=50)
+        logger.info(f"解禁预警扫描池: {len(active_stocks)}只")
+
+        for code, name in list(active_stocks.items())[:30]:
+            try:
+                unlock = get_unlock_schedule(normalize_code(code), days_ahead=30)
+                if not unlock or not unlock["has_major_unlock"]:
+                    continue
+
+                # 有重大解禁，标记为风险
+                c = Candidate(
+                    code=code, name=name, source=["解禁预警"],
+                    industry=f"{len(unlock['upcoming_unlocks'])}次解禁",
+                )
+                c.score = -20  # 负分，在merge时会降低总分
+                candidates[code] = c
+
+            except Exception as e:
+                logger.debug(f"解禁预警扫描失败 {code}: {e}")
+
+        logger.info(f"解禁预警候选: {len(candidates)}只（负面信号）")
+    except Exception as e:
+        logger.warning(f"解禁预警获取失败: {e}")
+
+    return candidates
+
+
 def _get_volume_candidates() -> Dict[str, Candidate]:
     """
     异动放量候选 (量比>3 + 涨幅不深跌)
@@ -386,6 +484,8 @@ def _merge_candidates(
     performance: Dict[str, Candidate] = None,
     survey: Dict[str, Candidate] = None,
     volume: Dict[str, Candidate] = None,
+    financing: Dict[str, Candidate] = None,
+    unlock_alert: Dict[str, Candidate] = None,
 ) -> List[Candidate]:
     """
     合并所有来源的候选, 多源叠加加分
@@ -396,8 +496,12 @@ def _merge_candidates(
         survey = {}
     if volume is None:
         volume = {}
+    if financing is None:
+        financing = {}
+    if unlock_alert is None:
+        unlock_alert = {}
 
-    all_pools = [limit_up, dragon_tiger, north_flow, performance, survey, volume]
+    all_pools = [limit_up, dragon_tiger, north_flow, performance, survey, volume, financing, unlock_alert]
     all_codes = set()
     for pool in all_pools:
         all_codes.update(pool.keys())
@@ -442,12 +546,14 @@ def pick_stocks(
     use_performance: bool = True,
     use_survey: bool = True,
     use_volume: bool = True,
+    use_financing: bool = True,
+    use_unlock_alert: bool = True,
 ) -> List[Candidate]:
     """
     AI选股主函数
 
-    从6个维度筛选候选股票:
-    涨停板、龙虎榜、北向资金、业绩预增、机构调研、异动放量
+    从8个维度筛选候选股票:
+    涨停板、龙虎榜、北向资金、业绩预增、机构调研、异动放量、融资融券、解禁预警
     返回综合得分最高的 Top N 候选。
     """
     if top_n is None:
@@ -464,8 +570,10 @@ def pick_stocks(
     performance = _get_performance_candidates() if use_performance else {}
     survey = _get_survey_candidates() if use_survey else {}
     volume = _get_volume_candidates() if use_volume else {}
+    financing = _get_financing_candidates() if use_financing else {}
+    unlock_alert = _get_unlock_alert_candidates() if use_unlock_alert else {}
 
-    merged = _merge_candidates(limit_up, dragon_tiger, north_flow, performance, survey, volume)
+    merged = _merge_candidates(limit_up, dragon_tiger, north_flow, performance, survey, volume, financing, unlock_alert)
 
     # ── 过滤垃圾股 ──
     def _is_valid(c: Candidate) -> bool:

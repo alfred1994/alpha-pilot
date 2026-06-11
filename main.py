@@ -336,6 +336,17 @@ def cmd_closure_repair(args):
     return {"errors": result["after"]["overall"].get("critical", [])}
 
 
+def cmd_realtime():
+    """事件驱动交易员"""
+    import asyncio
+    from realtime.event_driven_trader import main
+
+    print("事件驱动交易员启动...")
+    print("实时行情监控 + 异步事件处理")
+    print("按 Ctrl+C 退出")
+    asyncio.run(main())
+
+
 def cmd_auto_rehearsal(args):
     """自动盯盘连续演练"""
     from scheduler.rehearsal import run_auto_rehearsal
@@ -663,6 +674,7 @@ def main():
     group.add_argument("--ops-status", action="store_true", help="自动盯盘运维状态汇总")
     group.add_argument("--closure-check", action="store_true", help="正式模拟盘日内闭环缺口诊断")
     group.add_argument("--closure-repair", action="store_true", help="正式模拟盘闭环缺口自愈")
+    group.add_argument("--realtime", action="store_true", help="事件驱动交易员（实时行情+异步）")
 
     parser.add_argument("--start-date", default="2024-01-01", help="回测开始日期")
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
@@ -766,6 +778,9 @@ def main():
         result = cmd_closure_check(args)
     elif args.closure_repair:
         result = cmd_closure_repair(args)
+    elif args.realtime:
+        cmd_realtime()
+        return
     else:
         result = cmd_full()
 

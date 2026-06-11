@@ -1,0 +1,18 @@
+[Unit]
+Description=Quant Pilot Realtime Trader
+After=network.target
+
+[Service]
+Type=simple
+User=%u
+WorkingDirectory=%h/projects/a-stock-quant
+Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+EnvironmentFile=%h/.hermes/.env
+ExecStart=/usr/bin/python3 main.py --realtime
+Restart=always
+RestartSec=10
+StandardOutput=append:%h/.hermes/logs/quant-realtime.log
+StandardError=append:%h/.hermes/logs/quant-realtime-error.log
+
+[Install]
+WantedBy=default.target
