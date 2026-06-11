@@ -32,7 +32,7 @@ MIMO_BASE_URL = os.environ.get("XIAOMI_BASE_URL", "https://token-plan-cn.xiaomim
 LLM_MODEL = "mimo-v2.5-pro"
 
 
-def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 1) -> Optional[str]:
+def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2) -> Optional[str]:
     """调用 MiMo LLM（daemon线程硬超时 + 自动重试）"""
     if not MIMO_API_KEY:
         logger.warning("XIAOMI_API_KEY 未设置, LLM决策不可用")
@@ -60,7 +60,7 @@ def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 1) -> Optional
         "temperature": 0.2,  # 低温度，决策要稳定
     }
 
-    http_timeout = 40  # 单次HTTP读取超时
+    http_timeout = 60  # 单次HTTP读取超时（盘中高峰期API响应慢，需要60s+）
     hard_timeout = http_timeout + 5  # 硬超时略大于HTTP超时
 
     for attempt in range(1 + retries):

@@ -258,7 +258,14 @@ def fast_scan(budget_seconds: int = 90) -> TradePlan:
 
     # ── 30-60s: 并发打分 ──
     sentiment_snap = get_sentiment_snapshot(max_age=3600)
+    if not sentiment_snap:
+        # 舆情缓存过期，批量预取（避免每只股票单独调LLM）
+        logger.info("[快链路] 舆情缓存过期，批量预取...")
+        from data.snapshot import prefetch_sentiment
+        codes = [c.code if hasattr(c, 'code') else c.get('code', '') for c in candidates]
+        sentiment_snap = prefetch_sentiment(codes)
     sentiment_scores = sentiment_snap.get("scores", {}) if sentiment_snap else {}
+    logger.info(f"[快链路] 舆情覆盖: {len(sentiment_scores)}/{len(candidates)}只")
 
     scored = _parallel_score(candidates, sentiment_scores, timeout=remaining())
 
@@ -555,46 +562,54 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
         code = c.code if hasattr(c, "code") else c.get("code", "")
         name = c.name if hasattr(c, "name") else c.get("name", "")
 
-        # K线(优先用缓存)
-        df = None
         try:
-            df = get_daily(code, start_date="20240101")
-        except Exception:
-            pass
+            # K线(优先用缓存)
+            df = None
+            try:
+                df = get_daily(code, start_date="20240101")
+            except Exception:
+                pass
 
-        # 5维打分
-        dims = compute_dimension_scores(code, df)
+            # 5维打分
+            dims = compute_dimension_scores(code, df)
 
-        # 用预取的舆情覆盖
-        if code in sentiment_scores:
-            from strategy.decision import DimensionScore
-            s = sentiment_scores[code]
-            dims["sentiment"] = DimensionScore(
-                name="sentiment", score=s["score"],
-                confidence=s["confidence"], detail=s.get("detail", ""),
-            )
+            # 用预取的舆情覆盖
+            if code in sentiment_scores:
+                from strategy.decision import DimensionScore
+                s = sentiment_scores[code]
+                dims["sentiment"] = DimensionScore(
+                    name="sentiment", score=s["score"],
+                    confidence=s["confidence"], detail=s.get("detail", ""),
+                )
 
-        # 计算综合分
-        total_w = sum(SIGNAL_WEIGHTS.get(k, 0) for k in dims)
-        if total_w == 0:
-            total_w = 1
-        composite = sum(d.score * SIGNAL_WEIGHTS.get(dn, 0) for dn, d in dims.items()) / total_w
+            # 计算综合分
+            total_w = sum(SIGNAL_WEIGHTS.get(k, 0) for k in dims)
+            if total_w == 0:
+                total_w = 1
+            composite = sum(d.score * SIGNAL_WEIGHTS.get(dn, 0) for dn, d in dims.items()) / total_w
 
-        # 找最强信号
-        top_dim = max(dims.items(), key=lambda x: x[1].score) if dims else None
-        top_signal = f"{top_dim[0]}={top_dim[1].score:.0f}" if top_dim else ""
+            # 找最强信号
+            top_dim = max(dims.items(), key=lambda x: x[1].score) if dims else None
+            top_signal = f"{top_dim[0]}={top_dim[1].score:.0f}" if top_dim else ""
 
-        avg_conf = sum(d.confidence for d in dims.values()) / len(dims) if dims else 0
+            avg_conf = sum(d.confidence for d in dims.values()) / len(dims) if dims else 0
 
-        return {
-            "code": code,
-            "name": name,
-            "composite": round(composite, 1),
-            "dimensions": {dn: {"score": d.score, "confidence": d.confidence, "detail": d.detail} for dn, d in dims.items()},
-            "top_signal": top_signal,
-            "avg_confidence": round(avg_conf, 2),
-            "latest_price": df["close"].iloc[-1] if df is not None and "close" in df.columns and len(df) > 0 else 0,
-        }
+            return {
+                "code": code,
+                "name": name,
+                "composite": round(composite, 1),
+                "dimensions": {dn: {"score": d.score, "confidence": d.confidence, "detail": d.detail} for dn, d in dims.items()},
+                "top_signal": top_signal,
+                "avg_confidence": round(avg_conf, 2),
+                "latest_price": df["close"].iloc[-1] if df is not None and "close" in df.columns and len(df) > 0 else 0,
+            }
+        finally:
+            # 清理当前线程的浏览器/事件循环，避免asyncio泄漏
+            try:
+                from data.eastmoney import cleanup_eastmoney
+                cleanup_eastmoney()
+            except Exception:
+                pass
 
     results = []
     # 并发执行，总超时控制

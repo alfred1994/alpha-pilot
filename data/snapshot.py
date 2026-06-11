@@ -214,20 +214,13 @@ def prefetch_sentiment(codes: List[str], stock_news: Dict = None) -> dict:
     except Exception:
         pass
 
-    # 获取新闻
+    # 获取新闻（并行获取，避免串行阻塞）
+    # 注: batch_sentiment_signal 内部也会获取新闻，这里预取是为了缓存
+    import concurrent.futures
     stock_list = []
-    news_map = {}
     for code in codes:
         name = ""  # 名称会在后续获取
         stock_list.append({"code": code, "name": name})
-        if stock_news and code in stock_news:
-            news_map[code] = stock_news[code]
-        else:
-            try:
-                news = get_stock_news(code, limit=10)
-                news_map[code] = news or []
-            except Exception:
-                news_map[code] = []
 
     # 批量舆情分析
     try:

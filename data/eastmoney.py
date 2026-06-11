@@ -5,27 +5,48 @@
 import asyncio
 import json
 import logging
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 
 logger = logging.getLogger("data.eastmoney")
 
-# ═══ 共享浏览器实例（避免每次调用都launch新Chromium） ═══
-_shared_browser = None
-_shared_loop = None
+# ═══ 线程本地存储（每个线程独立的事件循环+浏览器实例） ═══
+# 解决 ThreadPoolExecutor 并发打分时多线程竞争同一事件循环的问题
+_thread_local = threading.local()
 
 
-def _get_shared_loop():
-    """获取或创建共享事件循环"""
-    global _shared_loop
-    if _shared_loop is None or _shared_loop.is_closed():
-        _shared_loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(_shared_loop)
-    return _shared_loop
+def cleanup_eastmoney():
+    """清理当前线程的浏览器实例和事件循环（避免asyncio泄漏）"""
+    browser = getattr(_thread_local, "browser", None)
+    if browser is not None:
+        try:
+            loop = getattr(_thread_local, "loop", None)
+            if loop and not loop.is_closed():
+                loop.run_until_complete(browser.close())
+        except Exception:
+            pass
+        _thread_local.browser = None
+    loop = getattr(_thread_local, "loop", None)
+    if loop and not loop.is_closed():
+        try:
+            loop.close()
+        except Exception:
+            pass
+        _thread_local.loop = None
+
+
+def _get_thread_loop():
+    """获取当前线程的事件循环（线程安全）"""
+    loop = getattr(_thread_local, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        _thread_local.loop = loop
+    return loop
 
 
 def _run_async(coro):
-    """运行异步函数（兼容已有事件循环的情况）"""
+    """运行异步函数（线程安全，每个线程独立事件循环）"""
     try:
         # 检查是否有正在运行的循环
         try:
@@ -39,7 +60,7 @@ def _run_async(coro):
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
                 return pool.submit(asyncio.run, coro).result(timeout=60)
         else:
-            loop = _get_shared_loop()
+            loop = _get_thread_loop()
             return loop.run_until_complete(coro)
     except Exception as e:
         logger.error(f"异步执行失败: {e}")
@@ -47,12 +68,13 @@ def _run_async(coro):
 
 
 async def _get_browser():
-    """获取共享浏览器实例（单例，避免并发launch竞争）"""
-    global _shared_browser
-    if _shared_browser is None or not _shared_browser.is_connected():
+    """获取当前线程的浏览器实例（线程安全，每线程独立实例）"""
+    browser = getattr(_thread_local, "browser", None)
+    if browser is None or not browser.is_connected():
         import cloakbrowser
-        _shared_browser = await cloakbrowser.launch_async(headless=True)
-    return _shared_browser
+        browser = await cloakbrowser.launch_async(headless=True)
+        _thread_local.browser = browser
+    return browser
 
 
 async def _fetch_with_cloak(url: str, base_url: str = "https://quote.eastmoney.com/ztb/"):
