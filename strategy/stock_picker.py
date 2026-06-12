@@ -486,6 +486,7 @@ def _merge_candidates(
     volume: Dict[str, Candidate] = None,
     financing: Dict[str, Candidate] = None,
     unlock_alert: Dict[str, Candidate] = None,
+    low_position: Dict[str, Candidate] = None,
 ) -> List[Candidate]:
     """
     合并所有来源的候选, 多源叠加加分
@@ -500,8 +501,10 @@ def _merge_candidates(
         financing = {}
     if unlock_alert is None:
         unlock_alert = {}
+    if low_position is None:
+        low_position = {}
 
-    all_pools = [limit_up, dragon_tiger, north_flow, performance, survey, volume, financing, unlock_alert]
+    all_pools = [limit_up, dragon_tiger, north_flow, performance, survey, volume, financing, unlock_alert, low_position]
     all_codes = set()
     for pool in all_pools:
         all_codes.update(pool.keys())
@@ -548,18 +551,30 @@ def pick_stocks(
     use_volume: bool = True,
     use_financing: bool = True,
     use_unlock_alert: bool = True,
+    use_low_position: bool = False,  # 新增：低位潜力股
+    low_position_mode: bool = False,  # 新增：纯低位模式（关闭追高维度）
 ) -> List[Candidate]:
     """
     AI选股主函数
 
-    从8个维度筛选候选股票:
-    涨停板、龙虎榜、北向资金、业绩预增、机构调研、异动放量、融资融券、解禁预警
+    从9个维度筛选候选股票:
+    涨停板、龙虎榜、北向资金、业绩预增、机构调研、异动放量、融资融券、解禁预警、低位潜力
     返回综合得分最高的 Top N 候选。
+
+    低位模式(low_position_mode=True)：自动关闭涨停板/龙虎榜/异动放量，专注低位股
     """
     if top_n is None:
         top_n = PICKER_TOP_N
     if min_score is None:
         min_score = PICKER_MIN_SCORE
+
+    # 低位模式：关闭追高维度
+    if low_position_mode:
+        use_limit_up = False
+        use_dragon_tiger = False
+        use_volume = False
+        use_low_position = True
+        logger.info(f"【低位模式】专注挖掘低位潜力股")
 
     logger.info(f"开始选股 top_n={top_n} min_score={min_score}")
 
@@ -573,7 +588,15 @@ def pick_stocks(
     financing = _get_financing_candidates() if use_financing else {}
     unlock_alert = _get_unlock_alert_candidates() if use_unlock_alert else {}
 
-    merged = _merge_candidates(limit_up, dragon_tiger, north_flow, performance, survey, volume, financing, unlock_alert)
+    # 低位潜力股
+    low_position = {}
+    if use_low_position:
+        from strategy.low_position_picker import pick_low_position_stocks
+        low_candidates = pick_low_position_stocks(top_n=50, min_score=20)
+        for c in low_candidates:
+            low_position[c.code] = c
+
+    merged = _merge_candidates(limit_up, dragon_tiger, north_flow, performance, survey, volume, financing, unlock_alert, low_position)
 
     # ── 过滤垃圾股 ──
     def _is_valid(c: Candidate) -> bool:
