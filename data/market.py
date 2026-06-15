@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from data import logger
 
 # 数据源选择: "eastmoney" 或 "akshare"
-DATA_SOURCE = "eastmoney"
+DATA_SOURCE = "akshare"
 
 
 def get_limit_up(date: str = None) -> pd.DataFrame:

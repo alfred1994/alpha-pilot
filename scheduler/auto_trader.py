@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Dict, Optional, Callable, Any
+from scheduler.market_calendar import _now_bj
 
 from config import (
     AUTO_LOOP_INTERVAL,
@@ -66,7 +67,7 @@ class AutoLoopLock:
         return {
             "pid": os.getpid(),
             "token": self.token,
-            "updated_at": datetime.now().isoformat(),
+            "updated_at": _now_bj().isoformat(),
         }
 
     def _read_payload(self) -> dict:
@@ -159,7 +160,7 @@ class AutoLoopLock:
 
 
 def _today() -> str:
-    return datetime.now().strftime("%Y-%m-%d")
+    return _now_bj().strftime("%Y-%m-%d")
 
 
 def _load_state(state_file: str = None) -> AutoTraderState:
@@ -178,7 +179,7 @@ def _load_state(state_file: str = None) -> AutoTraderState:
 def _save_state(state: AutoTraderState, state_file: str = None):
     state_file = state_file or AUTO_STATE_FILE
     os.makedirs(os.path.dirname(state_file), exist_ok=True)
-    state.updated_at = datetime.now().isoformat()
+    state.updated_at = _now_bj().isoformat()
     with open(state_file, "w", encoding="utf-8") as f:
         json.dump(asdict(state), f, ensure_ascii=False, indent=2)
 
@@ -193,14 +194,14 @@ def _parse_hhmm(value: str) -> tuple:
 
 def _after_review_time(now: datetime = None) -> bool:
     hh, mm = _parse_hhmm(AUTO_REVIEW_AFTER)
-    now = now or datetime.now()
+    now = now or _now_bj()
     return (now.hour, now.minute) >= (hh, mm)
 
 
 def _format_cycle_report(status: str, actions: list, state: AutoTraderState,
                          today: str = None, now: datetime = None) -> str:
     today = today or _today()
-    now = now or datetime.now()
+    now = now or _now_bj()
     lines = [
         "=" * 60,
         f"自动盯盘循环 | {today} {now.strftime('%H:%M:%S')}",
@@ -306,7 +307,7 @@ def run_auto_cycle(
     from strategy.market_regime import detect_regime
 
     state = state or _load_state(state_file)
-    now_dt = now_override or datetime.now()
+    now_dt = now_override or _now_bj()
     today = today_override or now_dt.strftime("%Y-%m-%d")
     if state.date != today:
         state = AutoTraderState(date=today)

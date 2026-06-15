@@ -10,6 +10,7 @@
 ====================================================================
 """
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Callable, Dict, List
 
 from review.ai_trader_report import generate_ai_trader_report
@@ -18,7 +19,7 @@ from scheduler.market_calendar import get_market_status, is_trading_day, next_tr
 
 def _today(now: datetime = None) -> str:
     """返回YYYY-MM-DD格式日期"""
-    return (now or datetime.now()).strftime("%Y-%m-%d")
+    return (now or _now_bj()).strftime("%Y-%m-%d")
 
 
 def _find_daily_row(report: Dict, date: str) -> Dict:
@@ -254,7 +255,7 @@ def run_closure_check(
 
     Args中的 report/status/trading_day/report_func 用于测试注入。
     """
-    now = now or datetime.now()
+    now = now or _now_bj()
     target_date = date or _today(now)
     status = status_override or get_market_status()
     is_trade_day = (

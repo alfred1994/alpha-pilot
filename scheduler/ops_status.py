@@ -6,6 +6,7 @@
 ====================================================================
 """
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Dict, List
 
 from review.ai_trader_report import generate_ai_trader_report
@@ -230,7 +231,7 @@ def run_ops_status(
     Returns:
         汇总状态字典，包含health/watchdog/report/control/overall
     """
-    now = now or datetime.now()
+    now = now or _now_bj()
     health_items = run_health_check(db_path=db_path, control_file=control_file)
     watchdog_items = run_auto_watchdog(
         now=now,

@@ -13,6 +13,7 @@
 """
 from dataclasses import dataclass
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 import os
 from typing import Dict, List, Optional
 
@@ -202,7 +203,7 @@ def run_paper_readiness(
 
     Args中的 health_items/unattended_items/formal_report/rehearsal_report 用于测试注入。
     """
-    generated_at = datetime.now().isoformat()
+    generated_at = _now_bj().isoformat()
     items: List[ReadinessItem] = []
 
     health_items = health_items if health_items is not None else run_health_check(

@@ -114,12 +114,28 @@ def run_health_check(db_path: str = None, control_file: str = None) -> List[Heal
     except Exception as e:
         items.append(HealthItem("自动盯盘控制", False, str(e), False))
 
+    # LongPort OAuth 认证（SDK OAuth 模式，不再依赖环境变量）
+    try:
+        import json
+        from data.longbridge_data import _token_path as _OAUTH_TOKEN_PATH
+        if os.path.exists(_OAUTH_TOKEN_PATH):
+            with open(_OAUTH_TOKEN_PATH) as f:
+                token_data = json.load(f)
+            # 验证 token 文件包含必要字段
+            has_access = bool(token_data.get("access_token"))
+            has_refresh = bool(token_data.get("refresh_token"))
+            if has_access and has_refresh:
+                items.append(HealthItem("LongPort OAuth", True, "token 已配置，自动刷新", False))
+            else:
+                items.append(HealthItem("LongPort OAuth", False, "token 文件字段不完整", False))
+        else:
+            items.append(HealthItem("LongPort OAuth", False, f"token 文件不存在: {_OAUTH_TOKEN_PATH}", False))
+    except Exception as e:
+        items.append(HealthItem("LongPort OAuth", False, str(e), False))
+
     # API Key：模拟盘可降级
     for env in [
         "XIAOMI_API_KEY",
-        "LONGPORT_APP_KEY",
-        "LONGPORT_APP_SECRET",
-        "LONGPORT_ACCESS_TOKEN",
         "HT_APIKEY",
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_CHAT_ID",

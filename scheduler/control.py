@@ -10,6 +10,7 @@
 import json
 import os
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Dict
 
 from config import DATA_DIR
@@ -49,7 +50,7 @@ def save_auto_control_state(state: Dict, control_file: str = None) -> Dict:
     os.makedirs(os.path.dirname(control_file), exist_ok=True)
     payload = _default_state()
     payload.update(state or {})
-    payload["updated_at"] = datetime.now().isoformat()
+    payload["updated_at"] = _now_bj().isoformat()
     with open(control_file, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
     return payload

@@ -1,0 +1,10 @@
+[Unit]
+Description=Quant Pilot 盘后AI报告
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:40:00
+Unit=quant-pilot-report.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

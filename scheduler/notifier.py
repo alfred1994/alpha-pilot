@@ -16,6 +16,7 @@ import requests
 import logging
 import html
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Optional
 
 logger = logging.getLogger("scheduler.notifier")
@@ -82,7 +83,7 @@ def send_signal_report(signals: list, title: str = "量化信号报告") -> bool
     Returns:
         bool: 是否发送成功
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>{title}</b> ({now})", ""]
 
     if not signals:
@@ -121,7 +122,7 @@ def send_decision_report(decisions: list, title: str = "决策报告") -> bool:
     Returns:
         bool: 是否发送成功
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>{title}</b> ({now})", ""]
 
     buy_count = 0
@@ -175,7 +176,7 @@ def send_daily_summary(
     Returns:
         bool: 是否发送成功
     """
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>每日汇总</b> ({now})", ""]
 
     if error:
@@ -198,7 +199,7 @@ def send_daily_summary(
 
 def send_error_alert(error_msg: str) -> bool:
     """发送错误告警"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
     text = f"⚠️ <b>系统告警</b> ({now})\n\n{error_msg}"
     return send_message(text, parse_mode="HTML")
 
@@ -229,7 +230,7 @@ def should_notify_auto_cycle(actions: list, error: str = "") -> bool:
 def format_auto_cycle_message(date: str, status: str, actions: list,
                               loop_count: int = 0, error: str = "") -> str:
     """格式化自动盯盘通知"""
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
     title = "自动盯盘"
     if error or any("异常" in str(a) for a in actions or []):
         title = "自动盯盘告警"

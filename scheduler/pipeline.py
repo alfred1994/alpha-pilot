@@ -23,6 +23,7 @@ import os
 import time
 import logging
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 import concurrent.futures
@@ -181,7 +182,7 @@ def fast_scan(budget_seconds: int = 90) -> TradePlan:
         get_candidate_pool, with_timeout,
     )
 
-    plan = TradePlan(date=datetime.now().strftime("%Y-%m-%d"))
+    plan = TradePlan(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
     def elapsed():
@@ -207,7 +208,8 @@ def fast_scan(budget_seconds: int = 90) -> TradePlan:
     else:
         # 没有缓存，快速选股(带超时)
         logger.info("[快链路] 无候选池缓存，快速选股...")
-        from strategy.stock_picker import pick_stocks_by_htsc
+        # 优先华泰选股，失败则降级到多维选股
+        from strategy.stock_picker import pick_stocks_by_htsc, pick_stocks
         candidates = with_timeout(
             lambda: pick_stocks_by_htsc(max_candidates=10),
             timeout=30,
@@ -215,10 +217,34 @@ def fast_scan(budget_seconds: int = 90) -> TradePlan:
             desc="华泰选股",
         )
         if not candidates:
-            logger.warning("[快链路] 华泰选股失败/超时，无候选")
+            logger.warning("[快链路] 华泰选股失败/超时，降级到多维选股...")
+            candidates = with_timeout(
+                lambda: pick_stocks(
+                    top_n=10,
+                    use_limit_up=True,
+                    use_dragon_tiger=False,
+                    use_north_flow=True,
+                    use_performance=True,
+                    use_survey=False,
+                    use_volume=False,
+                    use_financing=False,
+                    use_unlock_alert=False,
+                ),
+                timeout=30,
+                fallback=[],
+                desc="多维选股",
+            )
+        if not candidates:
+            logger.warning("[快链路] 选股失败/超时，无候选")
             plan.errors.append("选股失败，无候选股票")
             plan.elapsed = elapsed()
             return plan
+        # 缓存候选池
+        try:
+            from data.snapshot import save_candidate_pool
+            save_candidate_pool(candidates)
+        except Exception:
+            pass
 
     if remaining() < 10:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过打分")
@@ -644,7 +670,7 @@ def _load_trade_plan() -> Optional[dict]:
     try:
         with open(SIGNAL_CACHE_FILE, "r", encoding="utf-8") as f:
             plan = json.load(f)
-        if plan.get("date") != datetime.now().strftime("%Y-%m-%d"):
+        if plan.get("date") != _now_bj().strftime("%Y-%m-%d"):
             return None
         return plan
     except Exception:
@@ -702,7 +728,7 @@ def execute_trade_plan(
     Returns:
         PipelineResult
     """
-    result = PipelineResult(date=datetime.now().strftime("%Y-%m-%d"))
+    result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
     if not plan_data:
@@ -988,7 +1014,7 @@ def execute_trades() -> PipelineResult:
     """
     plan_data = _load_trade_plan()
     if not plan_data:
-        result = PipelineResult(date=datetime.now().strftime("%Y-%m-%d"))
+        result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
         result.errors.append("无今日TradePlan，请先运行扫描")
         return result
     return execute_trade_plan(plan_data)
@@ -1014,7 +1040,7 @@ def _load_today_order_audit(date: str, db_path: str = None) -> list:
 
 def run_review() -> PipelineResult:
     """每日复盘（慢链路，LLM深度分析）"""
-    result = PipelineResult(date=datetime.now().strftime("%Y-%m-%d"))
+    result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
     try:
@@ -1081,7 +1107,7 @@ def run_review() -> PipelineResult:
         from execution.broker import get_broker_adapter
         broker = get_broker_adapter()
         account = broker.account if hasattr(broker, "account") else broker
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = _now_bj().strftime("%Y-%m-%d")
 
         # 尝试获取市场环境
         market_regime = ""
@@ -1223,7 +1249,7 @@ def format_pipeline_report(result: PipelineResult) -> str:
 
 def run_scan() -> PipelineResult:
     """扫描信号（兼容旧接口，内部调fast_scan）"""
-    result = PipelineResult(date=datetime.now().strftime("%Y-%m-%d"))
+    result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
     plan = fast_scan(budget_seconds=90)

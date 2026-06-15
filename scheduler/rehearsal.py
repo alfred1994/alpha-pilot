@@ -10,6 +10,7 @@
 """
 import os
 from datetime import datetime, timedelta
+from scheduler.market_calendar import _now_bj
 from types import SimpleNamespace
 from typing import Dict, List
 
@@ -28,7 +29,7 @@ REHEARSAL_REPORT_DIR = os.path.join(REHEARSAL_DIR, "reports")
 def _date_list(days: int, start_date: str = None) -> List[str]:
     """生成连续演练日期列表"""
     days = max(1, int(days or 1))
-    start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else datetime.now()
+    start = datetime.strptime(start_date, "%Y-%m-%d") if start_date else _now_bj()
     return [(start + timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
 
 

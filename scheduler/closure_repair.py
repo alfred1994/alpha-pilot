@@ -11,6 +11,7 @@
 """
 import os
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Callable, Dict
 
 from scheduler.closure_check import format_closure_check, run_closure_check
@@ -87,7 +88,7 @@ def run_closure_repair(
     Args中的函数参数用于测试注入。默认不会安装任务，也不会连接实盘。
     """
     force_paper_mode()
-    now = now or datetime.now()
+    now = now or _now_bj()
     target_date = date or now.strftime("%Y-%m-%d")
     closure_func = closure_func or run_closure_check
     before = closure or closure_func(
