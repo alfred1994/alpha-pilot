@@ -265,7 +265,7 @@ def _classify_regime_llm(indicators: Dict) -> Optional[tuple]:
     import requests
 
     api_key = os.environ.get("XIAOMI_API_KEY", "")
-    base_url = os.environ.get("XIAOMI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
+    base_url = "https://token-plan-cn.xiaomimimo.com/v1"
     if not api_key:
         return None
 

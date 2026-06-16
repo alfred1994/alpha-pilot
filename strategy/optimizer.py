@@ -212,7 +212,7 @@ class StrategyOptimizer:
 
         # 调用MiMo API
         api_key = os.environ.get("XIAOMI_API_KEY", "")
-        base_url = os.environ.get("XIAOMI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
+        base_url = "https://token-plan-cn.xiaomimimo.com/v1"
 
         if not api_key:
             logger.warning("XIAOMI_API_KEY 未设置，跳过LLM优化")
