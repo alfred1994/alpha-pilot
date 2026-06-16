@@ -153,7 +153,7 @@ class LongbridgeDataSource:
             ctx = QuoteContext(config)
             lb_code = to_longport_code(code)
 
-            klines = ctx.history_candlestick_by_offset(
+            klines = ctx.history_candlesticks_by_offset(
                 lb_code, Period.Day, AdjustType.ForwardAdjust,
                 count=365, forward=False,
             )

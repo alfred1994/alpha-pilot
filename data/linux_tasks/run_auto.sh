@@ -24,6 +24,16 @@ fi
 export BROKER_MODE=paper
 export PYTHONUNBUFFERED=1
 
+# 清理残留锁文件（pid 不存在则删除）
+LOCK_FILE="$PROJECT_DIR/data/auto_trader.lock"
+if [ -f "$LOCK_FILE" ]; then
+  lock_pid=$(grep -oP 'pid=\K\d+' "$LOCK_FILE" 2>/dev/null || true)
+  if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+    echo "清理残留锁文件 (pid=$lock_pid 已不存在)" >> "$LOG_FILE"
+    rm -f "$LOCK_FILE"
+  fi
+fi
+
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp START --auto =====" >> "$LOG_FILE"
 $PYTHON_CMD main.py --auto >> "$LOG_FILE" 2>&1
