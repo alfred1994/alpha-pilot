@@ -160,15 +160,22 @@ def prefetch(candidate_codes: List[str] = None):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 快链路：早盘快速扫描（90秒预算）
+# 快链路：早盘快速扫描（240秒预算）
 # ═══════════════════════════════════════════════════════════════════
 
-def fast_scan(budget_seconds: int = 90) -> TradePlan:
+def fast_scan(budget_seconds: int = 240) -> TradePlan:
     """
     快链路：早盘快速扫描
 
     严格时间预算，到点必须出结果。
     所有外部调用有超时降级，不阻塞。
+
+    时间分配(默认240s):
+      0-30s:  选股(缓存优先)
+      30-40s: 市场快照 + 环境
+      40-140s: 舆情分析(MiMo LLM, 单次最长60s)
+      140-200s: 并发打分
+      200-240s: LLM决策(每只25s, Top3)
 
     Args:
         budget_seconds: 总时间预算(秒)
@@ -299,7 +306,7 @@ def fast_scan(budget_seconds: int = 90) -> TradePlan:
     scored.sort(key=lambda x: x["composite"], reverse=True)
     plan.raw_scores = scored
 
-    if remaining() < 10:
+    if remaining() < 30:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过决策")
         plan.elapsed = elapsed()
         return plan
@@ -1252,7 +1259,7 @@ def run_scan() -> PipelineResult:
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
-    plan = fast_scan(budget_seconds=90)
+    plan = fast_scan(budget_seconds=240)
     result.candidates = plan.raw_scores
 
     from strategy.decision import TradeDecision, DimensionScore

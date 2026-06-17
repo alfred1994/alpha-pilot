@@ -48,7 +48,7 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
 
     url = f"{MIMO_BASE_URL}/chat/completions"
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=120)
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         msg = data["choices"][0]["message"]
