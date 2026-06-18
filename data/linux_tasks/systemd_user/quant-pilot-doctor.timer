@@ -1,0 +1,11 @@
+[Unit]
+Description=Quant Pilot Doctor每5分钟巡检
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=quant-pilot-doctor.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

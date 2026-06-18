@@ -1,0 +1,14 @@
+[Unit]
+Description=Quant Pilot 模拟盘自动盯盘长驻循环
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env bash /home/ubuntu/projects/quant-pilot/data/linux_tasks/run_auto.sh
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

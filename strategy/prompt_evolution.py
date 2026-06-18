@@ -15,7 +15,7 @@ logger = logging.getLogger("strategy.prompt_evolution")
 
 # MiMo API 配置（与 llm_trader.py 一致）
 MIMO_API_KEY = os.environ.get("XIAOMI_API_KEY", "")
-MIMO_BASE_URL = os.environ.get("XIAOMI_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
+MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 LLM_MODEL = "mimo-v2.5-pro"
 
 

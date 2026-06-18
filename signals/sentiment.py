@@ -1,7 +1,7 @@
 """
 舆情信号模块
 数据源: 微博财经 + 个股新闻(AKShare)
-分析方式: LLM(OpenRouter) 对舆情文本做情感分析
+分析方式: LLM(MiMo) 对舆情文本做情感分析
 输出: SignalResult (0-100分数 + 方向)
 """
 import json
@@ -12,23 +12,21 @@ from datetime import datetime
 from typing import List, Optional
 from signals import SignalResult, Direction, score_to_direction, logger
 
-# OpenRouter API 配置
-OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
-OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-LLM_MODEL = "openai/gpt-oss-120b:free"
-LLM_FALLBACK_MODEL = "z-ai/glm-4.5-air:free"  # 备用模型
+# MiMo API 配置（与其他模块一致）
+MIMO_API_KEY = os.environ.get("XIAOMI_API_KEY", "")
+MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+LLM_MODEL = "mimo-v2.5-pro"
 
 
-def _call_llm(prompt: str, max_tokens: int = 500) -> Optional[str]:
-    """调用 OpenRouter LLM"""
-    if not OPENROUTER_API_KEY:
-        logger.warning("OPENROUTER_API_KEY 未设置, 跳过LLM分析")
+def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
+    """调用 MiMo LLM"""
+    if not MIMO_API_KEY:
+        logger.warning("XIAOMI_API_KEY 未设置, 跳过LLM分析")
         return None
 
     headers = {
-        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Authorization": f"Bearer {MIMO_API_KEY}",
         "Content-Type": "application/json",
-        "HTTP-Referer": "https://a-stock-quant.local",
     }
     payload = {
         "model": LLM_MODEL,
@@ -48,18 +46,20 @@ def _call_llm(prompt: str, max_tokens: int = 500) -> Optional[str]:
         "temperature": 0.1,
     }
 
+    url = f"{MIMO_BASE_URL}/chat/completions"
     try:
-        resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
-        if resp.status_code == 503:
-            # 主模型过载，切换备用模型
-            logger.warning(f"主模型503，切换备用模型: {LLM_FALLBACK_MODEL}")
-            payload["model"] = LLM_FALLBACK_MODEL
-            resp = requests.post(OPENROUTER_URL, headers=headers, json=payload, timeout=30)
+        resp = requests.post(url, headers=headers, json=payload, timeout=60)
         resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
+        data = resp.json()
+        msg = data["choices"][0]["message"]
         content = (msg.get("content", "") or "").strip()
-        if not content:
-            content = (msg.get("reasoning_content", "") or "").strip()
+        reasoning = (msg.get("reasoning_content", "") or "").strip()
+        if not content and reasoning:
+            # MiMo推理模型：content为空时从reasoning中提取JSON
+            import re
+            json_match = re.search(r'\{[^{}]*"score"\s*:\s*\d+[^{}]*\}', reasoning)
+            if json_match:
+                content = json_match.group(0)
         # 提取JSON部分
         content = content.strip()
         if content.startswith("```"):
@@ -219,7 +219,7 @@ def batch_sentiment_signal(stocks: list, weibo_posts: list = None) -> dict:
         "只返回JSON数组,不要其他文字。示例: [{\"code\":\"600519\",\"score\":65,\"direction\":\"买入\",\"summary\":\"利好\"}]"
     )
 
-    raw = _call_llm(prompt, max_tokens=2000)
+    raw = _call_llm(prompt, max_tokens=4000)
     results = {}
 
     if raw:

@@ -1,0 +1,10 @@
+[Unit]
+Description=Quant Pilot 盘后运维状态
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:50:00
+Unit=quant-pilot-status.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

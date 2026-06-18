@@ -11,6 +11,7 @@
 """
 import os
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Callable, Dict
 
 from scheduler.readiness import format_paper_readiness, run_paper_readiness
@@ -52,7 +53,7 @@ def run_paper_bootstrap(
     run_rehearsal_func = run_rehearsal_func or run_auto_rehearsal
     run_readiness_func = run_readiness_func or run_paper_readiness
 
-    generated_at = datetime.now().isoformat()
+    generated_at = _now_bj().isoformat()
     if platform == "linux":
         paths = generate_scripts_func(
             project_dir=project_dir,

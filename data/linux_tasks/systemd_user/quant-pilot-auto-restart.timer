@@ -1,0 +1,11 @@
+[Unit]
+Description=Quant Pilot 自动盘每10分钟Watchdog重启保护
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+Unit=quant-pilot-auto-restart.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

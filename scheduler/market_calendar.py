@@ -10,9 +10,17 @@
 数据源: Baostock 交易日历，本地缓存
 ====================================================================
 """
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta, time as dt_time, timezone
 from typing import Optional, List
 from scheduler import logger
+
+# 北京时区 (UTC+8)
+_BJ_TZ = timezone(timedelta(hours=8))
+
+
+def _now_bj() -> datetime:
+    """获取当前北京时间（A股使用 UTC+8）"""
+    return datetime.now(_BJ_TZ).replace(tzinfo=None)
 
 # 本地缓存
 _trading_dates_cache: set = None
@@ -32,7 +40,7 @@ def _load_trading_calendar(year: int = None) -> set:
     global _trading_dates_cache, _cache_date
 
     if year is None:
-        year = datetime.now().year
+        year = _now_bj().year
 
     cache_key = str(year)
     if _trading_dates_cache is not None and _cache_date == cache_key:
@@ -92,7 +100,7 @@ def is_trading_day(date: str = None) -> bool:
         bool: 是否为交易日
     """
     if date is None:
-        date = datetime.now().strftime("%Y%m%d")
+        date = _now_bj().strftime("%Y%m%d")
     date = date.replace("-", "")[:8]
 
     year = int(date[:4])
@@ -112,7 +120,7 @@ def next_trading_day(date: str = None, n: int = 1) -> str:
         str: 交易日期 "YYYYMMDD"
     """
     if date is None:
-        date = datetime.now().strftime("%Y%m%d")
+        date = _now_bj().strftime("%Y%m%d")
     date = date.replace("-", "")[:8]
 
     d = datetime.strptime(date, "%Y%m%d") + timedelta(days=1)
@@ -138,7 +146,7 @@ def prev_trading_day(date: str = None, n: int = 1) -> str:
         str: 交易日期 "YYYYMMDD"
     """
     if date is None:
-        date = datetime.now().strftime("%Y%m%d")
+        date = _now_bj().strftime("%Y%m%d")
     date = date.replace("-", "")[:8]
 
     d = datetime.strptime(date, "%Y%m%d") - timedelta(days=1)
@@ -159,7 +167,7 @@ def get_market_status() -> str:
     Returns:
         str: "盘前" / "盘中" / "午休" / "盘后" / "休市"
     """
-    now = datetime.now()
+    now = _now_bj()
 
     if not is_trading_day(now.strftime("%Y%m%d")):
         return "休市"
@@ -215,7 +223,7 @@ def get_trading_days(start: str, end: str) -> List[str]:
 
 # 测试
 if __name__ == "__main__":
-    today = datetime.now().strftime("%Y%m%d")
+    today = _now_bj().strftime("%Y%m%d")
     print(f"今天 {today}: {get_market_status()}")
     print(f"是否交易日: {is_trading_day(today)}")
     print(f"下一交易日: {next_trading_day(today)}")

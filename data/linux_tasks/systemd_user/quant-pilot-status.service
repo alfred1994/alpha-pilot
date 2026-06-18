@@ -1,0 +1,9 @@
+[Unit]
+Description=Quant Pilot 自动盯盘运维状态
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /home/ubuntu/projects/quant-pilot/data/linux_tasks/run_status.sh
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1

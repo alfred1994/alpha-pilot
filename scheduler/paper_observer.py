@@ -10,6 +10,7 @@
 import os
 import time
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import Callable, Dict, List, Optional
 
 from config import BASE_DIR
@@ -91,7 +92,7 @@ def run_paper_observer(
     interval = max(0, int(interval or 0))
     log_file = os.path.abspath(log_file or DEFAULT_OBSERVE_LOG)
     sleep_func = sleep_func or time.sleep
-    started_at = datetime.now()
+    started_at = _now_bj()
     reports = []
     errors = []
     lock = None
@@ -161,7 +162,7 @@ def run_paper_observer(
                 trading_day_override=trading_day_override,
             )
 
-        ended_at = datetime.now()
+        ended_at = _now_bj()
         if report:
             metrics = report.get("metrics") or {}
             paths = report.get("paths") or {}
@@ -198,7 +199,7 @@ def run_paper_observer(
             "reports": reports,
         }
     except Exception as e:
-        ended_at = datetime.now()
+        ended_at = _now_bj()
         _write_log(
             log_file,
             f"===== {ended_at.strftime('%Y-%m-%d %H:%M:%S')} END exit=1 error={e} =====",

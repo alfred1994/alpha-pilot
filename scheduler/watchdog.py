@@ -16,6 +16,7 @@ import os
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from scheduler.market_calendar import _now_bj
 from typing import List, Optional
 
 from config import (
@@ -147,7 +148,7 @@ def run_auto_watchdog(
     Returns:
         WatchdogItem列表
     """
-    now = now or datetime.now()
+    now = now or _now_bj()
     today = now.strftime("%Y-%m-%d")
     status = status_override or get_market_status()
     is_today_trading = trading_day_override if trading_day_override is not None else is_trading_day(today)
