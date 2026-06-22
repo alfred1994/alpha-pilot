@@ -26,7 +26,7 @@ export PYTHONUNBUFFERED=1
 
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp START --doctor =====" >> "$LOG_FILE"
-$PYTHON_CMD main.py --doctor >> "$LOG_FILE" 2>&1
+timeout --kill-after=15s 240s $PYTHON_CMD main.py --doctor >> "$LOG_FILE" 2>&1
 exit_code=$?
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp END exit=$exit_code =====" >> "$LOG_FILE"

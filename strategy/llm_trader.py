@@ -32,7 +32,8 @@ MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 LLM_MODEL = "mimo-v2.5-pro"
 
 
-def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2) -> Optional[str]:
+def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
+              http_timeout: int = 60) -> Optional[str]:
     """调用 MiMo LLM（daemon线程硬超时 + 自动重试）"""
     if not MIMO_API_KEY:
         logger.warning("XIAOMI_API_KEY 未设置, LLM决策不可用")
@@ -60,7 +61,6 @@ def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2) -> Optional
         "temperature": 0.2,  # 低温度，决策要稳定
     }
 
-    http_timeout = 60  # 单次HTTP读取超时（盘中高峰期API响应慢，需要60s+）
     hard_timeout = http_timeout + 5  # 硬超时略大于HTTP超时
 
     for attempt in range(1 + retries):
@@ -332,6 +332,8 @@ def make_decision(
     htsc_diagnosis: str = "",
     overnight_text: str = "",
     memory=None,  # P2-12: 外部传入的 TradeMemory 实例（连接复用）
+    llm_retries: int = 2,
+    llm_timeout: int = 60,
 ) -> TradeDecision:
     """
     LLM决策主函数
@@ -418,7 +420,7 @@ def make_decision(
     )
 
     # 调用LLM
-    raw = _call_llm(prompt)
+    raw = _call_llm(prompt, retries=llm_retries, http_timeout=llm_timeout)
     action, confidence, reasoning = _parse_decision_response(raw)
 
     # 构建决策对象（composite已提前计算）

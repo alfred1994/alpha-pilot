@@ -338,6 +338,7 @@ def format_ops_status(status: Dict, include_sections: bool = False) -> str:
         f"模拟报告: {report.get('start_date', '')} 至 {report.get('end_date', '')}",
         f"闭环概览: 自动循环{metrics.get('auto_cycle_count', 0)}轮，完整闭环日{metrics.get('closed_loop_days', 0)}/{metrics.get('days', 0)}天，异常{metrics.get('error_events', 0)}条",
         f"状态归因: 无循环{metrics.get('no_loop_days', 0)}天，仅复盘{metrics.get('review_only_days', 0)}天，暂停{metrics.get('paused_days', 0)}天，休市{metrics.get('holiday_days', 0)}天，缺扫描{metrics.get('missing_scan_days', 0)}天，缺执行{metrics.get('missing_execute_days', 0)}天，缺复盘{metrics.get('missing_review_days', 0)}天",
+        f"盘中观察: 轻量看盘{metrics.get('watch_count', 0)}次，疑似踏空{metrics.get('missed_opportunity_count', 0)}次，救援扫描{metrics.get('rescue_scan_count', 0)}次",
         f"下一轮参数: {next_params.get('current_regime', 'sideways')} Top{current_params.get('top_k', '-')} 最低分{current_params.get('min_score', '-')} 单票上限{float(current_params.get('max_weight') or 0):.1%}",
         f"交易学习: LLM决策{metrics.get('llm_decision_count', 0)}条，模拟成交{metrics.get('trade_count', 0)}笔，教训{metrics.get('lesson_count', 0)}条",
         f"执行审计: 计划{metrics.get('order_audit_count', 0)}笔，成交{metrics.get('order_filled_count', 0)}笔，阻断/跳过{metrics.get('order_blocked_count', 0)}笔，失败{metrics.get('order_failed_count', 0)}笔",

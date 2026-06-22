@@ -126,6 +126,7 @@ class PipelineResult:
     executed_orders: list = field(default_factory=list)
     risk_triggered: list = field(default_factory=list)
     order_audit: list = field(default_factory=list)
+    trade_plan: dict = field(default_factory=dict)
     total_elapsed: float = 0.0
     errors: List[str] = field(default_factory=list)
 
@@ -163,7 +164,11 @@ def prefetch(candidate_codes: List[str] = None):
 # 快链路：早盘快速扫描（240秒预算）
 # ═══════════════════════════════════════════════════════════════════
 
-def fast_scan(budget_seconds: int = 240) -> TradePlan:
+def fast_scan(
+    budget_seconds: int = 240,
+    candidate_codes: Optional[List[str]] = None,
+    candidate_items: Optional[List[dict]] = None,
+) -> TradePlan:
     """
     快链路：早盘快速扫描
 
@@ -179,6 +184,8 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
 
     Args:
         budget_seconds: 总时间预算(秒)
+        candidate_codes: 候选代码白名单，仅扫描这些股票
+        candidate_items: 外部传入的候选项，用于盘中救援扫描
 
     Returns:
         TradePlan
@@ -201,57 +208,93 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
     # ── 0-10s: 读取缓存 ──
     logger.info(f"[快链路] 启动 | 预算={budget_seconds}s")
 
+    candidate_filter = {
+        str(code).strip()
+        for code in (candidate_codes or [])
+        if str(code).strip()
+    }
+
     # 读候选池(优先用缓存)
     candidates = []
-    pool = get_candidate_pool(max_age=14400)  # 4小时内有效
-    if pool and pool.get("candidates"):
-        for c in pool["candidates"]:
-            from strategy.stock_picker import Candidate
+    if candidate_items:
+        from strategy.stock_picker import Candidate
+        for c in candidate_items:
+            code = str(c.get("code", "")).strip()
+            if not code:
+                continue
+            if candidate_filter and code not in candidate_filter:
+                continue
             candidates.append(Candidate(
-                code=c["code"], name=c["name"],
-                source=c.get("source", []), score=c.get("score", 0),
+                code=code,
+                name=str(c.get("name") or code),
+                source=c.get("source") or ["盘中观察池"],
+                score=float(c.get("score") or 0),
             ))
-        logger.info(f"[快链路] 从缓存加载候选池: {len(candidates)}只")
+        logger.info(f"[快链路] 使用外部候选白名单: {len(candidates)}只")
     else:
-        # 没有缓存，快速选股(带超时)
-        logger.info("[快链路] 无候选池缓存，快速选股...")
-        # 优先华泰选股，失败则降级到多维选股
-        from strategy.stock_picker import pick_stocks_by_htsc, pick_stocks
-        candidates = with_timeout(
-            lambda: pick_stocks_by_htsc(max_candidates=10),
-            timeout=30,
-            fallback=[],
-            desc="华泰选股",
-        )
-        if not candidates:
-            logger.warning("[快链路] 华泰选股失败/超时，降级到多维选股...")
+        pool = get_candidate_pool(max_age=14400)  # 4小时内有效
+        if pool and pool.get("candidates"):
+            for c in pool["candidates"]:
+                from strategy.stock_picker import Candidate
+                candidates.append(Candidate(
+                    code=c["code"], name=c["name"],
+                    source=c.get("source", []), score=c.get("score", 0),
+                ))
+            logger.info(f"[快链路] 从缓存加载候选池: {len(candidates)}只")
+        else:
+            # 没有缓存，快速选股(带超时)
+            logger.info("[快链路] 无候选池缓存，快速选股...")
+            # 优先华泰选股，失败则降级到多维选股
+            from strategy.stock_picker import pick_stocks_by_htsc, pick_stocks
             candidates = with_timeout(
-                lambda: pick_stocks(
-                    top_n=10,
-                    use_limit_up=True,
-                    use_dragon_tiger=False,
-                    use_north_flow=True,
-                    use_performance=True,
-                    use_survey=False,
-                    use_volume=False,
-                    use_financing=False,
-                    use_unlock_alert=False,
-                ),
+                lambda: pick_stocks_by_htsc(max_candidates=10),
                 timeout=30,
                 fallback=[],
-                desc="多维选股",
+                desc="华泰选股",
             )
+            if not candidates:
+                logger.warning("[快链路] 华泰选股失败/超时，降级到多维选股...")
+                candidates = with_timeout(
+                    lambda: pick_stocks(
+                        top_n=10,
+                        use_limit_up=True,
+                        use_dragon_tiger=False,
+                        use_north_flow=True,
+                        use_performance=True,
+                        use_survey=False,
+                        use_volume=False,
+                        use_financing=False,
+                        use_unlock_alert=False,
+                    ),
+                    timeout=30,
+                    fallback=[],
+                    desc="多维选股",
+                )
+            if not candidates:
+                logger.warning("[快链路] 选股失败/超时，无候选")
+                plan.errors.append("选股失败，无候选股票")
+                plan.elapsed = elapsed()
+                _save_trade_plan(plan)
+                return plan
+            # 缓存候选池
+            try:
+                from data.snapshot import save_candidate_pool
+                save_candidate_pool(candidates)
+            except Exception:
+                pass
+
+    if candidate_filter:
+        before_filter = len(candidates)
+        candidates = [
+            c for c in candidates
+            if (c.code if hasattr(c, 'code') else c.get('code', '')) in candidate_filter
+        ]
+        logger.info(f"[快链路] 候选白名单过滤: {before_filter}->{len(candidates)}")
         if not candidates:
-            logger.warning("[快链路] 选股失败/超时，无候选")
-            plan.errors.append("选股失败，无候选股票")
+            plan.errors.append("候选白名单无匹配股票")
             plan.elapsed = elapsed()
+            _save_trade_plan(plan)
             return plan
-        # 缓存候选池
-        try:
-            from data.snapshot import save_candidate_pool
-            save_candidate_pool(candidates)
-        except Exception:
-            pass
 
     if remaining() < 10:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过打分")
@@ -337,8 +380,6 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
     USE_LLM_IN_FAST = os.environ.get("USE_LLM_IN_FAST", "1") == "1" and _llm_timeout_count < _LLM_AUTO_DISABLE_THRESHOLD
 
     if USE_LLM_IN_FAST and top_candidates:
-        from concurrent.futures import ThreadPoolExecutor as _TPE, TimeoutError as _FTE
-
         # 尝试加载账户信息（用于LLM决策上下文）
         _positions = {}
         _total_assets = 0.0
@@ -373,41 +414,35 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
                     )
 
                 from strategy.llm_trader import make_decision
-                with _TPE(max_workers=1) as _executor:
-                    _future = _executor.submit(
-                        make_decision,
-                        code=_s["code"],
-                        name=_s["name"],
-                        dimensions=_dims,
-                        regime=regime,
-                        current_positions=_positions,
-                        total_assets=_total_assets,
-                        cash=_cash,
-                        memory=_shared_memory,  # P2-12: 复用共享记忆连接
-                    )
-                    _decision = _future.result(timeout=25)  # 25秒超时
+                _decision = make_decision(
+                    code=_s["code"],
+                    name=_s["name"],
+                    dimensions=_dims,
+                    regime=regime,
+                    current_positions=_positions,
+                    total_assets=_total_assets,
+                    cash=_cash,
+                    memory=_shared_memory,  # P2-12: 复用共享记忆连接
+                    llm_retries=0,
+                    llm_timeout=20,
+                )
 
                 if _decision and _decision.action:
-                    _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
                     # LLM决策成功：用LLM结果覆盖加权打分的action
                     _s["llm_action"] = _decision.action
                     _s["llm_confidence"] = _decision.confidence
                     _s["llm_reason"] = _decision.reason
-                    llm_count += 1
+                    if _decision.confidence > 0:
+                        _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
+                        llm_count += 1
+                    else:
+                        _llm_timeout_count += 1
                     if _decision.action == "HOLD":
                         # LLM认为该持有，从top_candidates中移除
                         plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
                     elif _decision.action == "SELL":
                         # LLM建议卖出（持仓股），标记为SELL
                         _s["llm_action"] = "SELL"
-            except _FTE:
-                _llm_timeout_count += 1
-                logger.warning(f"[快链路] LLM决策超时 {_s.get('code', '?')} ({_llm_timeout_count}/{_LLM_AUTO_DISABLE_THRESHOLD})，默认HOLD")
-                _s["llm_action"] = "HOLD"  # 超时默认HOLD，不盲目买入
-                _s["llm_confidence"] = 0.0
-                _s["llm_reason"] = "LLM超时"
-                if _llm_timeout_count >= _LLM_AUTO_DISABLE_THRESHOLD:
-                    logger.error("[快链路] LLM连续超时，本次扫描自动关闭LLM")
             except Exception as _e:
                 logger.warning(f"[快链路] LLM决策失败 {_s.get('code', '?')}: {_e}，默认HOLD")
                 _s["llm_action"] = "HOLD"  # 失败默认HOLD
@@ -431,10 +466,6 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
         }
         if _llm_hold_codes:
             top_candidates = [_s for _s in top_candidates if _s["code"] not in _llm_hold_codes]
-            # 兜底：如果全部被移除，保留分数最高的1只
-            if not top_candidates and scored:
-                logger.warning("[快链路] LLM判定全部HOLD，降级保留最高分候选")
-                top_candidates = scored[:1]
             logger.info(f"[快链路] LLM过滤后剩余: {len(top_candidates)}只")
 
     # === P1-4 END ===
@@ -443,12 +474,15 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
     for i, s in enumerate(top_candidates):
         weight = max_weight * (s["composite"] / 100)  # 按分数比例分配仓位
         weight = min(weight, max_weight)
-        llm_action = s.get("llm_action", "HOLD")  # LLM失败时默认HOLD，不盲目买入
+        llm_action = s.get("llm_action", "HOLD")  # LLM失败/未返回时默认HOLD，不盲目买入
         llm_reason = s.get("llm_reason", "")
+        if llm_action not in ("BUY", "SELL"):
+            plan.hold_reasons[s["code"]] = f"HOLD_NO_BUY_DECISION({llm_reason[:50]})"
+            continue
         plan.orders.append(TradeOrder(
             code=s["code"],
             name=s["name"],
-            action=llm_action if llm_action in ("BUY", "SELL") else "BUY",
+            action=llm_action,
             priority=i + 1,
             target_weight=round(weight, 3),
             max_price=s.get("latest_price", 0) * 1.02,  # 最高价=现价+2%
@@ -460,8 +494,6 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
     # === P1-5: 持仓股卖出信号 LLM 决策 ===
     USE_LLM_SELL = os.environ.get("USE_LLM_IN_FAST", "1") == "1"
     if USE_LLM_SELL and remaining() > 10:
-        from concurrent.futures import ThreadPoolExecutor as _TPE2, TimeoutError as _FTE2
-
         # 加载账户获取持仓
         _positions_sell = {}
         _total_assets_sell = 0.0
@@ -501,18 +533,17 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
                     _pos_name = _pos_info.get("name", _pos_code)
 
                     from strategy.llm_trader import make_decision
-                    with _TPE2(max_workers=1) as _ex2:
-                        _fut2 = _ex2.submit(
-                            make_decision,
-                            code=_pos_code,
-                            name=_pos_name,
-                            dimensions=_dims_sell,
-                            regime=regime,
-                            current_positions=_positions_sell,
-                            total_assets=_total_assets_sell,
-                            cash=_cash_sell,
-                        )
-                        _sell_decision = _fut2.result(timeout=25)  # 25秒超时
+                    _sell_decision = make_decision(
+                        code=_pos_code,
+                        name=_pos_name,
+                        dimensions=_dims_sell,
+                        regime=regime,
+                        current_positions=_positions_sell,
+                        total_assets=_total_assets_sell,
+                        cash=_cash_sell,
+                        llm_retries=0,
+                        llm_timeout=20,
+                    )
 
                     _sell_eval_count += 1
                     if _sell_decision and _sell_decision.action == "SELL":
@@ -534,8 +565,6 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
                     elif _sell_decision and _sell_decision.action == "HOLD":
                         plan.hold_reasons[_pos_code] = f"HOLD_LLM_SELL({_sell_decision.reason[:50]})"
 
-                except _FTE2:
-                    logger.warning(f"[快链路-卖出] LLM评估超时 {_pos_code}")
                 except Exception as _e:
                     logger.warning(f"[快链路-卖出] LLM评估失败 {_pos_code}: {_e}")
 
@@ -547,7 +576,7 @@ def fast_scan(budget_seconds: int = 240) -> TradePlan:
     # === 可转债T+0扫描 ===
     try:
         from config import CB_T0_ENABLED
-        if CB_T0_ENABLED and remaining() > 5:
+        if CB_T0_ENABLED and remaining() > 5 and not (candidate_filter or candidate_items):
             from strategy.cb_t0_strategy import scan_and_score, should_buy
             cb_results = scan_and_score()
             cb_buys = []
@@ -971,15 +1000,16 @@ def execute_trade_plan(
                         reason="TradePlan执行",
                     )
                     buy_order.status = "filled" if trade else "failed"
-                result.executed_orders.append({
-                    "order_id": buy_order.order_id,
-                    "code": code,
-                    "name": buy_order.name,
-                    "side": buy_order.side,
-                    "shares": buy_order.shares,
-                    "price": current_price,
-                    "status": buy_order.status,
-                })
+                if buy_order.status == "filled":
+                    result.executed_orders.append({
+                        "order_id": buy_order.order_id,
+                        "code": code,
+                        "name": buy_order.name,
+                        "side": buy_order.side,
+                        "shares": buy_order.shares,
+                        "price": current_price,
+                        "status": buy_order.status,
+                    })
                 _audit_order(
                     result, order, buy_order.status,
                     "模拟买入成交" if buy_order.status == "filled" else "买入未成交",
@@ -988,7 +1018,10 @@ def execute_trade_plan(
                     buy_amount=round(buy_amount, 2),
                     available_cash=round(available_cash, 2),
                 )
-                logger.info(f"买入 {code} {shares}股 @ {current_price}")
+                if buy_order.status == "filled":
+                    logger.info(f"买入 {code} {shares}股 @ {current_price}")
+                else:
+                    logger.info(f"买入未成交 {code} {shares}股 @ {current_price}")
             except Exception as e:
                 result.errors.append(f"{code} 下单失败: {e}")
                 _audit_order(result, order, "failed", f"下单异常: {e}")
@@ -1254,13 +1287,23 @@ def format_pipeline_report(result: PipelineResult) -> str:
 # 旧接口兼容
 # ═══════════════════════════════════════════════════════════════════
 
-def run_scan() -> PipelineResult:
+def run_scan(
+    budget_seconds: int = 240,
+    candidate_codes: Optional[List[str]] = None,
+    candidate_items: Optional[List[dict]] = None,
+) -> PipelineResult:
     """扫描信号（兼容旧接口，内部调fast_scan）"""
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
-    plan = fast_scan(budget_seconds=240)
+    plan = fast_scan(
+        budget_seconds=budget_seconds,
+        candidate_codes=candidate_codes,
+        candidate_items=candidate_items,
+    )
+    result.trade_plan = plan.to_dict()
     result.candidates = plan.raw_scores
+    result.errors.extend(plan.errors)
 
     from strategy.decision import TradeDecision, DimensionScore
     for s in plan.raw_scores:

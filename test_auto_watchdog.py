@@ -89,6 +89,28 @@ def main():
         with Database(db_path=db_path) as db:
             db.insert_auto_event({
                 "date": "2026-06-09",
+                "event_type": "auto_doctor",
+                "status": "盘中",
+                "actions": ["发现critical: 今日异常事件"],
+                "error": "今日异常事件",
+                "created_at": "2026-06-09T10:05:00",
+            })
+        self_error_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+        )
+        assert_true(
+            _by_name(self_error_items)["今日异常事件"].severity != "critical",
+            "Doctor自身诊断失败不触发今日异常critical",
+        )
+
+        with Database(db_path=db_path) as db:
+            db.insert_auto_event({
+                "date": "2026-06-09",
                 "status": "盘中",
                 "actions": ["盘中扫描: 候选3只 决策2条", "模拟执行: 成交1笔 风控0项 错误0项"],
                 "created_at": "2026-06-09T10:04:00",

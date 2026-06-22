@@ -138,6 +138,7 @@ def main():
         assert_true("自动盯盘运维状态" in text, "格式化输出包含标题")
         assert_true("总体状态:" in text, "格式化输出包含总体状态")
         assert_true("状态归因:" in text, "格式化输出包含状态归因")
+        assert_true("盘中观察:" in text, "格式化输出包含盘中观察")
         assert_true("下一轮参数:" in text, "格式化输出包含下一轮交易参数")
         assert_true("执行审计:" in text, "格式化输出包含执行审计")
         assert_true("今日闭环缺口:" in text, "格式化输出包含日内闭环缺口")

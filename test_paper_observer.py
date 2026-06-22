@@ -137,8 +137,14 @@ def main():
 
         with Database(db_path=db_path) as db:
             events = db.get_auto_events(date="2026-06-09", limit=10)
-        assert_true(len(events) == 2, "观察运行写入正式自动事件")
-        assert_true(events[0]["details"]["order_audit"][0]["status"] == "filled", "自动事件保留执行审计")
+        auto_cycle_events = [e for e in events if e.get("event_type") == "auto_cycle"]
+        watch_events = [e for e in events if e.get("event_type") == "watch_cycle"]
+        assert_true(len(auto_cycle_events) == 2, "观察运行写入正式自动循环事件")
+        assert_true(len(watch_events) >= 1, "观察运行写入盘中轻量看盘事件")
+        assert_true(
+            any((e["details"].get("order_audit") or [{}])[0].get("status") == "filled" for e in auto_cycle_events),
+            "自动事件保留执行审计",
+        )
 
         evidence = result["evidence_report"]
         assert_true(evidence["metrics"]["auto_cycle_count"] == 2, "观察运行生成正式报告循环统计")

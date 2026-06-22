@@ -81,9 +81,19 @@ def _unit_name(prefix: str, name: str, suffix: str = "service") -> str:
 
 
 def _runner_script(project_dir: str, python_cmd: str, args: str,
-                   log_name: str, hermes_env_file: str = "$HOME/.hermes/.env") -> str:
+                   log_name: str, hermes_env_file: str = "$HOME/.hermes/.env",
+                   timeout_seconds: int = 0,
+                   tolerate_failure: bool = False) -> str:
     """生成Linux运行脚本"""
     log_path = os.path.join(project_dir, "logs", log_name)
+    if timeout_seconds:
+        command = (
+            f"timeout --kill-after=15s {int(timeout_seconds)}s "
+            f"$PYTHON_CMD main.py {args} >> \"$LOG_FILE\" 2>&1"
+        )
+    else:
+        command = f"$PYTHON_CMD main.py {args} >> \"$LOG_FILE\" 2>&1"
+    final_exit = "0" if tolerate_failure else "$exit_code"
     return f"""#!/usr/bin/env bash
 set -uo pipefail
 
@@ -107,11 +117,11 @@ export PYTHONUNBUFFERED=1
 
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp START {args} =====" >> "$LOG_FILE"
-$PYTHON_CMD main.py {args} >> "$LOG_FILE" 2>&1
+{command}
 exit_code=$?
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp END exit=$exit_code =====" >> "$LOG_FILE"
-exit $exit_code
+exit {final_exit}
 """
 
 
@@ -145,7 +155,7 @@ export PYTHONUNBUFFERED=1
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp START restart-auto =====" >> "$LOG_FILE"
 
-watchdog_output="$($PYTHON_CMD main.py --watchdog 2>&1)"
+watchdog_output="$(timeout --kill-after=15s 180s $PYTHON_CMD main.py --watchdog 2>&1)"
 watchdog_exit=$?
 printf '%s\\n' "$watchdog_output" >> "$LOG_FILE"
 
@@ -191,8 +201,10 @@ WantedBy=default.target
 """
 
 
-def _oneshot_service_unit(description: str, script_path: str) -> str:
+def _oneshot_service_unit(description: str, script_path: str,
+                          timeout_start_sec: int = 0) -> str:
     """生成oneshot systemd service unit"""
+    timeout_block = f"TimeoutStartSec={int(timeout_start_sec)}\n" if timeout_start_sec else ""
     return f"""[Unit]
 Description={description}
 After=network-online.target
@@ -202,7 +214,7 @@ Type=oneshot
 ExecStart=/usr/bin/env bash {script_path}
 Environment=BROKER_MODE=paper
 Environment=PYTHONUNBUFFERED=1
-"""
+{timeout_block}"""
 
 
 def _interval_timer_unit(description: str, service_unit: str,
@@ -374,23 +386,23 @@ def generate_linux_task_scripts(
     scripts = {
         paths["run_auto"]: _runner_script(project_dir, python_cmd, "--auto", "auto.log", hermes_env_file),
         paths["restart_auto"]: _restart_auto_script(project_dir, python_cmd, service_prefix, hermes_env_file),
-        paths["run_doctor"]: _runner_script(project_dir, python_cmd, "--doctor", "doctor.log", hermes_env_file),
+        paths["run_doctor"]: _runner_script(project_dir, python_cmd, "--doctor", "doctor.log", hermes_env_file, timeout_seconds=240),
         paths["run_report"]: _runner_script(project_dir, python_cmd, f"--ai-report --report-days {report_days}", "ai_report.log", hermes_env_file),
-        paths["run_status"]: _runner_script(project_dir, python_cmd, f"--ops-status --report-days {report_days}", "ops_status.log", hermes_env_file),
+        paths["run_status"]: _runner_script(project_dir, python_cmd, f"--ops-status --report-days {report_days}", "ops_status.log", hermes_env_file, tolerate_failure=True),
         paths["run_closure_repair"]: _runner_script(project_dir, python_cmd, "--closure-repair", "closure_repair.log", hermes_env_file),
         paths["install"]: _install_script(config, paths),
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
     units = {
         paths["auto_service"]: _service_unit("Quant Pilot 模拟盘自动盯盘长驻循环", paths["run_auto"], restart=True),
-        paths["auto_restart_service"]: _oneshot_service_unit("Quant Pilot 自动盘Watchdog重启", paths["restart_auto"]),
+        paths["auto_restart_service"]: _oneshot_service_unit("Quant Pilot 自动盘Watchdog重启", paths["restart_auto"], timeout_start_sec=240),
         paths["auto_restart_timer"]: _interval_timer_unit(
             "Quant Pilot 自动盘每10分钟Watchdog重启保护",
             os.path.basename(paths["auto_restart_service"]),
             "5min",
             "10min",
         ),
-        paths["doctor_service"]: _oneshot_service_unit("Quant Pilot Watchdog巡检/自愈/闭环修复", paths["run_doctor"]),
+        paths["doctor_service"]: _oneshot_service_unit("Quant Pilot Watchdog巡检/自愈/闭环修复", paths["run_doctor"], timeout_start_sec=300),
         paths["doctor_timer"]: _interval_timer_unit("Quant Pilot Doctor每5分钟巡检", os.path.basename(paths["doctor_service"]), "2min", "5min"),
         paths["report_service"]: _oneshot_service_unit("Quant Pilot AI交易员模拟盘报告", paths["run_report"]),
         paths["report_timer"]: _calendar_timer_unit("Quant Pilot 盘后AI报告", os.path.basename(paths["report_service"]), f"Mon..Fri *-*-* {config.report_time}:00"),

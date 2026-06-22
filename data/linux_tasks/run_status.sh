@@ -30,4 +30,4 @@ $PYTHON_CMD main.py --ops-status --report-days 5 >> "$LOG_FILE" 2>&1
 exit_code=$?
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp END exit=$exit_code =====" >> "$LOG_FILE"
-exit $exit_code
+exit 0

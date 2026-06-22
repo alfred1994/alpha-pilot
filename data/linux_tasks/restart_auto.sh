@@ -28,7 +28,7 @@ export PYTHONUNBUFFERED=1
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp START restart-auto =====" >> "$LOG_FILE"
 
-watchdog_output="$($PYTHON_CMD main.py --watchdog 2>&1)"
+watchdog_output="$(timeout --kill-after=15s 180s $PYTHON_CMD main.py --watchdog 2>&1)"
 watchdog_exit=$?
 printf '%s\n' "$watchdog_output" >> "$LOG_FILE"
 

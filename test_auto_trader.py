@@ -66,6 +66,17 @@ def test_intraday_cycle():
         calls.append("run_scan")
         return SimpleNamespace(candidates=[1, 2, 3], decisions=["BUY", "HOLD"])
 
+    def fake_run_watch_cycle(**kwargs):
+        calls.append("run_watch_cycle")
+        return {
+            "actions": ["轻量看盘: 候选2只 观察1只 确认0只 现金50% 涨停数 10->12"],
+            "details": {"top_watch": []},
+            "watchlist": {"items": {"600519": {"code": "600519"}}},
+            "missed_opportunity": False,
+            "rescue_requested": False,
+            "eligible_codes": [],
+        }
+
     def fake_execute_trades():
         calls.append("execute_trades")
         return SimpleNamespace(executed_orders=[{"code": "600519"}], risk_triggered=[], errors=[])
@@ -86,6 +97,7 @@ def test_intraday_cycle():
         now_ts_override=2000,
         services={
             "check_stops_once": fake_check_stops_once,
+            "run_watch_cycle": fake_run_watch_cycle,
             "run_scan": fake_run_scan,
             "execute_trades": fake_execute_trades,
             "send_auto_cycle_report": fake_notify,
@@ -94,10 +106,12 @@ def test_intraday_cycle():
         record_event=False,
     )
 
-    assert_true(calls == ["check_stops_once", "run_scan", "execute_trades"], "盘中会巡检止损、扫描并执行模拟交易")
+    assert_true(calls == ["check_stops_once", "run_watch_cycle", "run_scan", "execute_trades"], "盘中会巡检止损、轻量看盘、扫描并执行模拟交易")
     assert_true(any("止损巡检" in action for action in result["actions"]), "盘中报告包含止损巡检结果")
+    assert_true(any("轻量看盘" in action for action in result["actions"]), "盘中报告包含轻量看盘结果")
     assert_true(any("模拟执行" in action for action in result["actions"]), "盘中报告包含模拟执行结果")
     assert_true(result["state"]["last_scan_at"] == 2000, "盘中扫描时间会写入状态")
+    assert_true(result["state"]["last_watch_at"] == 2000, "盘中看盘时间会写入状态")
     assert_true(result["state"]["last_execute_at"] == 2000, "模拟执行时间会写入状态")
     assert_true(result["notified"] is True and len(notifications) == 1, "盘中关键动作会触发通知")
 

@@ -104,10 +104,19 @@ def _group_by_date(items: List[Dict], date_field: str) -> Dict[str, List[Dict]]:
 
 def _summarise_actions(events: List[Dict]) -> Dict:
     """统计自动循环动作覆盖"""
+    auto_cycle_events = [
+        event for event in events
+        if event.get("event_type", "auto_cycle") == "auto_cycle"
+    ]
+    core_events = auto_cycle_events or events
+    watch_events = [event for event in events if event.get("event_type") == "watch_cycle"]
+    missed_events = [event for event in events if event.get("event_type") == "missed_opportunity"]
+    rescue_events = [event for event in events if event.get("event_type") == "rescue_scan"]
+
     all_actions = []
     order_audit = []
     paused_count = 0
-    for event in events:
+    for event in core_events:
         actions = event.get("actions", [])
         all_actions.extend(actions)
         details = event.get("details") or {}
@@ -126,6 +135,9 @@ def _summarise_actions(events: List[Dict]) -> Dict:
         "prefetch_count": count_contains("盘前数据预热"),
         "regime_count": count_contains("市场环境识别"),
         "scan_count": count_contains("盘中扫描"),
+        "watch_count": len(watch_events) or count_contains("轻量看盘"),
+        "missed_opportunity_count": len(missed_events) or count_contains("疑似踏空"),
+        "rescue_scan_count": len(rescue_events) or count_contains("救援扫描"),
         "execute_count": count_contains("模拟执行"),
         "stop_check_count": count_contains("止损巡检"),
         "review_count": count_contains("盘后复盘进化"),
@@ -137,7 +149,7 @@ def _summarise_actions(events: List[Dict]) -> Dict:
         "order_blocked_count": sum(1 for item in order_audit if item.get("status") in ("blocked", "skipped")),
         "order_failed_count": sum(1 for item in order_audit if item.get("status") == "failed"),
         "holiday_count": sum(
-            1 for event in events
+            1 for event in core_events
             if event.get("status") == "休市"
             or any("休市" in action for action in event.get("actions", []))
         ),
@@ -187,12 +199,16 @@ def _build_daily_rows(dates: List[str], events: List[Dict], trades: List[Dict],
     rows = []
     for date in dates:
         day_events = events_by_date.get(date, [])
+        day_auto_cycle_events = [
+            event for event in day_events
+            if event.get("event_type", "auto_cycle") == "auto_cycle"
+        ]
         action_summary = _summarise_actions(day_events)
         day_trades = trades_by_date.get(date, [])
         day_decisions = decisions_by_date.get(date, [])
         day_lessons = lessons_by_date.get(date, [])
         day_reviews = reviews_by_date.get(date, [])
-        has_market_loop = bool(day_events)
+        has_market_loop = bool(day_auto_cycle_events)
         has_decision_or_trade = bool(day_decisions or day_trades)
         has_learning = bool(day_reviews or day_lessons or action_summary["review_count"])
         closed_loop = has_market_loop and has_decision_or_trade and has_learning
@@ -208,9 +224,12 @@ def _build_daily_rows(dates: List[str], events: List[Dict], trades: List[Dict],
 
         rows.append({
             "date": date,
-            "cycle_count": len(day_events),
+            "cycle_count": len(day_auto_cycle_events),
             "statuses": statuses,
             "scan_count": action_summary["scan_count"],
+            "watch_count": action_summary["watch_count"],
+            "missed_opportunity_count": action_summary["missed_opportunity_count"],
+            "rescue_scan_count": action_summary["rescue_scan_count"],
             "execute_count": action_summary["execute_count"],
             "stop_check_count": action_summary["stop_check_count"],
             "review_count": len(day_reviews) or action_summary["review_count"],
@@ -318,7 +337,7 @@ def _summarise_metrics(daily_rows: List[Dict], events: List[Dict],
 
     return {
         "days": len(daily_rows),
-        "auto_cycle_count": len(events),
+        "auto_cycle_count": sum(row["cycle_count"] for row in daily_rows),
         "active_days": sum(1 for row in daily_rows if row["cycle_count"] > 0),
         "closed_loop_days": sum(1 for row in daily_rows if row["closed_loop"]),
         "paused_days": sum(1 for row in daily_rows if row["diagnosis"] == "暂停"),
@@ -331,6 +350,9 @@ def _summarise_metrics(daily_rows: List[Dict], events: List[Dict],
         "review_only_days": sum(1 for row in daily_rows if row["diagnosis"] == "仅复盘"),
         "error_events": sum(1 for event in events if event.get("error")),
         "scan_count": sum(row["scan_count"] for row in daily_rows),
+        "watch_count": sum(row.get("watch_count", 0) for row in daily_rows),
+        "missed_opportunity_count": sum(row.get("missed_opportunity_count", 0) for row in daily_rows),
+        "rescue_scan_count": sum(row.get("rescue_scan_count", 0) for row in daily_rows),
         "execute_count": sum(row["execute_count"] for row in daily_rows),
         "order_audit_count": sum(row["order_audit_count"] for row in daily_rows),
         "order_filled_count": sum(row["order_filled_count"] for row in daily_rows),
@@ -371,6 +393,7 @@ def format_ai_trader_report(report: Dict) -> str:
         "",
         f"- 自动循环: {metrics['auto_cycle_count']}轮，覆盖{metrics['active_days']}天",
         f"- 扫描/执行: 扫描{metrics['scan_count']}次，模拟执行{metrics['execute_count']}次",
+        f"- 盘中盯盘: 轻量看盘{metrics.get('watch_count', 0)}次，疑似踏空{metrics.get('missed_opportunity_count', 0)}次，救援扫描{metrics.get('rescue_scan_count', 0)}次",
         f"- 执行审计: 计划{metrics['order_audit_count']}笔，成交{metrics['order_filled_count']}笔，阻断/跳过{metrics['order_blocked_count']}笔，失败{metrics['order_failed_count']}笔",
         f"- 决策/交易: LLM决策{metrics['llm_decision_count']}条，可交易动作{metrics['llm_actionable_count']}条，模拟成交{metrics['trade_count']}笔",
         f"- 复盘/学习: 复盘{metrics['review_days']}天，沉淀教训{metrics['lesson_count']}条",

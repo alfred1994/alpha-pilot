@@ -13,15 +13,17 @@ import json
 import os
 import time
 import logging
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, Optional, Callable, Any
 from scheduler.market_calendar import _now_bj
 
 from config import (
     AUTO_LOOP_INTERVAL,
+    AUTO_RESCUE_SCAN_INTERVAL,
     AUTO_SCAN_INTERVAL,
     AUTO_STOP_INTERVAL,
+    AUTO_WATCH_INTERVAL,
     AUTO_REVIEW_AFTER,
     AUTO_NOTIFY_ENABLED,
     DATA_DIR,
@@ -43,7 +45,13 @@ class AutoTraderState:
     last_scan_at: float = 0.0
     last_execute_at: float = 0.0
     last_stop_check_at: float = 0.0
+    last_watch_at: float = 0.0
+    last_rescue_scan_at: float = 0.0
     last_review_date: str = ""
+    morning_baseline: dict = field(default_factory=dict)
+    watchlist_count: int = 0
+    missed_opportunity_count: int = 0
+    rescue_scan_count: int = 0
     loop_count: int = 0
     last_status: str = ""
     last_error: str = ""
@@ -170,7 +178,14 @@ def _load_state(state_file: str = None) -> AutoTraderState:
     try:
         with open(state_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-        return AutoTraderState(**{k: data.get(k) for k in AutoTraderState.__dataclass_fields__})
+        values = {}
+        defaults = AutoTraderState(date=_today())
+        for k in AutoTraderState.__dataclass_fields__:
+            value = data.get(k, getattr(defaults, k))
+            if value is None:
+                value = getattr(defaults, k)
+            values[k] = value
+        return AutoTraderState(**values)
     except Exception as e:
         logger.warning(f"自动盯盘状态读取失败，重新初始化: {e}")
         return AutoTraderState(date=_today())
@@ -259,6 +274,45 @@ def _service(services: Optional[Dict[str, Callable]], name: str, default: Callab
     return default
 
 
+def _record_auto_event(db_path: str, event: dict):
+    """写入自动盯盘事件，失败不影响主循环。"""
+    try:
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            db.insert_auto_event(event)
+    except Exception as e:
+        logger.warning(f"自动盯盘事件写入失败(非致命): {e}")
+
+
+def _run_rescue_scan_default(watch_result: dict):
+    """
+    默认救援扫描：复用快链路生成计划，但只执行二次确认观察池里的BUY。
+    """
+    from scheduler.pipeline import run_scan, execute_trade_plan
+    from scheduler.intraday_watch import filter_trade_plan_for_rescue
+
+    eligible_codes = watch_result.get("eligible_codes", [])
+    top_watch = (watch_result.get("details") or {}).get("top_watch", [])
+    rescue_items = [
+        item for item in top_watch
+        if item.get("code") in set(eligible_codes)
+    ]
+    scan_result = run_scan(
+        budget_seconds=180,
+        candidate_codes=eligible_codes,
+        candidate_items=rescue_items,
+    )
+    plan_data = getattr(scan_result, "trade_plan", {}) or {}
+    filtered_plan = filter_trade_plan_for_rescue(plan_data, eligible_codes)
+    exec_result = execute_trade_plan(filtered_plan) if filtered_plan else None
+    return {
+        "scan_result": scan_result,
+        "exec_result": exec_result,
+        "eligible_codes": eligible_codes,
+        "filtered_orders": len((filtered_plan or {}).get("orders", [])),
+    }
+
+
 def run_auto_cycle(
     state: Optional[AutoTraderState] = None,
     force_scan: bool = False,
@@ -328,6 +382,9 @@ def run_auto_cycle(
     run_scan_func = _service(services, "run_scan", run_scan)
     execute_trades_func = _service(services, "execute_trades", execute_trades)
     run_review_func = _service(services, "run_review", run_review)
+    from scheduler.intraday_watch import run_watch_cycle
+    run_watch_func = _service(services, "run_watch_cycle", run_watch_cycle)
+    run_rescue_scan_func = _service(services, "run_rescue_scan", _run_rescue_scan_default)
     notify_func = _service(services, "send_auto_cycle_report", None)
     notify_enabled = AUTO_NOTIFY_ENABLED if notify is None else notify
     after_review_time = (
@@ -335,6 +392,8 @@ def run_auto_cycle(
         if after_review_time_override is not None
         else _after_review_time(now_dt)
     )
+    extra_events = []
+    rescue_ran = False
 
     try:
         if not is_today_trading:
@@ -363,9 +422,86 @@ def run_auto_cycle(
                     f"卖出{stop_result.get('sold', 0)}笔"
                 )
 
+            watch_result = None
+            if now_ts - state.last_watch_at >= AUTO_WATCH_INTERVAL:
+                watch_result = run_watch_func(
+                    state=state,
+                    now=now_dt,
+                    now_ts=now_ts,
+                    services=services,
+                )
+                state.last_watch_at = now_ts
+                watchlist_items = (watch_result.get("watchlist") or {}).get("items") or {}
+                state.watchlist_count = len(watchlist_items)
+                if watch_result.get("missed_opportunity"):
+                    state.missed_opportunity_count += 1
+                actions.extend(watch_result.get("actions", []))
+                extra_events.append({
+                    "date": today,
+                    "event_type": "watch_cycle",
+                    "status": status,
+                    "actions": watch_result.get("actions", []),
+                    "details": watch_result.get("details", {}),
+                    "error": "",
+                })
+                extra_events.append({
+                    "date": today,
+                    "event_type": "watchlist_update",
+                    "status": status,
+                    "actions": [f"观察池刷新: {state.watchlist_count}只"],
+                    "details": {
+                        "watchlist_count": state.watchlist_count,
+                        "top_watch": (watch_result.get("details") or {}).get("top_watch", []),
+                    },
+                    "error": "",
+                })
+                if watch_result.get("missed_opportunity"):
+                    extra_events.append({
+                        "date": today,
+                        "event_type": "missed_opportunity",
+                        "status": status,
+                        "actions": ["疑似踏空: 已进入观察/救援确认流程"],
+                        "details": watch_result.get("details", {}),
+                        "error": "",
+                    })
+
+            if (
+                watch_result
+                and watch_result.get("rescue_requested")
+                and now_ts - state.last_rescue_scan_at >= AUTO_RESCUE_SCAN_INTERVAL
+            ):
+                rescue = run_rescue_scan_func(watch_result)
+                rescue_ran = True
+                state.last_rescue_scan_at = now_ts
+                state.last_scan_at = now_ts
+                state.rescue_scan_count += 1
+                scan_result = rescue.get("scan_result") if isinstance(rescue, dict) else None
+                exec_result = rescue.get("exec_result") if isinstance(rescue, dict) else None
+                if exec_result is not None:
+                    state.last_execute_at = now_ts
+                executed_count = len(getattr(exec_result, "executed_orders", []) or []) if exec_result else 0
+                actions.append(
+                    f"救援扫描: 观察确认{len(watch_result.get('eligible_codes', []))}只 "
+                    f"成交{executed_count}笔"
+                )
+                extra_events.append({
+                    "date": today,
+                    "event_type": "rescue_scan",
+                    "status": status,
+                    "actions": [actions[-1]],
+                    "details": {
+                        "eligible_codes": watch_result.get("eligible_codes", []),
+                        "filtered_orders": rescue.get("filtered_orders") if isinstance(rescue, dict) else None,
+                        "candidates": len(getattr(scan_result, "candidates", []) or []) if scan_result else 0,
+                        "executed_orders": executed_count,
+                        "errors": getattr(exec_result, "errors", []) if exec_result else [],
+                    },
+                    "error": "",
+                })
+
             effective_scan_interval = scan_interval if scan_interval is not None else AUTO_SCAN_INTERVAL
             should_scan = force_scan or (now_ts - state.last_scan_at >= effective_scan_interval)
-            if should_scan:
+            if should_scan and not rescue_ran:
                 scan_result = run_scan_func()
                 state.last_scan_at = now_ts
                 actions.append(f"盘中扫描: 候选{len(scan_result.candidates)}只 决策{len(scan_result.decisions)}条")
@@ -409,28 +545,30 @@ def run_auto_cycle(
 
     report = _format_cycle_report(status, actions, state, today=today, now=now_dt)
     if record_event:
-        try:
-            from data.database import Database
-            with Database(db_path=db_path) as db:
-                db.insert_auto_event({
-                    "date": today,
-                    "event_type": "auto_cycle",
-                    "status": status,
-                    "actions": actions,
-                    "details": {
-                        "loop_count": state.loop_count,
-                        "force_scan": force_scan,
-                        "paused": paused,
-                        "pause_reason": control_state.get("reason", ""),
-                        "last_prefetch_date": state.last_prefetch_date,
-                        "last_regime_date": state.last_regime_date,
-                        "last_review_date": state.last_review_date,
-                        "order_audit": getattr(exec_result, "order_audit", []),
-                    },
-                    "error": state.last_error,
-                })
-        except Exception as e:
-            logger.warning(f"自动盯盘事件写入失败(非致命): {e}")
+        for event in extra_events:
+            _record_auto_event(db_path, event)
+        _record_auto_event(db_path, {
+            "date": today,
+            "event_type": "auto_cycle",
+            "status": status,
+            "actions": actions,
+            "details": {
+                "loop_count": state.loop_count,
+                "force_scan": force_scan,
+                "paused": paused,
+                "pause_reason": control_state.get("reason", ""),
+                "last_prefetch_date": state.last_prefetch_date,
+                "last_regime_date": state.last_regime_date,
+                "last_review_date": state.last_review_date,
+                "last_watch_at": state.last_watch_at,
+                "last_rescue_scan_at": state.last_rescue_scan_at,
+                "watchlist_count": state.watchlist_count,
+                "missed_opportunity_count": state.missed_opportunity_count,
+                "rescue_scan_count": state.rescue_scan_count,
+                "order_audit": getattr(exec_result, "order_audit", []),
+            },
+            "error": state.last_error,
+        })
 
     notified = False
     if notify_enabled:

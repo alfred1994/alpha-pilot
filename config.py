@@ -82,6 +82,11 @@ AUTO_SCAN_INTERVAL = int(os.environ.get("AUTO_SCAN_INTERVAL", "1800"))     # 盘
 AUTO_STOP_INTERVAL = int(os.environ.get("AUTO_STOP_INTERVAL", "60"))       # 止损巡检间隔(秒)
 AUTO_REVIEW_AFTER = os.environ.get("AUTO_REVIEW_AFTER", "15:05")           # 收盘复盘最早时间
 AUTO_NOTIFY_ENABLED = os.environ.get("AUTO_NOTIFY_ENABLED", "1") == "1"    # 自动盯盘关键动作通知
+AUTO_WATCH_INTERVAL = int(os.environ.get("AUTO_WATCH_INTERVAL", "300"))    # 盘中轻量看盘间隔(秒)
+AUTO_RESCUE_SCAN_INTERVAL = int(os.environ.get("AUTO_RESCUE_SCAN_INTERVAL", "900"))  # 救援扫描间隔(秒)
+AUTO_WATCHLIST_TTL = int(os.environ.get("AUTO_WATCHLIST_TTL", "3600"))     # 观察池有效期(秒)
+AUTO_RESCUE_MAX_TOPK = int(os.environ.get("AUTO_RESCUE_MAX_TOPK", "5"))    # 救援扫描最多关注TopK
+AUTO_RESCUE_POSITION_SCALE = float(os.environ.get("AUTO_RESCUE_POSITION_SCALE", "0.4"))  # 救援小仓缩放
 
 # ══════════════════════════════════════════════════════════════════
 # 系统级风控参数

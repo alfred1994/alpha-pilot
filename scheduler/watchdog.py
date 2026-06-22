@@ -104,9 +104,11 @@ def _status_is_active(status: str) -> bool:
 
 def _event_has_error(event: dict) -> bool:
     """判断自动事件是否包含异常"""
+    if event.get("event_type") in ("auto_doctor", "ops_status"):
+        return False
     if event.get("error"):
         return True
-    return any("异常" in action for action in event.get("actions", []))
+    return any(str(action).startswith("异常") for action in event.get("actions", []))
 
 
 def _make_item(name: str, ok: bool, detail: str,
