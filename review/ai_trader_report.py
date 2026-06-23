@@ -21,6 +21,7 @@ from scheduler.control import get_auto_control_state
 
 
 REPORT_DIR = os.path.join(DATA_DIR, "reports")
+AUTO_EVENTS_REPORT_LIMIT = 50000
 
 
 def _parse_json(value, default):
@@ -520,7 +521,14 @@ def generate_ai_trader_report(days: int = 5, end_date: str = None,
 
     with Database(db_path=db_path) as db:
         events = _normalise_auto_events(
-            _query_range(db, "auto_events", "date", start_date, end_date)
+            _query_range(
+                db,
+                "auto_events",
+                "date",
+                start_date,
+                end_date,
+                limit=AUTO_EVENTS_REPORT_LIMIT,
+            )
         )
         trades = db.get_trades(start_date=start_date, end_date=end_date, limit=1000)
         decisions = db.get_llm_decisions(start_date=start_date, end_date=end_date, limit=1000)

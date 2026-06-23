@@ -213,6 +213,34 @@ def main():
         assert_true(os.path.exists(report["paths"]["markdown"]), "Markdown报告已落盘")
         assert_true(os.path.exists(report["paths"]["json"]), "JSON报告已落盘")
 
+        with Database(db_path=db_path) as db:
+            for i in range(1005):
+                db.insert_auto_event({
+                    "date": "2026-06-07",
+                    "event_type": "auto_cycle",
+                    "status": "盘中",
+                    "actions": ["止损巡检: 持仓0只 卖出0笔"],
+                    "created_at": f"2026-06-07T10:{i // 60:02d}:{i % 60:02d}",
+                })
+            db.insert_auto_event({
+                "date": "2026-06-07",
+                "event_type": "watch_cycle",
+                "status": "盘中",
+                "actions": ["轻量看盘: 候选10只 观察10只 确认10只 现金100% 涨停数 0->0"],
+                "created_at": "2026-06-07T13:45:00",
+            })
+
+        large_report = generate_ai_trader_report(
+            days=1,
+            end_date="2026-06-07",
+            db_path=db_path,
+            output_dir=output_dir,
+            control_file=control_path,
+            save=False,
+        )
+        assert_true(large_report["metrics"]["auto_cycle_count"] == 1005, "报告不会截断超过1000条自动循环")
+        assert_true(large_report["metrics"]["watch_count"] == 1, "报告不会漏掉高事件量后的轻量看盘")
+
         print("AI交易员试运行报告测试通过")
 
     finally:
