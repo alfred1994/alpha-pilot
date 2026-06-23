@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Any
 
 from data.database import Database
 from scheduler.auto_trader import run_auto_cycle
-from scheduler.control import pause_auto_trader
+from scheduler.control import pause_auto_trader, resume_auto_trader
 from scheduler.market_calendar import get_market_status, is_trading_day
 from scheduler.watchdog import (
     WatchdogItem,
@@ -163,6 +163,15 @@ def run_auto_doctor(
     pause_state = None
     if before_critical and not after_critical:
         actions.append("自愈后critical已清除")
+        # 自愈成功，自动恢复之前因 doctor 暂停的交易
+        resume_state = resume_auto_trader(
+            reason=f"doctor自愈成功: {', '.join(before_critical)} 已解决",
+            control_file=control_file,
+            updated_by="auto_doctor",
+        )
+        if resume_state.get("paused") is False:
+            actions.append("已自动恢复盘中交易动作")
+            pause_state = resume_state
     elif before_critical and after_critical:
         actions.append(f"自愈后仍有critical: {', '.join(after_critical)}")
         if auto_pause_on_failure:
