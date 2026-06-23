@@ -15,7 +15,7 @@ from typing import Callable, Dict, List, Optional, Any
 
 from data.database import Database
 from scheduler.auto_trader import run_auto_cycle
-from scheduler.control import pause_auto_trader, resume_auto_trader
+from scheduler.control import get_auto_control_state, pause_auto_trader, resume_auto_trader
 from scheduler.market_calendar import get_market_status, is_trading_day
 from scheduler.watchdog import (
     WatchdogItem,
@@ -25,6 +25,7 @@ from scheduler.watchdog import (
 
 
 NON_RECOVERABLE_CRITICALS = {"交易通道", "自动事件读取"}
+DOCTOR_UNRESOLVED_PREFIX = "doctor unresolved critical:"
 
 
 def _critical_items(items: List[WatchdogItem]) -> List[WatchdogItem]:
@@ -41,6 +42,38 @@ def _can_recover(items: List[WatchdogItem]) -> bool:
     """判断Doctor是否可以尝试自愈"""
     critical_names = set(_critical_names(items))
     return bool(critical_names) and not (critical_names & NON_RECOVERABLE_CRITICALS)
+
+
+def _is_doctor_pause(state: Dict) -> bool:
+    """判断当前暂停是否由Doctor自愈失败触发，避免覆盖人工暂停。"""
+    return (
+        bool(state.get("paused"))
+        and state.get("updated_by") == "auto_doctor"
+        and str(state.get("reason") or "").startswith(DOCTOR_UNRESOLVED_PREFIX)
+    )
+
+
+def _resume_doctor_pause_if_healthy(
+    *,
+    before_critical: List[str],
+    after_critical: List[str],
+    control_file: str = None,
+    recover: bool = True,
+) -> Optional[Dict]:
+    """Watchdog已恢复正常时，清理上一轮Doctor留下的自动暂停。"""
+    if after_critical or not recover:
+        return None
+    control_state = get_auto_control_state(control_file=control_file)
+    if not _is_doctor_pause(control_state):
+        return None
+
+    solved = before_critical or [str(control_state.get("reason") or "").replace(DOCTOR_UNRESOLVED_PREFIX, "").strip()]
+    reason = f"doctor自愈成功: {', '.join([item for item in solved if item])} 已解决"
+    return resume_auto_trader(
+        reason=reason,
+        control_file=control_file,
+        updated_by="auto_doctor",
+    )
 
 
 def _insert_doctor_event(date: str, status: str, actions: list,
@@ -163,15 +196,17 @@ def run_auto_doctor(
     pause_state = None
     if before_critical and not after_critical:
         actions.append("自愈后critical已清除")
-        # 自愈成功，自动恢复之前因 doctor 暂停的交易
-        resume_state = resume_auto_trader(
-            reason=f"doctor自愈成功: {', '.join(before_critical)} 已解决",
+        resume_state = _resume_doctor_pause_if_healthy(
+            before_critical=before_critical,
+            after_critical=after_critical,
             control_file=control_file,
-            updated_by="auto_doctor",
+            recover=recover,
         )
-        if resume_state.get("paused") is False:
+        if resume_state and resume_state.get("paused") is False:
             actions.append("已自动恢复盘中交易动作")
             pause_state = resume_state
+            after_items = run_auto_watchdog(**watchdog_kwargs)
+            after_critical = _critical_names(after_items)
     elif before_critical and after_critical:
         actions.append(f"自愈后仍有critical: {', '.join(after_critical)}")
         if auto_pause_on_failure:
@@ -186,6 +221,19 @@ def run_auto_doctor(
             after_critical = _critical_names(after_items)
         else:
             pause_state = None
+
+    if not before_critical and not after_critical:
+        resume_state = _resume_doctor_pause_if_healthy(
+            before_critical=before_critical,
+            after_critical=after_critical,
+            control_file=control_file,
+            recover=recover,
+        )
+        if resume_state and resume_state.get("paused") is False:
+            actions.append("Watchdog已恢复正常，已自动恢复Doctor暂停的盘中交易动作")
+            pause_state = resume_state
+            after_items = run_auto_watchdog(**watchdog_kwargs)
+            after_critical = _critical_names(after_items)
 
     closure_repair = None
     if repair_closure and not after_critical:

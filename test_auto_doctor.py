@@ -15,7 +15,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from data.database import Database
-from scheduler.control import get_auto_control_state
+from scheduler.control import get_auto_control_state, pause_auto_trader
 from scheduler.doctor import run_auto_doctor
 from scheduler.pipeline import PipelineResult, StepResult
 
@@ -180,6 +180,16 @@ def main():
         clean_control_file.close()
         os.unlink(clean_control_path)
         temp_paths.append(clean_control_path)
+        doctor_paused_control_file = tempfile.NamedTemporaryFile(suffix="_auto_control_doctor_paused.json", delete=False)
+        doctor_paused_control_path = doctor_paused_control_file.name
+        doctor_paused_control_file.close()
+        os.unlink(doctor_paused_control_path)
+        temp_paths.append(doctor_paused_control_path)
+        manual_paused_control_file = tempfile.NamedTemporaryFile(suffix="_auto_control_manual_paused.json", delete=False)
+        manual_paused_control_path = manual_paused_control_file.name
+        manual_paused_control_file.close()
+        os.unlink(manual_paused_control_path)
+        temp_paths.append(manual_paused_control_path)
 
         _write_state(clean_state_path, {
             "date": today,
@@ -202,6 +212,55 @@ def main():
                 "actions": ["止损巡检: 持仓1只 卖出0笔", "盘中扫描: 候选1只 决策1条", "模拟执行: 成交1笔 风控0项 错误0项"],
                 "created_at": now.isoformat(),
             })
+
+        pause_auto_trader(
+            reason="doctor unresolved critical: 自动盘锁",
+            control_file=doctor_paused_control_path,
+            updated_by="auto_doctor",
+        )
+        doctor_resume_result = run_auto_doctor(
+            recover=True,
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=clean_state_path,
+            db_path=clean_db_path,
+            control_file=doctor_paused_control_path,
+            repair_closure=False,
+            max_loop_lag_sec=120,
+            max_scan_lag_sec=120,
+            max_stop_lag_sec=120,
+        )
+        doctor_resume_state = get_auto_control_state(doctor_paused_control_path)
+        assert_true(not doctor_resume_state["paused"], "Watchdog正常后恢复Doctor遗留暂停")
+        assert_true(doctor_resume_result["pause_state"]["paused"] is False, "Doctor恢复状态写入结果")
+        doctor_control_item = [
+            item for item in doctor_resume_result["after_items"]
+            if item.name == "自动交易控制"
+        ][0]
+        assert_true("运行" in doctor_control_item.detail, "Doctor恢复后Watchdog报告显示运行")
+
+        pause_auto_trader(
+            reason="manual safety pause",
+            control_file=manual_paused_control_path,
+            updated_by="manual",
+        )
+        manual_pause_result = run_auto_doctor(
+            recover=True,
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=clean_state_path,
+            db_path=clean_db_path,
+            control_file=manual_paused_control_path,
+            repair_closure=False,
+            max_loop_lag_sec=120,
+            max_scan_lag_sec=120,
+            max_stop_lag_sec=120,
+        )
+        manual_pause_state = get_auto_control_state(manual_paused_control_path)
+        assert_true(manual_pause_state["paused"], "Doctor不会恢复人工暂停")
+        assert_true(manual_pause_result["pause_state"] is None, "人工暂停不会被写成Doctor恢复")
 
         closure_calls = []
 
