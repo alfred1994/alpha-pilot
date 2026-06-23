@@ -144,7 +144,7 @@ def test_after_market_cycle():
 
 
 def test_notification_filter():
-    from scheduler.notifier import should_notify_auto_cycle
+    from scheduler.notifier import format_auto_cycle_message, should_notify_auto_cycle
 
     assert_true(
         should_notify_auto_cycle(["模拟执行: 成交1笔 风控0项 错误0项"]),
@@ -157,6 +157,19 @@ def test_notification_filter():
     assert_true(
         not should_notify_auto_cycle(["盘后: 等待复盘窗口或今日已复盘"]),
         "空闲盘后不会触发通知",
+    )
+    pause_actions = [
+        "自动盯盘已暂停: doctor unresolved critical: 自动盘锁",
+        "盘中交易动作跳过: 止损巡检/扫描/模拟执行",
+    ]
+    assert_true(
+        not should_notify_auto_cycle(pause_actions),
+        "暂停空转不会每分钟触发通知",
+    )
+    pause_message = format_auto_cycle_message("2026-06-23", "盘中", pause_actions, loop_count=10)
+    assert_true(
+        "模拟交易成交" not in pause_message,
+        "暂停跳过消息不会被误标为模拟成交",
     )
 
 

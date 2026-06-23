@@ -212,17 +212,23 @@ def should_notify_auto_cycle(actions: list, error: str = "") -> bool:
     """
     if error:
         return True
-    for action in actions or []:
-        text = str(action)
-        if "异常" in text:
+    texts = [str(action) for action in (actions or [])]
+    if texts and all(
+        text.startswith("自动盯盘已暂停:")
+        or text.startswith("盘中交易动作跳过:")
+        for text in texts
+    ):
+        return False
+    for text in texts:
+        if text.startswith("异常"):
             return True
         if "盘前数据预热完成" in text or "市场环境识别" in text:
             return True
         if "盘后复盘进化" in text:
             return True
-        if "卖出" in text and "卖出0笔" not in text:
+        if text.startswith("止损巡检:") and "卖出0笔" not in text:
             return True
-        if "模拟执行" in text and "成交0笔" not in text:
+        if text.startswith("模拟执行:") and "成交0笔" not in text:
             return True
     return False
 
@@ -232,11 +238,12 @@ def format_auto_cycle_message(date: str, status: str, actions: list,
     """格式化自动盯盘通知"""
     now = _now_bj().strftime("%Y-%m-%d %H:%M")
     title = "自动盯盘"
-    if error or any("异常" in str(a) for a in actions or []):
+    action_texts = [str(a) for a in (actions or [])]
+    if error or any(text.startswith("异常") for text in action_texts):
         title = "自动盯盘告警"
-    elif any("模拟执行" in str(a) and "成交0笔" not in str(a) for a in actions or []):
+    elif any(text.startswith("模拟执行:") and "成交0笔" not in text for text in action_texts):
         title = "模拟交易成交"
-    elif any("盘后复盘进化" in str(a) for a in actions or []):
+    elif any("盘后复盘进化" in text for text in action_texts):
         title = "盘后复盘进化"
 
     lines = [
