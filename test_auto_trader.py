@@ -47,6 +47,7 @@ def test_premarket_cycle():
         },
         persist_state=False,
         record_event=False,
+        notify=False,
     )
 
     assert_true(calls == ["prefetch", "detect_regime"], "盘前会执行数据预热和市场环境识别")
@@ -136,6 +137,7 @@ def test_after_market_cycle():
         services={"run_review": fake_run_review},
         persist_state=False,
         record_event=False,
+        notify=False,
     )
 
     assert_true(calls == ["run_review"], "盘后到复盘窗口会执行复盘进化")
