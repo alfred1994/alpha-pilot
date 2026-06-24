@@ -268,16 +268,12 @@ def _calc_technical_signal() -> TimingSignal:
 
     # 沪深300布林带（Baostock）
     try:
-        import baostock as bs
-        bs.login()
-        rs = bs.query_history_k_data_plus(
+        from data.history import query_baostock_history_rows
+        raw = query_baostock_history_rows(
             "sh.000300", "date,close",
             start_date="2025-01-01", frequency="d"
         )
-        data = []
-        while rs.error_code == "0" and rs.next():
-            data.append(rs.get_row_data())
-        bs.logout()
+        data = (raw or {}).get("data") or []
 
         if data and len(data) > 20:
             close = pd.Series([float(row[1]) for row in data])

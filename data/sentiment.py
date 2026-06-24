@@ -13,10 +13,17 @@ from data import rate_limit, logger
 # 微博配置
 WEIBO_COOKIES_FILE = os.path.expanduser("~/.hermes/weibo_cookies.json")
 WEIBO_FINANCE_GID = "4730324816239267"
+_WEIBO_COOKIE_WARNED = False
 
 
 def _get_weibo_cookies() -> str:
     """读取微博cookies，支持JSON数组格式和字符串格式"""
+    global _WEIBO_COOKIE_WARNED
+    if not os.path.exists(WEIBO_COOKIES_FILE):
+        if not _WEIBO_COOKIE_WARNED:
+            logger.warning(f"微博cookies未配置，跳过微博舆情: {WEIBO_COOKIES_FILE}")
+            _WEIBO_COOKIE_WARNED = True
+        return ""
     try:
         with open(WEIBO_COOKIES_FILE, "r") as f:
             raw = f.read().strip()
@@ -35,7 +42,7 @@ def _get_weibo_cookies() -> str:
         # 已经是cookie字符串
         return raw
     except Exception as e:
-        logger.error(f"微博cookies读取失败: {e}")
+        logger.warning(f"微博cookies读取失败，跳过微博舆情: {e}")
         return ""
 
 
@@ -83,7 +90,7 @@ def get_weibo_finance(limit: int = 10) -> list:
         logger.info(f"微博财经: 获取{len(posts)}条")
         return posts
     except Exception as e:
-        logger.error(f"微博获取失败: {e}")
+        logger.warning(f"微博获取失败，已降级: {e}")
         return []
 
 

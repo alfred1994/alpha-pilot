@@ -6,11 +6,11 @@
 """
 import json
 import os
-import requests
 import pandas as pd
 from datetime import datetime
 from typing import List, Optional
 from signals import SignalResult, Direction, score_to_direction, logger
+from strategy.mimo_client import DEFAULT_HTTP_TIMEOUT, post_chat_completion
 
 # MiMo API 配置（与其他模块一致）
 MIMO_API_KEY = os.environ.get("XIAOMI_API_KEY", "")
@@ -18,16 +18,13 @@ MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 LLM_MODEL = "mimo-v2.5-pro"
 
 
-def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
-    """调用 MiMo LLM"""
+def _call_llm(prompt: str, max_tokens: int = 2000,
+              http_timeout: int = DEFAULT_HTTP_TIMEOUT) -> Optional[str]:
+    """调用 MiMo LLM（带进程级硬超时）"""
     if not MIMO_API_KEY:
         logger.warning("XIAOMI_API_KEY 未设置, 跳过LLM分析")
         return None
 
-    headers = {
-        "Authorization": f"Bearer {MIMO_API_KEY}",
-        "Content-Type": "application/json",
-    }
     payload = {
         "model": LLM_MODEL,
         "messages": [
@@ -46,11 +43,16 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
         "temperature": 0.1,
     }
 
-    url = f"{MIMO_BASE_URL}/chat/completions"
     try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=60)
-        resp.raise_for_status()
-        data = resp.json()
+        data = post_chat_completion(
+            base_url=MIMO_BASE_URL,
+            api_key=MIMO_API_KEY,
+            payload=payload,
+            http_timeout=http_timeout,
+            hard_timeout=http_timeout + 5,
+        )
+        if not data:
+            return None
         msg = data["choices"][0]["message"]
         content = (msg.get("content", "") or "").strip()
         reasoning = (msg.get("reasoning_content", "") or "").strip()

@@ -160,7 +160,7 @@ def run_auto_watchdog(
     lock_state = _load_lock(lock_file)
     control_state = get_auto_control_state(control_file=control_file)
     paused = bool(control_state.get("paused"))
-    max_loop_lag_sec = max_loop_lag_sec or max(180, AUTO_LOOP_INTERVAL * 3)
+    max_loop_lag_sec = max_loop_lag_sec or max(300, AUTO_LOOP_INTERVAL * 5)
     max_scan_lag_sec = max_scan_lag_sec or max(AUTO_SCAN_INTERVAL + 300, int(AUTO_SCAN_INTERVAL * 1.5))
     max_stop_lag_sec = max_stop_lag_sec or max(180, AUTO_STOP_INTERVAL * 3)
 

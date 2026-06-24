@@ -47,16 +47,9 @@ def _load_trading_calendar(year: int = None) -> set:
         return _trading_dates_cache
 
     try:
-        import baostock as bs
-        bs.login()
-        rs = bs.query_trade_dates(
-            start_date=f"{year}-01-01",
-            end_date=f"{year}-12-31"
-        )
-        data = []
-        while rs.error_code == "0" and rs.next():
-            data.append(rs.get_row_data())
-        bs.logout()
+        from data.history import query_baostock_trade_dates
+        raw = query_baostock_trade_dates(f"{year}-01-01", f"{year}-12-31")
+        data = (raw or {}).get("data") or []
 
         if data:
             dates = set()

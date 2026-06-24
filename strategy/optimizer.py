@@ -12,11 +12,11 @@ import json
 import re
 import logging
 import os
-import requests
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 
 from .strategies.base import BaseStrategy, Signal
+from .mimo_client import DEFAULT_HTTP_TIMEOUT, post_chat_completion
 
 logger = logging.getLogger("strategy.optimizer")
 
@@ -219,13 +219,10 @@ class StrategyOptimizer:
             return {"analysis": "API Key未配置", "params": {}, "reasoning": "跳过", "stop": True}
 
         try:
-            resp = requests.post(
-                f"{base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
+            data = post_chat_completion(
+                base_url=base_url,
+                api_key=api_key,
+                payload={
                     "model": "mimo-v2.5-pro",
                     "messages": [
                         {"role": "system", "content": "你是A股量化策略优化专家，用中文回答。"},
@@ -234,11 +231,13 @@ class StrategyOptimizer:
                     "max_tokens": 2000,
                     "temperature": 0.3,
                 },
-                timeout=60,
+                http_timeout=DEFAULT_HTTP_TIMEOUT,
+                hard_timeout=DEFAULT_HTTP_TIMEOUT + 5,
             )
-            resp.raise_for_status()
+            if not data:
+                return {"analysis": "LLM无响应", "params": {}, "reasoning": "超时或失败", "stop": False}
 
-            msg = resp.json()["choices"][0]["message"]
+            msg = data["choices"][0]["message"]
             content = (msg.get("content", "") or "").strip()
             if not content:
                 content = (msg.get("reasoning_content", "") or "").strip()

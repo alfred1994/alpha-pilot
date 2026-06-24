@@ -17,12 +17,11 @@ LLM决策引擎
 import json
 import os
 import logging
-import requests
-import threading
 from typing import Dict, List, Optional
 from datetime import datetime
 
 from strategy.decision import TradeDecision, DimensionScore
+from strategy.mimo_client import DEFAULT_HTTP_TIMEOUT, post_chat_completion
 
 logger = logging.getLogger("strategy.llm_trader")
 
@@ -33,16 +32,12 @@ LLM_MODEL = "mimo-v2.5-pro"
 
 
 def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
-              http_timeout: int = 60) -> Optional[str]:
-    """调用 MiMo LLM（daemon线程硬超时 + 自动重试）"""
+              http_timeout: int = DEFAULT_HTTP_TIMEOUT) -> Optional[str]:
+    """调用 MiMo LLM（子进程硬超时 + 自动重试）"""
     if not MIMO_API_KEY:
         logger.warning("XIAOMI_API_KEY 未设置, LLM决策不可用")
         return None
 
-    headers = {
-        "Authorization": f"Bearer {MIMO_API_KEY}",
-        "Content-Type": "application/json",
-    }
     payload = {
         "model": LLM_MODEL,
         "messages": [
@@ -61,40 +56,28 @@ def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
         "temperature": 0.2,  # 低温度，决策要稳定
     }
 
-    hard_timeout = http_timeout + 5  # 硬超时略大于HTTP超时
-
     for attempt in range(1 + retries):
-        # 【Phase1-Task1】用daemon线程实现硬超时，避免ThreadPoolExecutor context manager等待线程完成
-        result_box = [None]  # 用列表存储结果（闭包可修改）
-
-        def _do_call():
-            try:
-                url = f"{MIMO_BASE_URL}/chat/completions"
-                resp = requests.post(url, headers=headers, json=payload, timeout=http_timeout)
-                resp.raise_for_status()
-                msg = resp.json()["choices"][0]["message"]
-                content = msg.get("content", "") or ""
-                # MiMo模型: 当max_tokens不够时，内容可能只在reasoning_content里
-                if not content.strip():
-                    reasoning = msg.get("reasoning_content", "") or ""
-                    if reasoning.strip():
-                        logger.warning("LLM返回空content，使用reasoning_content兜底")
-                        content = reasoning
-                result_box[0] = content if content.strip() else None
-            except Exception as e:
-                logger.error(f"LLM调用失败(第{attempt+1}次): {e}")
-                result_box[0] = None
-
-        t = threading.Thread(target=_do_call, daemon=True)
-        t.start()
-        t.join(timeout=hard_timeout)
-
-        if t.is_alive():
-            logger.error(f"LLM调用超时({hard_timeout}s, 第{attempt+1}次)")
-        elif result_box[0] is not None:
-            return result_box[0]
-        else:
+        data = post_chat_completion(
+            base_url=MIMO_BASE_URL,
+            api_key=MIMO_API_KEY,
+            payload=payload,
+            http_timeout=http_timeout,
+            hard_timeout=http_timeout + 5,
+        )
+        if data:
+            msg = data["choices"][0]["message"]
+            content = msg.get("content", "") or ""
+            # MiMo模型: 当max_tokens不够时，内容可能只在reasoning_content里
+            if not content.strip():
+                reasoning = msg.get("reasoning_content", "") or ""
+                if reasoning.strip():
+                    logger.warning("LLM返回空content，使用reasoning_content兜底")
+                    content = reasoning
+            if content.strip():
+                return content
             logger.warning(f"LLM第{attempt+1}次调用返回空，{'重试中...' if attempt < retries else '已用完重试次数'}")
+        else:
+            logger.warning(f"LLM第{attempt+1}次调用失败/超时，{'重试中...' if attempt < retries else '已用完重试次数'}")
 
     return None
 
@@ -333,7 +316,7 @@ def make_decision(
     overnight_text: str = "",
     memory=None,  # P2-12: 外部传入的 TradeMemory 实例（连接复用）
     llm_retries: int = 2,
-    llm_timeout: int = 60,
+    llm_timeout: int = DEFAULT_HTTP_TIMEOUT,
 ) -> TradeDecision:
     """
     LLM决策主函数

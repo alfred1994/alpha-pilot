@@ -13,6 +13,7 @@ import json
 import os
 import time
 import logging
+import threading
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, Optional, Callable, Any
@@ -614,9 +615,24 @@ def run_auto_loop(loop_interval: int = None, scan_interval: int = None,
     state = _load_state()
 
     loop_lock = None
+    heartbeat_stop = None
+    heartbeat_thread = None
     if not once:
         loop_lock = AutoLoopLock(lock_file=lock_file).acquire()
         logger.info(f"自动盯盘锁已获取: {loop_lock.lock_file}")
+        heartbeat_stop = threading.Event()
+
+        def _heartbeat_loop():
+            while not heartbeat_stop.wait(30):
+                if loop_lock and loop_lock.acquired:
+                    loop_lock.heartbeat()
+
+        heartbeat_thread = threading.Thread(
+            target=_heartbeat_loop,
+            name="auto-lock-heartbeat",
+            daemon=True,
+        )
+        heartbeat_thread.start()
 
     try:
         while True:
@@ -631,5 +647,9 @@ def run_auto_loop(loop_interval: int = None, scan_interval: int = None,
                 loop_lock.heartbeat()
             time.sleep(max(5, interval))
     finally:
+        if heartbeat_stop:
+            heartbeat_stop.set()
+        if heartbeat_thread:
+            heartbeat_thread.join(timeout=2)
         if loop_lock:
             loop_lock.release()

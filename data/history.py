@@ -9,16 +9,143 @@
     3. Baostock（兜底）
 """
 import baostock as bs
+import multiprocessing as mp
+import os
 import pandas as pd
+import queue
 from datetime import datetime, timedelta
 from typing import Optional
 import logging
 
 logger = logging.getLogger("data.history")
+BAOSTOCK_TIMEOUT = int(os.environ.get("BAOSTOCK_TIMEOUT", "45"))
 
 # 字段映射
 DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
 DAILY_SIMPLE_FIELDS = "date,code,open,high,low,close,volume,amount,turn,pctChg"
+
+
+def _query_history_rows(bs_code: str, fields: str, start_date: str, end_date: str,
+                        frequency: str, adjustflag: str) -> dict:
+    """在当前进程内执行Baostock历史行情查询。"""
+    lg = bs.login()
+    try:
+        rs = bs.query_history_k_data_plus(
+            bs_code, fields,
+            start_date=start_date, end_date=end_date,
+            frequency=frequency, adjustflag=adjustflag
+        )
+        data = []
+        while rs.error_code == "0" and rs.next():
+            data.append(rs.get_row_data())
+        return {"fields": rs.fields, "data": data, "error_code": rs.error_code, "error_msg": rs.error_msg}
+    finally:
+        bs.logout()
+
+
+def _query_stock_basic_rows() -> dict:
+    """在当前进程内执行Baostock股票列表查询。"""
+    lg = bs.login()
+    try:
+        rs = bs.query_stock_basic()
+        data = []
+        while rs.error_code == "0" and rs.next():
+            data.append(rs.get_row_data())
+        return {"fields": rs.fields, "data": data, "error_code": rs.error_code, "error_msg": rs.error_msg}
+    finally:
+        bs.logout()
+
+
+def _query_trade_dates_rows(start_date: str, end_date: str) -> dict:
+    """在当前进程内执行Baostock交易日历查询。"""
+    lg = bs.login()
+    try:
+        rs = bs.query_trade_dates(start_date=start_date, end_date=end_date)
+        data = []
+        while rs.error_code == "0" and rs.next():
+            data.append(rs.get_row_data())
+        return {"data": data, "error_code": rs.error_code, "error_msg": rs.error_msg}
+    finally:
+        bs.logout()
+
+
+def _baostock_worker(kind: str, args: tuple, result_queue):
+    """Baostock子进程入口。"""
+    try:
+        if kind == "history":
+            result = _query_history_rows(*args)
+        elif kind == "stock_basic":
+            result = _query_stock_basic_rows()
+        elif kind == "trade_dates":
+            result = _query_trade_dates_rows(*args)
+        else:
+            result = {"error_code": "-1", "error_msg": f"未知Baostock任务: {kind}"}
+        result_queue.put({"ok": True, "result": result})
+    except Exception as e:
+        result_queue.put({"ok": False, "error": str(e)})
+
+
+def _run_baostock(kind: str, args: tuple = (), timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
+    """用子进程执行Baostock调用，超时后终止子进程。"""
+    if os.name == "nt":
+        try:
+            if kind == "history":
+                return _query_history_rows(*args)
+            if kind == "stock_basic":
+                return _query_stock_basic_rows()
+            if kind == "trade_dates":
+                return _query_trade_dates_rows(*args)
+        except Exception as e:
+            logger.warning(f"Baostock调用失败({kind}): {e}")
+            return None
+
+    ctx = mp.get_context("fork")
+    result_queue = ctx.Queue(maxsize=1)
+    proc = ctx.Process(target=_baostock_worker, args=(kind, args, result_queue))
+    proc.daemon = True
+    proc.start()
+    proc.join(float(timeout))
+    if proc.is_alive():
+        proc.terminate()
+        proc.join(3)
+        if proc.is_alive():
+            proc.kill()
+            proc.join(1)
+        logger.warning(f"Baostock调用超时({timeout}s)，已终止: {kind}")
+        return None
+
+    try:
+        payload = result_queue.get_nowait()
+    except queue.Empty:
+        logger.warning(f"Baostock调用无返回({kind}), exitcode={proc.exitcode}")
+        return None
+    if not payload.get("ok"):
+        logger.warning(f"Baostock调用失败({kind}): {payload.get('error')}")
+        return None
+    return payload.get("result") or {}
+
+
+def query_baostock_history_rows(bs_code: str, fields: str, start_date: str = "",
+                                end_date: str = "", frequency: str = "d",
+                                adjustflag: str = "2",
+                                timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
+    """对外提供带超时保护的Baostock历史行情原始查询。"""
+    return _run_baostock(
+        "history",
+        (bs_code, fields, start_date, end_date, frequency, adjustflag),
+        timeout=timeout,
+    )
+
+
+def query_baostock_stock_basic(timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
+    """对外提供带超时保护的Baostock股票列表原始查询。"""
+    return _run_baostock("stock_basic", timeout=timeout)
+
+
+def query_baostock_trade_dates(start_date: str, end_date: str,
+                               timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
+    """对外提供带超时保护的Baostock交易日历原始查询。"""
+    return _run_baostock("trade_dates", (start_date, end_date), timeout=timeout)
 
 
 def _to_bs_code(code: str) -> str:
@@ -174,35 +301,24 @@ def _fetch_baostock(code: str, start_date: str, end_date: str,
     adjustflag = {"qfq": "2", "hfq": "1", "": "3"}.get(adjust, "2")
     fields = DAILY_SIMPLE_FIELDS if simple else DAILY_FIELDS
 
-    lg = bs.login()
-    try:
-        rs = bs.query_history_k_data_plus(
-            bs_code, fields,
-            start_date=start_date, end_date=end_date,
-            frequency="d", adjustflag=adjustflag
-        )
+    raw = query_baostock_history_rows(bs_code, fields, start_date, end_date, "d", adjustflag)
+    if not raw or raw.get("error_code") != "0" or not raw.get("data"):
+        if raw and raw.get("error_code") not in (None, "0"):
+            logger.warning(f"Baostock获取失败 {code}: {raw.get('error_msg')}")
+        return pd.DataFrame()
 
-        data = []
-        while rs.error_code == "0" and rs.next():
-            data.append(rs.get_row_data())
+    df = pd.DataFrame(raw["data"], columns=raw["fields"])
 
-        if not data:
-            return pd.DataFrame()
+    # 类型转换
+    numeric_cols = ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]
+    if not simple:
+        numeric_cols += ["preclose", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM"]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        df = pd.DataFrame(data, columns=rs.fields)
-
-        # 类型转换
-        numeric_cols = ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]
-        if not simple:
-            numeric_cols += ["preclose", "peTTM", "pbMRQ", "psTTM", "pcfNcfTTM"]
-        for col in numeric_cols:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        logger.info(f"Baostock获取: {code} {len(df)}条")
-        return df
-    finally:
-        bs.logout()
+    logger.info(f"Baostock获取: {code} {len(df)}条")
+    return df
 
 
 def get_weekly(code: str, start_date: str = None, end_date: str = None) -> pd.DataFrame:
@@ -229,42 +345,26 @@ def _get_period_data(code: str, freq: str, start_date: str = None, end_date: str
     start_date = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
     end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
 
-    lg = bs.login()
-    try:
-        rs = bs.query_history_k_data_plus(
-            bs_code, DAILY_SIMPLE_FIELDS,
-            start_date=start_date, end_date=end_date,
-            frequency=freq, adjustflag="2"
-        )
-        data = []
-        while rs.error_code == "0" and rs.next():
-            data.append(rs.get_row_data())
-        if not data:
-            return pd.DataFrame()
-        df = pd.DataFrame(data, columns=rs.fields)
-        for col in ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]:
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
-        return df
-    finally:
-        bs.logout()
+    raw = query_baostock_history_rows(bs_code, DAILY_SIMPLE_FIELDS, start_date, end_date, freq, "2")
+    if not raw or raw.get("error_code") != "0" or not raw.get("data"):
+        return pd.DataFrame()
+    df = pd.DataFrame(raw["data"], columns=raw["fields"])
+    for col in ["open", "high", "low", "close", "volume", "amount", "turn", "pctChg"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
 
 
 def get_stock_list() -> pd.DataFrame:
     """获取全部A股列表"""
-    lg = bs.login()
-    try:
-        rs = bs.query_stock_basic()
-        data = []
-        while rs.error_code == "0" and rs.next():
-            data.append(rs.get_row_data())
-        df = pd.DataFrame(data, columns=rs.fields)
-        # 只保留正常上市的A股
-        df = df[df["type"] == "1"]  # 1=股票
-        df = df[df["status"] == "1"]  # 1=上市
-        return df
-    finally:
-        bs.logout()
+    raw = query_baostock_stock_basic()
+    if not raw or raw.get("error_code") != "0" or not raw.get("data"):
+        return pd.DataFrame()
+    df = pd.DataFrame(raw["data"], columns=raw["fields"])
+    # 只保留正常上市的A股
+    df = df[df["type"] == "1"]  # 1=股票
+    df = df[df["status"] == "1"]  # 1=上市
+    return df
 
 
 # 测试
