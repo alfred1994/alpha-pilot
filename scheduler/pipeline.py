@@ -424,7 +424,7 @@ def fast_scan(
                     cash=_cash,
                     memory=_shared_memory,  # P2-12: 复用共享记忆连接
                     llm_retries=0,
-                    llm_timeout=20,
+                    llm_timeout=30,
                 )
 
                 if _decision and _decision.action:
@@ -542,7 +542,7 @@ def fast_scan(
                         total_assets=_total_assets_sell,
                         cash=_cash_sell,
                         llm_retries=0,
-                        llm_timeout=20,
+                        llm_timeout=30,
                     )
 
                     _sell_eval_count += 1
