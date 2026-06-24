@@ -403,7 +403,8 @@ def fast_scan(
             logger.debug(f"[快链路] 创建共享记忆失败(可忽略): {_e}")
 
         llm_count = 0
-        for _i, _s in enumerate(top_candidates[:5]):  # Top 5
+        # 并发LLM决策
+        def _parallel_llm_decision(_s):
             try:
                 from strategy.decision import DimensionScore as _DS
                 _dims = {}
@@ -414,7 +415,7 @@ def fast_scan(
                     )
 
                 from strategy.llm_trader import make_decision
-                _decision = make_decision(
+                return _s, make_decision(
                     code=_s["code"],
                     name=_s["name"],
                     dimensions=_dims,
@@ -422,32 +423,37 @@ def fast_scan(
                     current_positions=_positions,
                     total_assets=_total_assets,
                     cash=_cash,
-                    memory=_shared_memory,  # P2-12: 复用共享记忆连接
                     llm_retries=0,
-                    llm_timeout=30,
+                    llm_timeout=60,
                 )
-
-                if _decision and _decision.action:
-                    # LLM决策成功：用LLM结果覆盖加权打分的action
-                    _s["llm_action"] = _decision.action
-                    _s["llm_confidence"] = _decision.confidence
-                    _s["llm_reason"] = _decision.reason
-                    if _decision.confidence > 0:
-                        _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
-                        llm_count += 1
-                    else:
-                        _llm_timeout_count += 1
-                    if _decision.action == "HOLD":
-                        # LLM认为该持有，从top_candidates中移除
-                        plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
-                    elif _decision.action == "SELL":
-                        # LLM建议卖出（持仓股），标记为SELL
-                        _s["llm_action"] = "SELL"
             except Exception as _e:
-                logger.warning(f"[快链路] LLM决策失败 {_s.get('code', '?')}: {_e}，默认HOLD")
-                _s["llm_action"] = "HOLD"  # 失败默认HOLD
-                _s["llm_confidence"] = 0.0
-                _s["llm_reason"] = f"LLM失败: {str(_e)[:50]}"
+                logger.warning(f"[快链路] LLM决策异常 {_s.get('code', '?')}: {_e}")
+                return _s, None
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as _llm_executor:
+            _llm_futures = {
+                _llm_executor.submit(_parallel_llm_decision, _s): _s
+                for _s in top_candidates[:5]
+            }
+            for _future in concurrent.futures.as_completed(_llm_futures, timeout=90):
+                try:
+                    _s, _decision = _future.result()
+                    if _decision and _decision.action:
+                        # LLM决策成功：用LLM结果覆盖加权打分的action
+                        _s["llm_action"] = _decision.action
+                        _s["llm_confidence"] = _decision.confidence
+                        _s["llm_reason"] = _decision.reason
+                        if _decision.confidence > 0:
+                            _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
+                            llm_count += 1
+                        else:
+                            _llm_timeout_count += 1
+                        if _decision.action == "HOLD":
+                            plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
+                        elif _decision.action == "SELL":
+                            _s["llm_action"] = "SELL"
+                except Exception as _e:
+                    logger.warning(f"[快链路] LLM并发结果处理失败: {_e}")
 
         logger.info(f"[快链路] LLM决策: {llm_count}/{min(5, len(top_candidates))} 成功")
 
