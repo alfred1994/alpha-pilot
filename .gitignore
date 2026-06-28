@@ -36,6 +36,7 @@ data/task_scripts/
 # 日志
 *.log
 logs/
+.migration/
 
 # 环境变量（含API密钥）
 .env
