@@ -131,6 +131,34 @@ def get_limit_up(date: str = None, limit: int = 200) -> List[Dict]:
     """
     if not date:
         date = datetime.now().strftime("%Y%m%d")
+
+    # 优先使用a-stock-data直连HTTP接口，失败或空结果再降级到CloakBrowser。
+    try:
+        from data.a_stock_data import get_limit_up_pool
+        pool = get_limit_up_pool(date)[:limit]
+        if pool:
+            stocks = []
+            for item in pool:
+                first_seal = str(item.get("first_seal", ""))
+                stocks.append({
+                    "code": item.get("code", ""),
+                    "name": item.get("name", ""),
+                    "change_pct": item.get("pct", 0),
+                    "price": item.get("price", 0),
+                    "amount": item.get("amount", 0) / 1e8,
+                    "consecutive": item.get("limit_days", 1),
+                    "first_seal_time": first_seal[:5],
+                    "industry": item.get("industry", ""),
+                    "market_cap": item.get("float_cap", 0) / 1e8,
+                    "turnover": item.get("turnover", 0),
+                    "seal_amount": item.get("seal_fund", 0) / 1e4,
+                    "break_times": item.get("break_times", 0),
+                    "zt_stat": item.get("zt_stat", ""),
+                })
+            logger.info(f"涨停板 {date}: {len(stocks)}只 (直连)")
+            return stocks
+    except Exception as e:
+        logger.debug(f"涨停板直连接口失败，降级CloakBrowser: {e}")
     
     url = f"https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize={limit}&sort=fbt:asc&date={date}"
     
@@ -183,6 +211,31 @@ def get_limit_down(date: str = None, limit: int = 200) -> List[Dict]:
     """
     if not date:
         date = datetime.now().strftime("%Y%m%d")
+
+    # 优先使用a-stock-data直连HTTP接口，失败或空结果再降级到CloakBrowser。
+    try:
+        from data.a_stock_data import get_limit_down_pool
+        pool = get_limit_down_pool(date)[:limit]
+        if pool:
+            stocks = []
+            for item in pool:
+                stocks.append({
+                    "code": item.get("code", ""),
+                    "name": item.get("name", ""),
+                    "change_pct": item.get("pct", 0),
+                    "price": item.get("price", 0),
+                    "amount": item.get("board_amount", 0) / 1e8,
+                    "industry": item.get("industry", ""),
+                    "market_cap": 0,
+                    "turnover": item.get("turnover", 0),
+                    "seal_amount": item.get("seal_fund", 0) / 1e4,
+                    "dt_days": item.get("dt_days", 0),
+                    "open_times": item.get("open_times", 0),
+                })
+            logger.info(f"跌停板 {date}: {len(stocks)}只 (直连)")
+            return stocks
+    except Exception as e:
+        logger.debug(f"跌停板直连接口失败，降级CloakBrowser: {e}")
 
     url = f"https://push2ex.eastmoney.com/getTopicDTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize={limit}&sort=fbt:asc&date={date}"
 

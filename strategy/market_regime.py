@@ -100,9 +100,37 @@ def _calc_breadth_indicators() -> Dict:
             "limit_up_count": int,    # 涨停数
             "limit_down_count": int,  # 跌停数
             "limit_ratio": float,     # 涨跌停比
+            "break_rate": float,      # 炸板率
+            "max_height": int,        # 最高连板
+            "limit_ladder": dict,     # 连板梯队
         }
     """
     indicators = {}
+    try:
+        from data.a_stock_data import get_limit_up_sentiment
+        sentiment = get_limit_up_sentiment()
+        if sentiment and (
+            sentiment.get("zt_count", 0)
+            or sentiment.get("dt_count", 0)
+            or sentiment.get("zb_count", 0)
+            or sentiment.get("yzt_count", 0)
+        ):
+            up_count = sentiment.get("zt_count", 0)
+            down_count = sentiment.get("dt_count", 0)
+            total = up_count + down_count
+            return {
+                "limit_up_count": up_count,
+                "limit_down_count": down_count,
+                "limit_ratio": up_count / total if total > 0 else 0.5,
+                "break_board_count": sentiment.get("zb_count", 0),
+                "break_rate": sentiment.get("break_rate", 0),
+                "max_height": sentiment.get("max_height", 0),
+                "limit_ladder": sentiment.get("ladder", {}),
+                "promotion_rate": sentiment.get("promotion_rate", 0),
+            }
+    except Exception as e:
+        logger.debug(f"打板情绪增强指标获取失败: {e}")
+
     try:
         from data.market import get_limit_up, get_limit_down
         df_up = get_limit_up()
@@ -231,6 +259,26 @@ def _classify_regime(indicators: Dict) -> tuple:
     elif limit_ratio < 0.3:
         scores["bear"] += 1
         reasons.append(f"涨停占比{limit_ratio:.0%}")
+
+    # 6. 打板情绪质量：炸板率、连板高度、昨日涨停晋级率
+    break_rate = indicators.get("break_rate")
+    max_height = indicators.get("max_height", 0)
+    promotion_rate = indicators.get("promotion_rate")
+    if break_rate is not None:
+        if break_rate >= 45:
+            scores["bear"] += 1
+            reasons.append(f"炸板率高({break_rate:.1f}%)")
+        elif break_rate <= 25 and max_height >= 3:
+            scores["bull"] += 1
+            reasons.append(f"打板情绪强(炸板率{break_rate:.1f}%, {max_height}连板)")
+
+    if promotion_rate is not None:
+        if promotion_rate >= 35:
+            scores["bull"] += 1
+            reasons.append(f"昨涨停晋级率{promotion_rate:.1f}%")
+        elif promotion_rate > 0 and promotion_rate <= 15:
+            scores["bear"] += 1
+            reasons.append(f"昨涨停晋级率低({promotion_rate:.1f}%)")
 
     # 选出最高分的环境
     best = max(scores, key=scores.get)
@@ -475,6 +523,14 @@ def format_regime_report(regime: MarketRegime) -> str:
             lines.append(f"  沪深300 20日: {ind['hs300_pct_20d']:+.1f}%")
         if "limit_up_count" in ind:
             lines.append(f"  涨停: {ind.get('limit_up_count', 0)}只  跌停: {ind.get('limit_down_count', 0)}只")
+        if "break_rate" in ind:
+            lines.append(
+                f"  炸板率: {ind.get('break_rate', 0):.1f}%  "
+                f"最高连板: {ind.get('max_height', 0)}  "
+                f"昨涨停晋级率: {ind.get('promotion_rate', 0):.1f}%"
+            )
+        if ind.get("limit_ladder"):
+            lines.append(f"  连板梯队: {ind.get('limit_ladder')}")
 
     if regime.llm_reasoning:
         lines.append("-" * 50)
