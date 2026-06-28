@@ -50,7 +50,7 @@ SIGNAL_WEIGHTS = {
 # 选股器参数
 # ══════════════════════════════════════════════════════════════════
 PICKER_TOP_N = 10                # 选股器输出候选数量
-PICKER_MIN_SCORE = 55            # 最低入选分数
+PICKER_MIN_SCORE = 20            # 最低入选分数（原55，现20，适应低位股）
 PICKER_MAX_PE = 200              # 最大市盈率过滤
 PICKER_MIN_AMOUNT = 5000         # 最小成交额（万元）
 
@@ -73,6 +73,16 @@ REBALANCE_MINUTE = 50
 USE_LLM_TRADER = True             # True=用LLM决策, False=用加权打分
 USE_LLM_REGIME = True             # True=用LLM识别市场环境, False=用规则
 BROKER_MODE = os.environ.get("BROKER_MODE", "paper").lower()  # paper=模拟盘, real=预留实盘适配器
+
+# ══════════════════════════════════════════════════════════════════
+# 选股混合模式配置
+# ══════════════════════════════════════════════════════════════════
+USE_LOW_POSITION = True           # 启用低位潜力股
+LOW_POSITION_MODE = True          # 低位模式（关闭追高维度）
+LIMIT_UP_SCORE_REDUCE = True      # 降低涨停板权重
+LIMIT_UP_BASE_SCORE = 10          # 涨停板基础分（原40，现10）
+LIMIT_UP_DAY_SCORE = 5            # 每连板加分（原15，现5）
+LIMIT_UP_MAX_SCORE = 30           # 涨停板最高分（原80，现30）
 
 # ══════════════════════════════════════════════════════════════════
 # 自动盯盘配置

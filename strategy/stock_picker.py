@@ -31,7 +31,8 @@ class Candidate:
     industry: str = ""         # 所属行业
 
     def __repr__(self):
-        return f"{self.code} {self.name} score={self.score:.1f} src={','.join(self.source)}"
+        change_str = f" {self.change_pct:+.2f}%" if self.change_pct != 0 else ""
+        return f"{self.code} {self.name} score={self.score:.1f}{change_str} src={','.join(self.source)}"
 
 
 def _get_limit_up_candidates() -> Dict[str, Candidate]:
@@ -58,7 +59,9 @@ def _get_limit_up_candidates() -> Dict[str, Candidate]:
             industry=str(row.get("所属行业", "")),
         )
         # 连板加分: 基础分40, 每板+15分, 上限80
-        c.score = min(80, 40 + c.limit_up_days * 15)
+        # 使用配置的涨停板权重
+        from config import LIMIT_UP_BASE_SCORE, LIMIT_UP_DAY_SCORE, LIMIT_UP_MAX_SCORE
+        c.score = min(LIMIT_UP_MAX_SCORE, LIMIT_UP_BASE_SCORE + c.limit_up_days * LIMIT_UP_DAY_SCORE)
         candidates[code] = c
 
     logger.info(f"涨停板候选: {len(candidates)}只")
@@ -540,6 +543,26 @@ def _merge_candidates(
     return merged
 
 
+
+def get_sentiment_boost() -> Dict[str, float]:
+    """获取舆情加成分数"""
+    boost = {}
+    try:
+        from data.sentiment_analyzer import run_sentiment_analysis
+        result = run_sentiment_analysis()
+        if result.get("success"):
+            recommendations = result.get("recommendations", [])
+            for rec in recommendations:
+                sector = rec.get("sector", "")
+                score = rec.get("score", 0)
+                if sector and score > 30:
+                    # 将板块分数转换为加成分数（最高10分）
+                    boost[sector] = min(10, score / 10)
+    except Exception as e:
+        logger.warning(f"获取舆情加成失败: {e}")
+    return boost
+
+
 def pick_stocks(
     top_n: int = None,
     min_score: float = None,
@@ -553,6 +576,7 @@ def pick_stocks(
     use_unlock_alert: bool = True,
     use_low_position: bool = False,  # 新增：低位潜力股
     low_position_mode: bool = False,  # 新增：纯低位模式（关闭追高维度）
+    sentiment_boost: Dict[str, float] = None,  # 新增：舆情加成
 ) -> List[Candidate]:
     """
     AI选股主函数
@@ -621,9 +645,33 @@ def pick_stocks(
     if len(merged) < before_filter:
         logger.info(f"过滤ST/退市股: {before_filter} → {len(merged)}只")
 
+    # 应用舆情加成
+    if sentiment_boost:
+        for c in merged:
+            # 检查股票名称是否包含热门板块关键词
+            for sector, boost in sentiment_boost.items():
+                if sector in c.name or any(kw in c.name for kw in [sector]):
+                    c.score += boost
+                    if "舆情加成" not in c.source:
+                        c.source.append("舆情加成")
+                    logger.debug(f"舆情加成: {c.name} +{boost:.1f}分 ({sector})")
+    
     # 按分数过滤
     filtered = [c for c in merged if c.score >= min_score]
     result = filtered[:top_n]
+    
+    # 获取实时涨跌幅
+    if result:
+        try:
+            from data.realtime import get_realtime_batch
+            codes = [c.code for c in result]
+            quotes = get_realtime_batch(codes)
+            quote_map = {q.code: q for q in quotes}
+            for c in result:
+                if c.code in quote_map:
+                    c.change_pct = quote_map[c.code].change_pct
+        except Exception as e:
+            logger.warning(f"获取实时行情失败: {e}")
 
     logger.info(f"选股完成: 合并{len(merged)}只, 过滤后{len(filtered)}只, 输出{len(result)}只")
     for c in result:
@@ -804,42 +852,68 @@ def pick_stocks_by_htsc(
     from data.htsc_client import select_stock_parsed
 
     if queries is None:
-        # 默认选股条件（单条，控制在10只以内）
+        # 默认选股条件（多维度，覆盖热门板块）
         queries = [
+            # 原有条件：主力资金流入
             "主力净流入超过3000万且换手率大于3%的沪深主板股票",
+            # 半导体/芯片板块
+            "半导体芯片板块主力净流入超过2000万且换手率大于2%的股票",
+            # 光模块/光通信板块
+            "光模块光通信板块主力净流入超过2000万且换手率大于2%的股票",
+            # AI/人工智能板块
+            "人工智能AI板块主力净流入超过2000万且换手率大于2%的股票",
+            # 算力/数据中心板块
+            "算力数据中心板块主力净流入超过2000万且换手率大于2%的股票",
+            # 消费电子板块
+            "消费电子板块主力净流入超过2000万且换手率大于2%的股票",
         ]
 
     all_candidates = {}  # code -> Candidate
-    for query in queries:
+    
+    # 并行执行华泰选股条件
+    import concurrent.futures
+    
+    def _fetch_stocks(query):
         try:
             stocks = select_stock_parsed(query)
             logger.info(f"华泰选股 '{query[:20]}...' → {len(stocks)}只")
-            for s in stocks:
-                code = s.get("code", "")
-                name = s.get("name", "")
-                if not code:
-                    continue
-                # 过滤北交所/科创板/退市
-                if code.startswith(("8", "4")):
-                    continue
-                if code.startswith("688"):
-                    continue
-                if "退" in name:
-                    continue
-                if code not in all_candidates:
-                    all_candidates[code] = Candidate(
-                        code=code,
-                        name=name,
-                        source=["华泰选股"],
-                        score=60,  # 华泰筛选出的基础分
-                    )
-                else:
-                    # 多条件命中加分
-                    all_candidates[code].score += 10
-                    if "华泰选股" not in all_candidates[code].source:
-                        all_candidates[code].source.append("华泰选股")
+            return stocks
         except Exception as e:
-            logger.warning(f"华泰选股失败 ({query[:30]}): {e}")
+            logger.warning(f"华泰选股失败 '{query[:20]}...': {e}")
+            return []
+    
+    # 并行执行所有选股条件
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+        futures = {executor.submit(_fetch_stocks, q): q for q in queries}
+        for future in concurrent.futures.as_completed(futures, timeout=30):
+            try:
+                stocks = future.result()
+                for s in stocks:
+                    code = s.get("code", "")
+                    name = s.get("name", "")
+                    if not code:
+                        continue
+                    # 过滤北交所/科创板/退市
+                    if code.startswith(("8", "4")):
+                        continue
+                    if code.startswith("688"):
+                        continue
+                    if "退" in name:
+                        continue
+                    if code not in all_candidates:
+                        all_candidates[code] = Candidate(
+                            code=code,
+                            name=name,
+                            source=["华泰选股"],
+                            score=60,  # 华泰筛选出的基础分
+                        )
+                    else:
+                        # 多条件命中加分
+                        all_candidates[code].score += 10
+            except concurrent.futures.TimeoutError:
+                logger.warning("华泰选股部分条件超时")
+            except Exception as e:
+                logger.warning(f"华泰选股结果处理失败: {e}")
 
     candidates = list(all_candidates.values())
     candidates.sort(key=lambda c: c.score, reverse=True)

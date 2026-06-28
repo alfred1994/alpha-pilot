@@ -405,6 +405,29 @@ def run_auto_cycle(
                 prefetch_func()
                 state.last_prefetch_date = today
                 actions.append("盘前数据预热完成")
+                
+                # 盘前舆情分析
+                try:
+                    from data.sentiment_analyzer import run_sentiment_analysis
+                    sentiment_result = run_sentiment_analysis()
+                    if sentiment_result.get("success"):
+                        analysis = sentiment_result.get("analysis", {})
+                        recommendations = sentiment_result.get("recommendations", [])
+                        
+                        # 保存舆情数据到状态
+                        state.last_sentiment = {
+                            "emotion": analysis.get("emotion", "neutral"),
+                            "hot_sectors": [r["sector"] for r in recommendations[:3]],
+                            "posts_count": sentiment_result.get("posts_count", 0)
+                        }
+                        
+                        # 添加到动作列表
+                        emotion = analysis.get("emotion", "neutral")
+                        hot_sectors = [r["sector"] for r in recommendations[:3]]
+                        actions.append(f"微博舆情: 情绪={emotion}, 热门板块={','.join(hot_sectors)}")
+                except Exception as e:
+                    logger.warning(f"盘前舆情分析失败: {e}")
+            
             if state.last_regime_date != today:
                 regime = detect_regime_func()
                 state.last_regime_date = today
@@ -513,6 +536,19 @@ def run_auto_cycle(
                     f"模拟执行: 成交{len(exec_result.executed_orders)}笔 "
                     f"风控{len(exec_result.risk_triggered)}项 错误{len(exec_result.errors)}项"
                 )
+                # 添加详细交易信息
+                for order in exec_result.executed_orders:
+                    code = order.get("code", "")
+                    name = order.get("name", "")
+                    side = order.get("side", "")
+                    shares = order.get("shares", 0)
+                    price = order.get("price", 0)
+                    reason = order.get("reason", "")
+                    if side == "BUY":
+                        actions.append(f"  🟢 买入 {name}({code}) {shares}股 @{price:.2f} {reason}")
+                    elif side == "SELL":
+                        profit_pct = order.get("profit_pct", 0)
+                        actions.append(f"  🔴 卖出 {name}({code}) {shares}股 @{price:.2f} 盈亏{profit_pct:+.1f}% {reason}")
                 if getattr(exec_result, "order_audit", None):
                     audit = exec_result.order_audit
                     blocked = sum(1 for item in audit if item.get("status") in ("blocked", "skipped"))
@@ -532,6 +568,19 @@ def run_auto_cycle(
                     f"盘后复盘进化: 步骤{len(review_result.steps)}项 "
                     f"错误{len(review_result.errors)}项"
                 )
+                # 添加复盘详细内容
+                if hasattr(review_result, 'review_text') and review_result.review_text:
+                    # 截取前500字符作为摘要
+                    review_summary = review_result.review_text[:500]
+                    if len(review_result.review_text) > 500:
+                        review_summary += "..."
+                    actions.append(f"  📝 复盘摘要: {review_summary}")
+                # 添加步骤详情
+                for step in review_result.steps:
+                    if step.success and step.detail:
+                        actions.append(f"  ✅ {step.name}: {step.detail[:100]}")
+                    elif not step.success:
+                        actions.append(f"  ❌ {step.name}: 失败")
             else:
                 actions.append("盘后: 等待复盘窗口或今日已复盘")
 

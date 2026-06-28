@@ -25,11 +25,68 @@ from strategy.mimo_client import DEFAULT_HTTP_TIMEOUT, post_chat_completion
 
 logger = logging.getLogger("strategy.llm_trader")
 
-# MiMo API 配置
+# MiMo API 配置 (舆情分析等)
+MIMO_API_KEY=os.environ.get("XIAOMI_API_KEY", "")
+MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
+LLM_MODEL = "mimo-v2.5-pro"
+
+# DeepSeek API 配置 (标的分析)
+DEEPSEEK_API_KEY=os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 MIMO_API_KEY = os.environ.get("XIAOMI_API_KEY", "")
 MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 LLM_MODEL = "mimo-v2.5-pro"
 
+
+def _call_deepseek(prompt: str, max_tokens: int = 2000, retries: int = 2,
+                   http_timeout: int = DEFAULT_HTTP_TIMEOUT) -> Optional[str]:
+    """调用 DeepSeek LLM（子进程硬超时 + 自动重试）"""
+    if not DEEPSEEK_API_KEY:
+        logger.warning("DEEPSEEK_API_KEY 未设置, 跳过DeepSeek调用")
+        return None
+
+    payload = {
+        "model": DEEPSEEK_MODEL,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "你是一位资深A股量化AI交易员。"
+                    "你基于数据和逻辑做决策，不受情绪影响。"
+                    "你的目标是长期稳定盈利，而非短期暴利。"
+                    "严格返回JSON格式，用中文分析。"
+                ),
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
+        "temperature": 0.2,  # 低温度，决策要稳定
+    }
+
+    for attempt in range(1 + retries):
+        data = post_chat_completion(
+            base_url=DEEPSEEK_BASE_URL,
+            api_key=DEEPSEEK_API_KEY,
+            payload=payload,
+            http_timeout=http_timeout,
+            hard_timeout=http_timeout + 5,
+        )
+        if data:
+            msg = data["choices"][0]["message"]
+            content = msg.get("content", "") or ""
+            if not content.strip():
+                reasoning = msg.get("reasoning_content", "") or ""
+                if reasoning.strip():
+                    logger.info("DeepSeek返回空content，使用reasoning_content兜底")
+                    return reasoning.strip()
+            else:
+                return content.strip()
+
+        logger.warning(f"DeepSeek第{attempt}次调用失败/超时")
+
+    logger.error("DeepSeek调用失败，已用完重试次数")
+    return None
 
 def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
               http_timeout: int = DEFAULT_HTTP_TIMEOUT) -> Optional[str]:
@@ -274,7 +331,8 @@ def _build_decision_prompt(
 2. 如果外围市场大跌（美股跌幅>1%或A50跌幅>1%），即使个股信号偏多也要谨慎
 3. 如果市场环境是熊市，即使信号偏多也要谨慎
 4. 如果历史记忆中有该股票的亏损教训，要特别注意
-5. 只有在置信度>=60%时才建议买入
+5. 当综合分>=60且置信度>=30%时，应积极考虑买入
+6. 对于热门板块（半导体、光模块、AI、算力）的股票，可以适当放宽买入条件
 6. 如果已持有该股票，分析是否应该卖出（止盈/减仓/清仓）：当盈利达到目标、基本面恶化、技术面转空、或有更好的替代标的时，应考虑SELL
 7. 持仓股如果信号仍强且无卖出理由，应返回HOLD继续持有
 
@@ -403,7 +461,11 @@ def make_decision(
     )
 
     # 调用LLM
-    raw = _call_llm(prompt, retries=llm_retries, http_timeout=llm_timeout)
+    # 使用 DeepSeek 做标的分析
+    if DEEPSEEK_API_KEY:
+        raw = _call_deepseek(prompt, retries=llm_retries, http_timeout=llm_timeout)
+    else:
+        raw = _call_llm(prompt, retries=llm_retries, http_timeout=llm_timeout)
     action, confidence, reasoning = _parse_decision_response(raw)
 
     # 构建决策对象（composite已提前计算）
