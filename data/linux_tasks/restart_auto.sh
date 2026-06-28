@@ -10,9 +10,11 @@ HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 mkdir -p "$(dirname "$LOG_FILE")"
 cd "$PROJECT_DIR"
 
-# 激活虚拟环境
+# 激活虚拟环境（兼容历史venv和README推荐.venv）
 if [ -f "venv/bin/activate" ]; then
   source venv/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
+  source .venv/bin/activate
 fi
 
 if [ -f "$HERMES_ENV_FILE" ]; then

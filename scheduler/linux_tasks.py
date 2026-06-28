@@ -14,13 +14,14 @@ Linux/Hermes无人值守任务脚本生成器
 ====================================================================
 """
 import os
+import posixpath
 import re
 import stat
 import subprocess
 from dataclasses import dataclass
 from typing import Callable, Dict, List
 
-from config import DATA_DIR
+from config import BASE_DIR, DATA_DIR
 from scheduler.windows_tasks import UnattendedItem
 
 
@@ -74,18 +75,82 @@ def _sh_quote(value: str) -> str:
     return "'" + str(value).replace("'", "'\"'\"'") + "'"
 
 
+def _is_posix_abs_path(value: str) -> bool:
+    """判断是否为Linux绝对路径，避免Windows本地生成时改写为D盘路径"""
+    text = str(value or "")
+    return text.startswith("/") and not re.match(r"^[A-Za-z]:", text)
+
+
+def _normalize_project_dir(project_dir: str) -> str:
+    """规范项目目录，保留传入的Linux目标路径"""
+    if not project_dir:
+        return os.path.abspath(os.getcwd())
+    if _is_posix_abs_path(project_dir):
+        return posixpath.normpath(project_dir)
+    return os.path.abspath(project_dir)
+
+
+def _join_target_path(base: str, *parts: str) -> str:
+    """按目标平台拼接脚本内路径"""
+    if _is_posix_abs_path(base):
+        return posixpath.join(base, *parts)
+    return os.path.join(base, *parts)
+
+
+def _resolve_target_output_dir(project_dir: str, output_dir: str) -> str:
+    """计算脚本安装到Linux服务器后的目标目录"""
+    if not _is_posix_abs_path(project_dir):
+        return output_dir
+    if _is_posix_abs_path(output_dir):
+        return posixpath.normpath(output_dir)
+    try:
+        rel = os.path.relpath(output_dir, BASE_DIR)
+    except ValueError:
+        rel = os.path.basename(output_dir)
+    if rel.startswith("..") or os.path.isabs(rel):
+        rel = os.path.basename(output_dir)
+    rel_parts = [part for part in re.split(r"[\\/]+", rel) if part and part != "."]
+    return posixpath.join(project_dir, *rel_parts)
+
+
 def _unit_name(prefix: str, name: str, suffix: str = "service") -> str:
     """生成systemd unit名称"""
     safe_prefix = re.sub(r"[^A-Za-z0-9_.@-]+", "-", prefix.strip() or DEFAULT_SERVICE_PREFIX)
     return f"{safe_prefix}-{name}.{suffix}"
 
 
+def _venv_activation_block() -> str:
+    """生成兼容服务器历史venv和README推荐.venv的激活逻辑"""
+    return """# 激活虚拟环境（兼容历史venv和README推荐.venv）
+if [ -f "venv/bin/activate" ]; then
+  source venv/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
+  source .venv/bin/activate
+fi
+"""
+
+
+def _stale_lock_cleanup_block() -> str:
+    """生成自动盘残留锁清理逻辑"""
+    return """# 清理残留锁文件（pid不存在则删除）
+LOCK_FILE="$PROJECT_DIR/data/auto_trader.lock"
+if [ -f "$LOCK_FILE" ]; then
+  lock_pid=$($PYTHON_CMD -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('pid',''))" "$LOCK_FILE" 2>/dev/null || true)
+  if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
+    echo "清理残留锁文件 (pid=$lock_pid 已不存在)" >> "$LOG_FILE"
+    rm -f "$LOCK_FILE"
+  fi
+fi
+"""
+
+
 def _runner_script(project_dir: str, python_cmd: str, args: str,
                    log_name: str, hermes_env_file: str = "$HOME/.hermes/.env",
                    timeout_seconds: int = 0,
-                   tolerate_failure: bool = False) -> str:
+                   tolerate_failure: bool = False,
+                   cleanup_stale_lock: bool = False) -> str:
     """生成Linux运行脚本"""
-    log_path = os.path.join(project_dir, "logs", log_name)
+    log_path = _join_target_path(project_dir, "logs", log_name)
     if timeout_seconds:
         command = (
             f"timeout --kill-after=15s {int(timeout_seconds)}s "
@@ -94,6 +159,7 @@ def _runner_script(project_dir: str, python_cmd: str, args: str,
     else:
         command = f"$PYTHON_CMD main.py {args} >> \"$LOG_FILE\" 2>&1"
     final_exit = "0" if tolerate_failure else "$exit_code"
+    cleanup_block = _stale_lock_cleanup_block() if cleanup_stale_lock else ""
     return f"""#!/usr/bin/env bash
 set -uo pipefail
 
@@ -105,6 +171,7 @@ HERMES_ENV_FILE="${{HERMES_ENV_FILE:-{hermes_env_file}}}"
 mkdir -p "$(dirname "$LOG_FILE")"
 cd "$PROJECT_DIR"
 
+{_venv_activation_block()}
 if [ -f "$HERMES_ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -115,6 +182,7 @@ fi
 export BROKER_MODE=paper
 export PYTHONUNBUFFERED=1
 
+{cleanup_block}
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp START {args} =====" >> "$LOG_FILE"
 {command}
@@ -128,7 +196,7 @@ exit {final_exit}
 def _restart_auto_script(project_dir: str, python_cmd: str, service_prefix: str,
                          hermes_env_file: str = "$HOME/.hermes/.env") -> str:
     """生成Linux自动盘重启脚本"""
-    log_path = os.path.join(project_dir, "logs", "auto_restart.log")
+    log_path = _join_target_path(project_dir, "logs", "auto_restart.log")
     auto_unit = _unit_name(service_prefix, "auto")
     return f"""#!/usr/bin/env bash
 set -uo pipefail
@@ -142,6 +210,7 @@ HERMES_ENV_FILE="${{HERMES_ENV_FILE:-{hermes_env_file}}}"
 mkdir -p "$(dirname "$LOG_FILE")"
 cd "$PROJECT_DIR"
 
+{_venv_activation_block()}
 if [ -f "$HERMES_ENV_FILE" ]; then
   set -a
   # shellcheck disable=SC1090
@@ -252,28 +321,29 @@ WantedBy=timers.target
 
 def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFIX) -> Dict[str, str]:
     """根据输出目录生成路径字典"""
-    units_dir = os.path.join(output_dir, "systemd_user")
+    join = _join_target_path if _is_posix_abs_path(output_dir) else os.path.join
+    units_dir = join(output_dir, "systemd_user")
     paths = {
-        "run_auto": os.path.join(output_dir, "run_auto.sh"),
-        "restart_auto": os.path.join(output_dir, "restart_auto.sh"),
-        "run_doctor": os.path.join(output_dir, "run_doctor.sh"),
-        "run_report": os.path.join(output_dir, "run_report.sh"),
-        "run_status": os.path.join(output_dir, "run_status.sh"),
-        "run_closure_repair": os.path.join(output_dir, "run_closure_repair.sh"),
-        "install": os.path.join(output_dir, "install_systemd_user.sh"),
-        "uninstall": os.path.join(output_dir, "uninstall_systemd_user.sh"),
+        "run_auto": join(output_dir, "run_auto.sh"),
+        "restart_auto": join(output_dir, "restart_auto.sh"),
+        "run_doctor": join(output_dir, "run_doctor.sh"),
+        "run_report": join(output_dir, "run_report.sh"),
+        "run_status": join(output_dir, "run_status.sh"),
+        "run_closure_repair": join(output_dir, "run_closure_repair.sh"),
+        "install": join(output_dir, "install_systemd_user.sh"),
+        "uninstall": join(output_dir, "uninstall_systemd_user.sh"),
         "units_dir": units_dir,
     }
     paths.update({
-        "auto_service": os.path.join(units_dir, _unit_name(service_prefix, "auto")),
-        "auto_restart_service": os.path.join(units_dir, _unit_name(service_prefix, "auto-restart")),
-        "auto_restart_timer": os.path.join(units_dir, _unit_name(service_prefix, "auto-restart", "timer")),
-        "doctor_service": os.path.join(units_dir, _unit_name(service_prefix, "doctor")),
-        "doctor_timer": os.path.join(units_dir, _unit_name(service_prefix, "doctor", "timer")),
-        "report_service": os.path.join(units_dir, _unit_name(service_prefix, "report")),
-        "report_timer": os.path.join(units_dir, _unit_name(service_prefix, "report", "timer")),
-        "status_service": os.path.join(units_dir, _unit_name(service_prefix, "status")),
-        "status_timer": os.path.join(units_dir, _unit_name(service_prefix, "status", "timer")),
+        "auto_service": join(units_dir, _unit_name(service_prefix, "auto")),
+        "auto_restart_service": join(units_dir, _unit_name(service_prefix, "auto-restart")),
+        "auto_restart_timer": join(units_dir, _unit_name(service_prefix, "auto-restart", "timer")),
+        "doctor_service": join(units_dir, _unit_name(service_prefix, "doctor")),
+        "doctor_timer": join(units_dir, _unit_name(service_prefix, "doctor", "timer")),
+        "report_service": join(units_dir, _unit_name(service_prefix, "report")),
+        "report_timer": join(units_dir, _unit_name(service_prefix, "report", "timer")),
+        "status_service": join(units_dir, _unit_name(service_prefix, "status")),
+        "status_timer": join(units_dir, _unit_name(service_prefix, "status", "timer")),
     })
     return paths
 
@@ -291,7 +361,10 @@ def _install_script(config: LinuxTaskConfig, paths: Dict[str, str]) -> str:
         os.path.basename(paths["status_service"]),
         os.path.basename(paths["status_timer"]),
     ]
-    unit_lines = "\n".join(f"install -m 0644 { _sh_quote(os.path.join(paths['units_dir'], unit)) } \"$SYSTEMD_USER_DIR/{unit}\"" for unit in units)
+    unit_lines = "\n".join(
+        f"install -m 0644 { _sh_quote(_join_target_path(paths['units_dir'], unit)) } \"$SYSTEMD_USER_DIR/{unit}\""
+        for unit in units
+    )
     return f"""#!/usr/bin/env bash
 set -euo pipefail
 
@@ -369,14 +442,16 @@ def generate_linux_task_scripts(
     Returns:
         路径字典
     """
-    project_dir = os.path.abspath(project_dir or os.getcwd())
+    project_dir = _normalize_project_dir(project_dir)
     output_dir = os.path.abspath(output_dir or DEFAULT_OUTPUT_DIR)
     os.makedirs(output_dir, exist_ok=True)
     paths = _expected_paths(output_dir, service_prefix)
+    target_output_dir = _resolve_target_output_dir(project_dir, output_dir)
+    target_paths = _expected_paths(target_output_dir, service_prefix)
     os.makedirs(paths["units_dir"], exist_ok=True)
     config = LinuxTaskConfig(
         project_dir=project_dir,
-        output_dir=output_dir,
+        output_dir=target_output_dir,
         python_cmd=python_cmd,
         service_prefix=service_prefix,
         report_days=report_days,
@@ -384,29 +459,36 @@ def generate_linux_task_scripts(
     )
 
     scripts = {
-        paths["run_auto"]: _runner_script(project_dir, python_cmd, "--auto", "auto.log", hermes_env_file),
+        paths["run_auto"]: _runner_script(
+            project_dir,
+            python_cmd,
+            "--auto",
+            "auto.log",
+            hermes_env_file,
+            cleanup_stale_lock=True,
+        ),
         paths["restart_auto"]: _restart_auto_script(project_dir, python_cmd, service_prefix, hermes_env_file),
         paths["run_doctor"]: _runner_script(project_dir, python_cmd, "--doctor", "doctor.log", hermes_env_file, timeout_seconds=240),
         paths["run_report"]: _runner_script(project_dir, python_cmd, f"--ai-report --report-days {report_days}", "ai_report.log", hermes_env_file),
         paths["run_status"]: _runner_script(project_dir, python_cmd, f"--ops-status --report-days {report_days}", "ops_status.log", hermes_env_file, tolerate_failure=True),
         paths["run_closure_repair"]: _runner_script(project_dir, python_cmd, "--closure-repair", "closure_repair.log", hermes_env_file),
-        paths["install"]: _install_script(config, paths),
+        paths["install"]: _install_script(config, target_paths),
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
     units = {
-        paths["auto_service"]: _service_unit("Quant Pilot 模拟盘自动盯盘长驻循环", paths["run_auto"], restart=True),
-        paths["auto_restart_service"]: _oneshot_service_unit("Quant Pilot 自动盘Watchdog重启", paths["restart_auto"], timeout_start_sec=240),
+        paths["auto_service"]: _service_unit("Quant Pilot 模拟盘自动盯盘长驻循环", target_paths["run_auto"], restart=True),
+        paths["auto_restart_service"]: _oneshot_service_unit("Quant Pilot 自动盘Watchdog重启", target_paths["restart_auto"], timeout_start_sec=240),
         paths["auto_restart_timer"]: _interval_timer_unit(
             "Quant Pilot 自动盘每10分钟Watchdog重启保护",
             os.path.basename(paths["auto_restart_service"]),
             "5min",
             "10min",
         ),
-        paths["doctor_service"]: _oneshot_service_unit("Quant Pilot Watchdog巡检/自愈/闭环修复", paths["run_doctor"], timeout_start_sec=300),
+        paths["doctor_service"]: _oneshot_service_unit("Quant Pilot Watchdog巡检/自愈/闭环修复", target_paths["run_doctor"], timeout_start_sec=300),
         paths["doctor_timer"]: _interval_timer_unit("Quant Pilot Doctor每5分钟巡检", os.path.basename(paths["doctor_service"]), "2min", "5min"),
-        paths["report_service"]: _oneshot_service_unit("Quant Pilot AI交易员模拟盘报告", paths["run_report"]),
+        paths["report_service"]: _oneshot_service_unit("Quant Pilot AI交易员模拟盘报告", target_paths["run_report"]),
         paths["report_timer"]: _calendar_timer_unit("Quant Pilot 盘后AI报告", os.path.basename(paths["report_service"]), f"Mon..Fri *-*-* {config.report_time}:00"),
-        paths["status_service"]: _oneshot_service_unit("Quant Pilot 自动盯盘运维状态", paths["run_status"]),
+        paths["status_service"]: _oneshot_service_unit("Quant Pilot 自动盯盘运维状态", target_paths["run_status"]),
         paths["status_timer"]: _calendar_timer_unit("Quant Pilot 盘后运维状态", os.path.basename(paths["status_service"]), f"Mon..Fri *-*-* {config.status_time}:00"),
     }
     for path, content in {**scripts, **units}.items():

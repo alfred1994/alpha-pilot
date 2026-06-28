@@ -18,7 +18,8 @@ from typing import Dict
 
 from config import (
     SIGNAL_WEIGHTS, DECISION_BUY_THRESHOLD, DECISION_SELL_THRESHOLD,
-    PICKER_MIN_SCORE, MAX_POSITIONS, MAX_SINGLE_PCT,
+    PICKER_MIN_SCORE, TRADE_ADAPTIVE_MIN_SCORE_BASE,
+    MAX_POSITIONS, MAX_SINGLE_PCT,
     STOP_LOSS, TAKE_PROFIT, TRAILING_STOP,
 )
 
@@ -281,9 +282,14 @@ def get_trade_params(regime: str = "sideways", adaptive_state: dict = None) -> d
     if adaptive_state:
         adaptive_min_score = adaptive_state.get("current_min_score")
         if adaptive_min_score is not None:
+            adaptive_min_score = float(adaptive_min_score)
+            if adaptive_min_score < TRADE_SCORE_MIN:
+                adaptive_delta = 0
+            else:
+                adaptive_delta = adaptive_min_score - TRADE_ADAPTIVE_MIN_SCORE_BASE
             result["min_score"] = max(
                 TRADE_SCORE_MIN,
-                min(TRADE_SCORE_MAX, result["min_score"] + adaptive_min_score - PICKER_MIN_SCORE),
+                min(TRADE_SCORE_MAX, result["min_score"] + adaptive_delta),
             )
 
         top_k_delta = adaptive_state.get(

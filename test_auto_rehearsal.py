@@ -65,8 +65,12 @@ def main():
 
         with Database(db_path=db_path) as db:
             events = db.get_auto_events(limit=20)
+            auto_cycle_events = [
+                event for event in events
+                if event.get("event_type", "auto_cycle") == "auto_cycle"
+            ]
             adaptive = db.get_adaptive_state()
-        assert_true(len(events) == 9, "隔离数据库写入9条自动盯盘事件")
+        assert_true(len(auto_cycle_events) == 9, "隔离数据库写入9条自动盯盘主循环事件")
         assert_true(adaptive["current_buy_threshold"] == 62, "隔离数据库保存自适应买入阈值")
 
         second = run_auto_rehearsal(

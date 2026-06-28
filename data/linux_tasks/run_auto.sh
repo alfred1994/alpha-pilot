@@ -9,9 +9,11 @@ HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 mkdir -p "$(dirname "$LOG_FILE")"
 cd "$PROJECT_DIR"
 
-# 激活虚拟环境
+# 激活虚拟环境（兼容历史venv和README推荐.venv）
 if [ -f "venv/bin/activate" ]; then
   source venv/bin/activate
+elif [ -f ".venv/bin/activate" ]; then
+  source .venv/bin/activate
 fi
 
 if [ -f "$HERMES_ENV_FILE" ]; then
@@ -24,10 +26,10 @@ fi
 export BROKER_MODE=paper
 export PYTHONUNBUFFERED=1
 
-# 清理残留锁文件（pid 不存在则删除）
+# 清理残留锁文件（pid不存在则删除）
 LOCK_FILE="$PROJECT_DIR/data/auto_trader.lock"
 if [ -f "$LOCK_FILE" ]; then
-  lock_pid=$(python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('pid',''))" "$LOCK_FILE" 2>/dev/null || true)
+  lock_pid=$($PYTHON_CMD -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('pid',''))" "$LOCK_FILE" 2>/dev/null || true)
   if [ -n "$lock_pid" ] && ! kill -0 "$lock_pid" 2>/dev/null; then
     echo "清理残留锁文件 (pid=$lock_pid 已不存在)" >> "$LOG_FILE"
     rm -f "$LOCK_FILE"

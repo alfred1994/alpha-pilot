@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 
 from config import (
-    DATA_DIR, SIGNAL_WEIGHTS, PICKER_MIN_SCORE,
+    DATA_DIR, SIGNAL_WEIGHTS, TRADE_ADAPTIVE_MIN_SCORE_BASE,
     DECISION_BUY_THRESHOLD, STOP_LOSS, TAKE_PROFIT,
     MAX_SINGLE_PCT, MAX_POSITIONS,
 )
@@ -75,7 +75,7 @@ class AdaptiveEngine:
             "source_effectiveness": {},   # 各来源有效性
             "current_weights": dict(SIGNAL_WEIGHTS),
             "current_buy_threshold": DECISION_BUY_THRESHOLD,
-            "current_min_score": PICKER_MIN_SCORE,
+            "current_min_score": TRADE_ADAPTIVE_MIN_SCORE_BASE,
             "current_top_k_delta": 0,     # 候选数量偏移，低胜率时减少买入标的
             "current_position_scale": 1.0, # 仓位缩放，低胜率时降低单笔仓位
             "weekly_stats": [],           # 周统计
@@ -506,7 +506,7 @@ class AdaptiveEngine:
                 self.state["current_buy_threshold"] = new_bt
 
         # 最低入选分调整
-        current_ms = self.state.get("current_min_score", PICKER_MIN_SCORE)
+        current_ms = self.state.get("current_min_score", TRADE_ADAPTIVE_MIN_SCORE_BASE)
         if win_rate < 0.35:
             new_ms = min(SCORE_MAX, current_ms + 2)
             if new_ms != current_ms:
@@ -629,7 +629,7 @@ class AdaptiveEngine:
         return {
             "signal_weights": self.state.get("current_weights", SIGNAL_WEIGHTS),
             "buy_threshold": self.state.get("current_buy_threshold", DECISION_BUY_THRESHOLD),
-            "min_score": self.state.get("current_min_score", PICKER_MIN_SCORE),
+            "min_score": self.state.get("current_min_score", TRADE_ADAPTIVE_MIN_SCORE_BASE),
             "top_k_delta": self.state.get("current_top_k_delta", 0),
             "position_scale": self.state.get("current_position_scale", 1.0),
         }

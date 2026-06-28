@@ -13,7 +13,7 @@ from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import DECISION_BUY_THRESHOLD, PICKER_MIN_SCORE
+from config import DECISION_BUY_THRESHOLD, TRADE_ADAPTIVE_MIN_SCORE_BASE
 from data.database import Database
 from strategy.adaptive import AdaptiveEngine
 from strategy.regime_config import get_trade_params
@@ -87,7 +87,7 @@ def main():
             "低胜率会提高买入阈值",
         )
         assert_true(
-            params["min_score"] == PICKER_MIN_SCORE + 2,
+            params["min_score"] == TRADE_ADAPTIVE_MIN_SCORE_BASE + 2,
             "低胜率会提高最低选股分",
         )
         assert_true(
@@ -103,7 +103,7 @@ def main():
             saved_state = db.get_adaptive_state()
         assert_true(saved_state is not None, "自适应状态写入SQLite")
         assert_true(
-            saved_state["current_min_score"] == PICKER_MIN_SCORE + 2,
+            saved_state["current_min_score"] == TRADE_ADAPTIVE_MIN_SCORE_BASE + 2,
             "SQLite保存后的最低选股分正确",
         )
         assert_true(

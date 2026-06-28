@@ -433,12 +433,18 @@ def format_ai_trader_report(report: Dict) -> str:
     else:
         lines.append("- 暂无自适应状态，通常表示复盘样本还不足。")
 
+    min_score_value = current_params.get("min_score", "-")
+    if isinstance(min_score_value, (int, float)):
+        min_score_text = f"{min_score_value:g}"
+    else:
+        min_score_text = str(min_score_value)
+
     lines.extend([
         "",
         "## 纠偏应用",
         "",
         f"- 最新市场环境: {current_regime} ({latest_regime.get('date', '无记录')})",
-        f"- 下一轮参数: Top{current_params.get('top_k', '-')}，最低分{current_params.get('min_score', '-')}，单票仓位上限{float(current_params.get('max_weight') or 0):.1%}",
+        f"- 下一轮参数: Top{current_params.get('top_k', '-')}，最低分{min_score_text}，单票仓位上限{float(current_params.get('max_weight') or 0):.1%}",
         f"- Prompt进化建议: {len(prompt_hints)}条生效",
     ])
     for hint in prompt_hints[:3]:

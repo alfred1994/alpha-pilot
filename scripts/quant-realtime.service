@@ -5,10 +5,12 @@ After=network.target
 [Service]
 Type=simple
 User=%u
-WorkingDirectory=%h/projects/a-stock-quant
-Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=%h/projects/quant-pilot
+Environment="PATH=%h/projects/quant-pilot/.venv/bin:%h/projects/quant-pilot/venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=%h/.hermes/.env
-ExecStart=/usr/bin/python3 main.py --realtime
+ExecStart=/usr/bin/env python3 main.py --realtime
 Restart=always
 RestartSec=10
 StandardOutput=append:%h/.hermes/logs/quant-realtime.log
