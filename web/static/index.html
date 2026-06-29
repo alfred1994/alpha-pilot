@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quant Pilot - AI 交易员数字孪生仪表盘</title>
+    <!-- Google Fonts Inter & Outfit -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- ECharts CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5.4.3/dist/echarts.min.js"></script>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- 头部大屏 Header -->
+        <header class="app-header">
+            <div class="logo-area">
+                <span class="pulse-dot green" id="status-pulse"></span>
+                <h1>Quant Pilot <span class="badge">🤖 AI Trader</span></h1>
+            </div>
+            <nav class="app-nav">
+                <button class="nav-btn active" data-tab="dashboard">
+                    <i data-lucide="layout-dashboard"></i>
+                    <span>仪表盘</span>
+                </button>
+                <button class="nav-btn" data-tab="decisions">
+                    <i data-lucide="brain-circuit"></i>
+                    <span>LLM 决策</span>
+                </button>
+                <button class="nav-btn" data-tab="evolution">
+                    <i data-lucide="git-merge"></i>
+                    <span>自适应进化</span>
+                </button>
+                <button class="nav-btn" data-tab="control">
+                    <i data-lucide="sliders"></i>
+                    <span>控制面板</span>
+                </button>
+            </nav>
+            <div class="header-status">
+                <div class="status-item">
+                    <span class="label">大盘环境:</span>
+                    <span class="value" id="header-regime">-</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">账户净值:</span>
+                    <span class="value highlight" id="header-assets">-</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- 主内容区域 -->
+        <main class="app-main">
+            <!-- 仪表盘面板 Dashboard Tab -->
+            <section class="tab-content active" id="tab-dashboard">
+                <div class="grid-layout">
+                    <!-- 左侧：资产/盈亏统计 -->
+                    <div class="card card-hero">
+                        <h2>账户总览</h2>
+                        <div class="stats-grid">
+                            <div class="stat-box">
+                                <span class="stat-label">总资产</span>
+                                <span class="stat-val font-outfit" id="total-assets">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">可用资金</span>
+                                <span class="stat-val font-outfit" id="available-cash">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">总盈亏</span>
+                                <span class="stat-val font-outfit" id="total-pnl">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">今日盈亏</span>
+                                <span class="stat-val font-outfit" id="daily-pnl">-</span>
+                            </div>
+                        </div>
+                        <!-- 收益率曲线图 chart -->
+                        <div class="chart-container mt-4" id="perf-chart" style="height: 280px;"></div>
+                    </div>
+
+                    <!-- 右侧：当前持仓 -->
+                    <div class="card">
+                        <h2>当前持仓</h2>
+                        <div class="positions-list" id="positions-list">
+                            <div class="empty-state">暂无持仓</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mt-4">
+                    <h2>最近交易记录</h2>
+                    <div class="table-container">
+                        <table class="data-table">
+                            <thead>
+                                <tr>
+                                    <th>日期</th>
+                                    <th>股票</th>
+                                    <th>动作</th>
+                                    <th>价格</th>
+                                    <th>股数</th>
+                                    <th>手续费</th>
+                                    <th>盈亏</th>
+                                    <th>决策缘由</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trades-table-body">
+                                <tr><td colspan="8" class="text-center">加载数据中...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
+
+            <!-- LLM 决策面板 Decisions Tab -->
+            <section class="tab-content" id="tab-decisions">
+                <div class="grid-layout">
+                    <div class="card card-wide">
+                        <h2>最新 LLM 交易决策记录</h2>
+                        <div class="decisions-container" id="decisions-list">
+                            <div class="empty-state">暂无决策数据</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 自适应进化面板 Evolution Tab -->
+            <section class="tab-content" id="tab-evolution">
+                <div class="grid-layout">
+                    <!-- 左侧：权重变动图 -->
+                    <div class="card card-double">
+                        <h2>信号权重自适应演进</h2>
+                        <div class="chart-container" id="weights-chart" style="height: 350px;"></div>
+                    </div>
+
+                    <!-- 右侧：交易教训库 -->
+                    <div class="card">
+                        <h2>教训库 (Self-Lessons)</h2>
+                        <div class="lessons-list" id="lessons-list">
+                            <div class="empty-state">暂无教训记录</div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 控制面板 Control Tab -->
+            <section class="tab-content" id="tab-control">
+                <div class="card card-narrow text-center" style="max-width: 500px; margin: 0 auto;">
+                    <h2>自动盯盘控制安全阀门</h2>
+                    <div class="control-box mt-4">
+                        <div class="control-status mb-4">
+                            <span class="label">当前运行状态:</span>
+                            <span class="value" id="control-state-label">检测中...</span>
+                        </div>
+                        <div class="btn-group">
+                            <button class="btn btn-danger" id="btn-pause">
+                                <i data-lucide="pause-circle"></i>
+                                <span>暂停自动交易动作</span>
+                            </button>
+                            <button class="btn btn-success" id="btn-resume">
+                                <i data-lucide="play-circle"></i>
+                                <span>恢复自动交易动作</span>
+                            </button>
+                        </div>
+                        <div class="form-group mt-4" id="reason-group">
+                            <label for="pause-reason">暂停原因 (可选):</label>
+                            <input type="text" id="pause-reason" placeholder="例如：大盘日内宽幅震荡观察">
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- 底部大屏 Footer -->
+        <footer class="app-footer">
+            <span id="footer-update-time">最后更新: -</span>
+            <span>Quant Pilot 🤖 Powered by Gemini & MiMo LLM</span>
+        </footer>
+    </div>
+
+    <!-- 弹窗/抽屉（用于展示决策思维链 Detail） -->
+    <div class="modal" id="decision-modal">
+        <div class="modal-content card">
+            <header class="modal-header">
+                <h3 id="modal-title">决策推理详情</h3>
+                <button class="close-btn" id="modal-close-btn">&times;</button>
+            </header>
+            <div class="modal-body">
+                <div class="detail-grid mb-4" style="display:flex; gap:20px; justify-content:space-around;">
+                    <div class="detail-item">
+                        <span class="label" style="color:var(--text-secondary);">置信度: </span>
+                        <span class="value font-outfit" id="modal-confidence">-</span>
+                    </div>
+                    <div class="detail-item">
+                        <span class="label" style="color:var(--text-secondary);">动作决策: </span>
+                        <span class="value" id="modal-action">-</span>
+                    </div>
+                </div>
+                <h4>5维信号雷达</h4>
+                <div class="chart-container mb-4" id="radar-chart" style="height: 250px;"></div>
+                <h4>LLM 推理思维链 (Reasoning Content)</h4>
+                <div class="reasoning-text" id="modal-reasoning"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 初始化 Lucide Icons -->
+    <script>
+        lucide.createIcons();
+    </script>
+    <script src="js/app.js" type="module"></script>
+</body>
+</html>

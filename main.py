@@ -36,6 +36,13 @@ from scheduler.notifier import register_crash_handler
 register_crash_handler()
 
 
+def cmd_web(args):
+    """启动 Web 可视化仪表盘服务器"""
+    import uvicorn
+    print(f"启动 Web 仪表盘: http://{args.host}:{args.port}")
+    uvicorn.run("web.server:app", host=args.host, port=args.port, reload=args.web_reload)
+
+
 def cmd_crash_info():
     """直接读取并输出 latest_crash.json"""
     import json
@@ -794,6 +801,7 @@ def main():
     group.add_argument("--closure-check", action="store_true", help="正式模拟盘日内闭环缺口诊断")
     group.add_argument("--closure-repair", action="store_true", help="正式模拟盘闭环缺口自愈")
     group.add_argument("--realtime", action="store_true", help="事件驱动交易员（实时行情+异步）")
+    group.add_argument("--web", action="store_true", help="启动 Web 可视化仪表盘大屏")
 
     parser.add_argument("--start-date", default="2024-01-01", help="回测开始日期")
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
@@ -825,6 +833,9 @@ def main():
     parser.add_argument("--no-observe-report", action="store_true", help="正式模拟盘观察结束后不生成报告")
     parser.add_argument("--closure-date", default=None, help="闭环缺口诊断日期 YYYY-MM-DD，默认今天")
     parser.add_argument("--verbose", action="store_true", help="输出详细分段报告")
+    parser.add_argument("--host", default="127.0.0.1", help="Web 仪表盘服务 IP")
+    parser.add_argument("--port", type=int, default=8000, help="Web 仪表盘服务端口")
+    parser.add_argument("--web-reload", action="store_true", help="启用 Web 服务器自动热重载")
 
     args = parser.parse_args()
 
@@ -905,6 +916,9 @@ def main():
         result = cmd_closure_repair(args)
     elif args.realtime:
         cmd_realtime()
+        return
+    elif args.web:
+        cmd_web(args)
         return
     else:
         result = cmd_full()
