@@ -57,30 +57,53 @@ class PaperAccount:
         self.db_path = db_path
         self._ensure_data_dir()
         self._load()
-        self._sync_state_to_sqlite()
 
     def _ensure_data_dir(self):
         os.makedirs(os.path.dirname(self.filepath), exist_ok=True)
 
-    def _load(self):
-        """从JSON加载账户状态（加锁防止并发读取损坏数据）"""
-        with self._lock:
-            if os.path.exists(self.filepath):
-                try:
-                    with open(self.filepath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    self.initial_capital = data.get("initial_capital", INITIAL_CAPITAL)
-                    self.cash = data.get("cash", self.initial_capital)
-                    self.positions = data.get("positions", {})
-                    self.trades = data.get("trades", [])
-                    self.created_at = data.get("created_at", datetime.now().isoformat())
-                    self.updated_at = data.get("updated_at", datetime.now().isoformat())
-                    logger.info(f"加载账户: 现金={self.cash:.0f} 持仓={len(self.positions)}只")
-                except (json.JSONDecodeError, KeyError) as e:
-                    logger.error(f"账户文件损坏, 重新初始化: {e}")
-                    self._init_new()
-            else:
+    def _load_from_json(self):
+        """从备份 JSON 文件恢复加载数据"""
+        if os.path.exists(self.filepath):
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self.initial_capital = data.get("initial_capital", INITIAL_CAPITAL)
+                self.cash = data.get("cash", self.initial_capital)
+                self.positions = data.get("positions", {})
+                self.trades = data.get("trades", [])
+                self.created_at = data.get("created_at", datetime.now().isoformat())
+                self.updated_at = data.get("updated_at", datetime.now().isoformat())
+                logger.info(f"从备份JSON中恢复账户: 现金={self.cash:.0f} 持仓={len(self.positions)}只")
+                self._save_to_sqlite()
+            except Exception as e:
+                logger.error(f"从JSON恢复加载失败: {e}")
                 self._init_new()
+        else:
+            self._init_new()
+
+    def _load(self):
+        """从 SQLite 第一主存储加载数据，若没有则从 JSON 备份恢复"""
+        with self._lock:
+            try:
+                from data.database import Database
+                with Database(db_path=self.db_path) as db:
+                    state = db.get_account_state()
+                    
+                if state:
+                    self.initial_capital = state.get("initial_capital", INITIAL_CAPITAL)
+                    self.cash = state.get("cash", self.initial_capital)
+                    self.positions = state.get("positions", {}) or {}
+                    with Database(db_path=self.db_path) as db:
+                        self.trades = db.get_trade_history(limit=200)
+                    self.created_at = state.get("updated_at", datetime.now().isoformat())
+                    self.updated_at = state.get("updated_at", datetime.now().isoformat())
+                    logger.info(f"从SQLite加载账户: 现金={self.cash:.0f} 持仓={len(self.positions)}只")
+                else:
+                    logger.info("SQLite中无账户状态记录，尝试从备份JSON载入...")
+                    self._load_from_json()
+            except Exception as e:
+                logger.error(f"从SQLite加载账户状态失败, 退回使用JSON备份载入: {e}")
+                self._load_from_json()
 
     def _init_new(self):
         """初始化新账户"""
@@ -93,8 +116,38 @@ class PaperAccount:
         self._save()
         logger.info(f"新建模拟盘账户: 初始资金={INITIAL_CAPITAL:,.0f}")
 
+    def _save_to_sqlite(self):
+        """仅执行账户状态和持仓表向 SQLite 的写入同步"""
+        data = {
+            "initial_capital": self.initial_capital,
+            "cash": self.cash,
+            "positions": self.positions,
+            "trades": self.trades,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+        from data.database import Database
+        with Database(db_path=self.db_path) as db:
+            db.save_account_state({
+                **data,
+                "total_assets": self.total_assets()
+            })
+            db.conn.cursor().execute("DELETE FROM positions")
+            for code, pos in self.positions.items():
+                db.upsert_position({
+                    "code": code,
+                    "name": pos.get("name", ""),
+                    "shares": pos.get("shares", 0),
+                    "buy_price": pos.get("buy_price", 0),
+                    "buy_date": pos.get("buy_date", ""),
+                    "cost": pos.get("cost", 0),
+                    "highest_price": pos.get("highest_price", 0),
+                    "current_price": pos.get("current_price", 0),
+                })
+            db.conn.commit()
+
     def _save(self):
-        """保存到JSON（加锁防止并发写入损坏文件）"""
+        """保存账户状态到 SQLite（第一主存储），同时以原子替代安全备份一份至 JSON 文件"""
         self.updated_at = datetime.now().isoformat()
         data = {
             "initial_capital": self.initial_capital,
@@ -105,29 +158,21 @@ class PaperAccount:
             "updated_at": self.updated_at,
         }
         with self._lock:
-            with open(self.filepath, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            self._sync_state_to_sqlite(data)
-
-    def _sync_state_to_sqlite(self, data: dict = None):
-        """同步账户状态到SQLite（失败不影响JSON主流程）"""
-        data = data or {
-            "initial_capital": self.initial_capital,
-            "cash": self.cash,
-            "positions": self.positions,
-            "trades": self.trades,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
-        try:
-            from data.database import Database
-            with Database(db_path=self.db_path) as db:
-                db.save_account_state({
-                    **data,
-                    "total_assets": self.total_assets(),
-                })
-        except Exception as e:
-            logger.warning(f"SQLite账户状态同步失败(不影响JSON): {e}")
+            try:
+                self._save_to_sqlite()
+            except Exception as e:
+                logger.error(f"保存账户状态到SQLite失败: {e}")
+            
+            try:
+                temp_filepath = self.filepath + ".tmp"
+                with open(temp_filepath, "w", encoding="utf-8") as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                if os.path.exists(temp_filepath):
+                    if os.path.exists(self.filepath):
+                        os.remove(self.filepath)
+                    os.rename(temp_filepath, self.filepath)
+            except Exception as e:
+                logger.error(f"账户状态快照备份到JSON失败: {e}")
 
     # ── 查询 ──────────────────────────────────────────────────────
 

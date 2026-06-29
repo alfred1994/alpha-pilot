@@ -79,12 +79,17 @@ Hermes Agent 读取出错文件附近的代码块：
     ```
     确保没有必需条件报错。
 
-#### Step 5. 重启服务与成果推送
-若验证通过，Hermes Agent 执行：
+#### Step 5. 复位崩溃状态与重启服务
+若验证通过，Hermes Agent 执行以下命令完成崩溃解除和服务的热重启：
 ```bash
-# 终止并重启自动盯盘服务
+# 1. 标记崩溃已修复
+python3 main.py --resolve-crash
+
+# 2. 重启自动盯盘循环
 systemctl --user restart quant-pilot-auto.service
 ```
+
+#### Step 6. 成果推送
 通过 Telegram 向用户推送喜报：
 > 🤖 **AI 驾驶员自动修复报告**
 >

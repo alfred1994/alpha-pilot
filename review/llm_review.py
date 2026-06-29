@@ -8,8 +8,6 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 
-import requests
-
 logger = logging.getLogger("review.llm")
 
 # MiMo API 配置
@@ -19,15 +17,9 @@ LLM_MODEL = "mimo-v2.5-pro"
 
 
 def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
-    """调用 MiMo LLM"""
-    if not MIMO_API_KEY:
-        logger.warning("XIAOMI_API_KEY 未设置")
-        return None
-
-    headers = {
-        "Authorization": f"Bearer {MIMO_API_KEY}",
-        "Content-Type": "application/json",
-    }
+    """调用统一大模型客户端"""
+    from strategy.mimo_client import post_chat_completion
+    
     payload = {
         "model": LLM_MODEL,
         "messages": [
@@ -47,10 +39,16 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
     }
 
     try:
-        url = f"{MIMO_BASE_URL}/chat/completions"
-        resp = requests.post(url, headers=headers, json=payload, timeout=120)
-        resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
+        resp_json = post_chat_completion(
+            payload=payload, 
+            base_url=MIMO_BASE_URL, 
+            api_key=MIMO_API_KEY, 
+            http_timeout=120
+        )
+        if not resp_json:
+            return None
+            
+        msg = resp_json["choices"][0]["message"]
         content = (msg.get("content", "") or "").strip()
         if not content:
             content = (msg.get("reasoning_content", "") or "").strip()
@@ -463,14 +461,9 @@ def _analyze_lessons_with_llm(losing_trades: list, winning_trades: list) -> list
 
 
 def _call_llm_for_review(prompt: str) -> Optional[str]:
-    """调用 MiMo LLM 用于教训分析（独立函数，方便线程池调用）"""
-    if not MIMO_API_KEY:
-        return None
+    """调用统一大模型客户端用于教训分析（独立函数，方便线程池调用）"""
+    from strategy.mimo_client import post_chat_completion
 
-    headers = {
-        "Authorization": f"Bearer {MIMO_API_KEY}",
-        "Content-Type": "application/json",
-    }
     payload = {
         "model": LLM_MODEL,
         "messages": [
@@ -489,10 +482,15 @@ def _call_llm_for_review(prompt: str) -> Optional[str]:
     }
 
     try:
-        url = f"{MIMO_BASE_URL}/chat/completions"
-        resp = requests.post(url, headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
+        resp_json = post_chat_completion(
+            payload=payload,
+            base_url=MIMO_BASE_URL,
+            api_key=MIMO_API_KEY,
+            http_timeout=30,
+        )
+        if not resp_json:
+            return None
+        msg = resp_json["choices"][0]["message"]
         content = (msg.get("content", "") or "").strip()
         if not content:
             content = (msg.get("reasoning_content", "") or "").strip()

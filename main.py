@@ -36,6 +36,53 @@ from scheduler.notifier import register_crash_handler
 register_crash_handler()
 
 
+import io
+import contextlib
+
+@contextlib.contextmanager
+def suppress_stdout():
+    """屏蔽所有第三方输出至 stdout，保护 JSON 纯净度"""
+    new_stdout = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = new_stdout
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
+
+
+def cmd_resolve_crash(args):
+    """人工或程序触发的解决崩溃标记指令"""
+    import json
+    crash_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_crash.json")
+    if not os.path.exists(crash_file):
+        sys.stdout.write(json.dumps({"status": "error", "message": "未检测到任何崩溃日志记录"}, ensure_ascii=False, indent=2) + "\n")
+        return
+    try:
+        with open(crash_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        
+        data["status"] = "resolved"
+        data["resolved_at"] = datetime.now().isoformat()
+        data["resolved_by"] = args.reason or "manual_ops"
+        
+        try:
+            import subprocess
+            commit = subprocess.check_output(["git", "rev-parse", "HEAD"]).decode().strip()
+            data["git_commit"] = commit
+        except Exception:
+            data["git_commit"] = "unknown"
+            
+        with open(crash_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+            
+        sys.stdout.write(json.dumps({"status": "resolved", "message": "成功标记最新崩溃为已修复状态", "resolved_by": data["resolved_by"]}, ensure_ascii=False, indent=2) + "\n")
+    except Exception as e:
+        sys.stdout.write(json.dumps({"status": "error", "message": f"处理崩溃失败: {e}"}, ensure_ascii=False, indent=2) + "\n")
+
+
+
+
 def cmd_web(args):
     """启动 Web 可视化仪表盘服务器"""
     import uvicorn
@@ -48,107 +95,37 @@ def cmd_crash_info():
     import json
     crash_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_crash.json")
     if not os.path.exists(crash_file):
-        print(json.dumps({"status": "no_crash", "message": "暂无崩溃记录"}, ensure_ascii=False, indent=2))
+        sys.stdout.write(json.dumps({"status": "no_crash", "message": "暂无崩溃记录"}, ensure_ascii=False, indent=2) + "\n")
         return
     try:
         with open(crash_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-        print(json.dumps(data, ensure_ascii=False, indent=2))
+        if data.get("status") == "open":
+            sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+        else:
+            sys.stdout.write(json.dumps({"status": "no_crash", "message": "最近崩溃已被标记为 resolved", "resolved_at": data.get("resolved_at")}, ensure_ascii=False, indent=2) + "\n")
     except Exception as e:
-        print(json.dumps({"status": "error", "message": f"读取失败: {e}"}, ensure_ascii=False, indent=2))
+        sys.stdout.write(json.dumps({"status": "error", "message": f"读取失败: {e}"}, ensure_ascii=False, indent=2) + "\n")
 
 
 def cmd_agent_status():
     """输出系统结构化运维状态供 AI 驾驶员使用"""
     import json
-    from scheduler.health import run_health_check
-    from scheduler.watchdog import run_auto_watchdog
-    from scheduler.control import get_auto_control_state
+    from scheduler.agent_status import build_agent_status_snapshot
     
-    # 1. 运行健康检查
-    health_ok = True
-    health_failed = []
-    try:
-        health_items = run_health_check()
-        health_ok = all(item.ok or not item.required for item in health_items)
-        health_failed = [item.name for item in health_items if not item.ok and item.required]
-    except Exception as e:
-        health_ok = False
-        health_failed = [f"健康检查运行异常: {e}"]
-    
-    # 2. 运行 Watchdog
-    watchdog_ok = True
-    watchdog_criticals = []
-    try:
-        watchdog_items = run_auto_watchdog()
-        watchdog_criticals = [item.name for item in watchdog_items if item.severity == "critical"]
-        watchdog_ok = (len(watchdog_criticals) == 0)
-    except Exception as e:
-        watchdog_ok = False
-        watchdog_criticals = [f"Watchdog运行异常: {e}"]
-    
-    # 3. 读取暂停状态
-    control_paused = False
-    control_reason = ""
-    try:
-        control = get_auto_control_state()
-        control_paused = bool(control.get("paused"))
-        control_reason = control.get("reason", "")
-    except Exception:
-        pass
-    
-    # 4. 读取最新自适应参数
-    from strategy.adaptive import ADAPTIVE_FILE
-    adaptive_params = {}
-    if os.path.exists(ADAPTIVE_FILE):
+    with suppress_stdout():
         try:
-            with open(ADAPTIVE_FILE, "r", encoding="utf-8") as f:
-                adaptive_data = json.load(f)
-                adaptive_params = {
-                    "weights": adaptive_data.get("current_weights"),
-                    "buy_threshold": adaptive_data.get("current_buy_threshold"),
-                    "min_score": adaptive_data.get("current_min_score"),
-                    "top_k_delta": adaptive_data.get("current_top_k_delta"),
-                    "position_scale": adaptive_data.get("current_position_scale"),
-                }
-        except Exception:
-            pass
+            status_data = build_agent_status_snapshot()
+            err = None
+        except Exception as e:
+            status_data = None
+            err = str(e)
             
-    # 5. 最新持仓与资金
-    positions = []
-    total_assets = 1000000.0
-    cash = 1000000.0
-    try:
-        from execution.paper_account import PaperAccount
-        account = PaperAccount()
-        total_assets = account.total_assets()
-        cash = account.cash
-        positions = list(account.positions.keys())
-    except Exception:
-        pass
-    
-    status_data = {
-        "timestamp": datetime.now().isoformat(),
-        "health": {
-            "ok": health_ok,
-            "failed_required": health_failed,
-        },
-        "watchdog": {
-            "ok": watchdog_ok,
-            "criticals": watchdog_criticals,
-        },
-        "control": {
-            "paused": control_paused,
-            "reason": control_reason,
-        },
-        "account": {
-            "total_assets": total_assets,
-            "cash": cash,
-            "positions": positions,
-        },
-        "adaptive": adaptive_params,
-    }
-    print(json.dumps(status_data, ensure_ascii=False, indent=2))
+    if err:
+        sys.stdout.write(json.dumps({"status": "error", "message": f"状态构建失败: {err}"}, ensure_ascii=False, indent=2))
+    else:
+        sys.stdout.write(json.dumps(status_data, ensure_ascii=False, indent=2))
+    sys.stdout.write("\n")
 
 
 def cmd_scan():
@@ -802,6 +779,7 @@ def main():
     group.add_argument("--closure-repair", action="store_true", help="正式模拟盘闭环缺口自愈")
     group.add_argument("--realtime", action="store_true", help="事件驱动交易员（实时行情+异步）")
     group.add_argument("--web", action="store_true", help="启动 Web 可视化仪表盘大屏")
+    group.add_argument("--resolve-crash", action="store_true", help="标记最近系统崩溃已解决并复原")
 
     parser.add_argument("--start-date", default="2024-01-01", help="回测开始日期")
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
@@ -839,8 +817,13 @@ def main():
 
     args = parser.parse_args()
 
-    print(f"A股量化系统 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("=" * 65)
+    # 纯净 JSON 输出模式，用于 agent/Web API 对接，静默所有调试与欢迎语输出
+    is_silent = getattr(args, "agent_status", False) or getattr(args, "crash_info", False) or getattr(args, "resolve_crash", False)
+    if is_silent:
+        logging.getLogger().setLevel(logging.WARNING)
+    else:
+        print(f"A股量化系统 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 65)
 
     # 默认全链路
     if args.crash_info:
@@ -848,6 +831,9 @@ def main():
         return
     elif args.agent_status:
         cmd_agent_status()
+        return
+    elif args.resolve_crash:
+        cmd_resolve_crash(args)
         return
     elif args.scan:
         result = cmd_scan()

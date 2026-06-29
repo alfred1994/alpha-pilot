@@ -310,12 +310,7 @@ def _classify_regime_llm(indicators: Dict) -> Optional[tuple]:
         (regime, confidence, reasoning) 或 None
     """
     import os
-    import requests
-
-    api_key = os.environ.get("XIAOMI_API_KEY", "")
-    base_url = "https://token-plan-cn.xiaomimimo.com/v1"
-    if not api_key:
-        return None
+    from strategy.mimo_client import post_chat_completion
 
     prompt = f"""你是A股市场环境分析师。根据以下指标判断当前市场环境。
 
@@ -337,7 +332,6 @@ def _classify_regime_llm(indicators: Dict) -> Optional[tuple]:
 只返回JSON，不要其他文字。"""
 
     try:
-        headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
         payload = {
             "model": "mimo-v2.5-pro",
             "messages": [
@@ -347,11 +341,12 @@ def _classify_regime_llm(indicators: Dict) -> Optional[tuple]:
             "max_tokens": 1000,
             "temperature": 0.1,
         }
-        resp = requests.post(f"{base_url}/chat/completions", headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
+        resp_json = post_chat_completion(payload=payload, http_timeout=30)
+        if not resp_json:
+            return None
+            
+        msg = resp_json["choices"][0]["message"]
         content = (msg.get("content", "") or "").strip()
-        # MiMo模型: max_tokens不够时内容可能只在reasoning_content里
         if not content:
             content = (msg.get("reasoning_content", "") or "").strip()
 

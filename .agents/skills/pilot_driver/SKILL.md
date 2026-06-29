@@ -76,10 +76,15 @@ python3 main.py --agent-status
     python3 main.py --health
     ```
     验证 `health.ok` 重新变为 `true`。
-3.  **热重启服务**：
+3.  **复位崩溃状态**（至关重要）：
+    执行命令，标记当前系统崩溃已修复，将崩溃文件生命周期流转到 resolved：
+    ```bash
+    python3 main.py --resolve-crash
+    ```
+4.  **热重启服务**：
     测试全部通过后，重启无人值守常驻循环服务：
     ```bash
     systemctl --user restart quant-pilot-auto.service
     ```
-4.  **向主人汇报**：
+5.  **向主人汇报**：
     在 Telegram 中向用户发送自愈喜报，描述错误原因，并附带本次热修复的 `git diff` 补丁。

@@ -41,8 +41,9 @@ class StopLossHandler:
                     shares = pos.get("shares", 0)
                     reason = signal.get("reason", action)
 
-                    logger.warning(f"触发止损: {code} {shares}股@{price} {reason}")
-                    self.account.sell(code, price, shares, reason=reason)
+                    logger.warning(f"触发止损建议: {code} {shares}股@{price} {reason}。实时传感器广播，不直接执行交易。")
+                    from scheduler.notifier import send_message
+                    send_message(f"🚨【实时传感器】股票 {code} 触发 {reason} 建议！当前价格: {price}。建议卖出。")
 
         except Exception as e:
             logger.error(f"止损检查失败 {code}: {e}")

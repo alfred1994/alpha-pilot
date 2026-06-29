@@ -32,6 +32,12 @@ export class ControlTab {
     }
 
     async setTradingState(pause) {
+        const actionText = pause ? '暂停' : '恢复';
+        const confirmed = confirm(`⚠️ 请确认：您确定要执行 [${actionText}] 自动交易系统吗？\n\n该操作会立即向系统发送指令，变更盯盘自动循环。`);
+        if (!confirmed) {
+            return;
+        }
+
         const url = `${this.app.apiBase}/control/${pause ? 'pause' : 'resume'}`;
         const reason = document.getElementById('pause-reason').value || 'Web端手动暂停';
         

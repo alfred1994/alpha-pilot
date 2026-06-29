@@ -20,12 +20,9 @@ LLM_MODEL = "mimo-v2.5-pro"
 
 
 def _call_llm(prompt: str, max_tokens: int = 1500) -> Optional[str]:
-    """调用 MiMo LLM"""
-    import requests
-    if not MIMO_API_KEY:
-        logger.warning("XIAOMI_API_KEY 未设置，无法调用LLM")
-        return None
-    headers = {"Authorization": f"Bearer {MIMO_API_KEY}", "Content-Type": "application/json"}
+    """调用统一大模型客户端"""
+    from strategy.mimo_client import post_chat_completion
+    
     payload = {
         "model": LLM_MODEL,
         "messages": [
@@ -36,10 +33,16 @@ def _call_llm(prompt: str, max_tokens: int = 1500) -> Optional[str]:
         "temperature": 0.3,
     }
     try:
-        resp = requests.post(f"{MIMO_BASE_URL}/chat/completions", headers=headers, json=payload, timeout=30)
-        resp.raise_for_status()
-        msg = resp.json()["choices"][0]["message"]
-        return msg.get("content", "") or msg.get("reasoning_content", "")
+        resp_json = post_chat_completion(
+            payload=payload, 
+            base_url=MIMO_BASE_URL, 
+            api_key=MIMO_API_KEY, 
+            http_timeout=30
+        )
+        if not resp_json:
+            return None
+        msg = resp_json["choices"][0]["message"]
+        return (msg.get("content", "") or msg.get("reasoning_content", "") or "").strip()
     except Exception as e:
         logger.error(f"LLM调用失败: {e}")
         return None

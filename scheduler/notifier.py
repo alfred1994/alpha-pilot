@@ -162,6 +162,10 @@ def dump_crash_info(error_type: str, message: str, traceback_str: str):
         "file": error_file,
         "line": error_line,
         "traceback": traceback_str,
+        "status": "open",
+        "resolved_at": None,
+        "resolved_by": None,
+        "git_commit": None,
     }
     
     try:
