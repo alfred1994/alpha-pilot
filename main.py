@@ -21,10 +21,127 @@ from datetime import datetime
 # 确保项目根目录在 path 中
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Windows 平台强制使用 UTF-8 输出，防止因打印 emoji ✅ 产生 UnicodeEncodeError
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(name)s] %(message)s",
 )
+
+from scheduler.notifier import register_crash_handler
+register_crash_handler()
+
+
+def cmd_crash_info():
+    """直接读取并输出 latest_crash.json"""
+    import json
+    crash_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "latest_crash.json")
+    if not os.path.exists(crash_file):
+        print(json.dumps({"status": "no_crash", "message": "暂无崩溃记录"}, ensure_ascii=False, indent=2))
+        return
+    try:
+        with open(crash_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
+    except Exception as e:
+        print(json.dumps({"status": "error", "message": f"读取失败: {e}"}, ensure_ascii=False, indent=2))
+
+
+def cmd_agent_status():
+    """输出系统结构化运维状态供 AI 驾驶员使用"""
+    import json
+    from scheduler.health import run_health_check
+    from scheduler.watchdog import run_auto_watchdog
+    from scheduler.control import get_auto_control_state
+    
+    # 1. 运行健康检查
+    health_ok = True
+    health_failed = []
+    try:
+        health_items = run_health_check()
+        health_ok = all(item.ok or not item.required for item in health_items)
+        health_failed = [item.name for item in health_items if not item.ok and item.required]
+    except Exception as e:
+        health_ok = False
+        health_failed = [f"健康检查运行异常: {e}"]
+    
+    # 2. 运行 Watchdog
+    watchdog_ok = True
+    watchdog_criticals = []
+    try:
+        watchdog_items = run_auto_watchdog()
+        watchdog_criticals = [item.name for item in watchdog_items if item.severity == "critical"]
+        watchdog_ok = (len(watchdog_criticals) == 0)
+    except Exception as e:
+        watchdog_ok = False
+        watchdog_criticals = [f"Watchdog运行异常: {e}"]
+    
+    # 3. 读取暂停状态
+    control_paused = False
+    control_reason = ""
+    try:
+        control = get_auto_control_state()
+        control_paused = bool(control.get("paused"))
+        control_reason = control.get("reason", "")
+    except Exception:
+        pass
+    
+    # 4. 读取最新自适应参数
+    from strategy.adaptive import ADAPTIVE_FILE
+    adaptive_params = {}
+    if os.path.exists(ADAPTIVE_FILE):
+        try:
+            with open(ADAPTIVE_FILE, "r", encoding="utf-8") as f:
+                adaptive_data = json.load(f)
+                adaptive_params = {
+                    "weights": adaptive_data.get("current_weights"),
+                    "buy_threshold": adaptive_data.get("current_buy_threshold"),
+                    "min_score": adaptive_data.get("current_min_score"),
+                    "top_k_delta": adaptive_data.get("current_top_k_delta"),
+                    "position_scale": adaptive_data.get("current_position_scale"),
+                }
+        except Exception:
+            pass
+            
+    # 5. 最新持仓与资金
+    positions = []
+    total_assets = 1000000.0
+    cash = 1000000.0
+    try:
+        from execution.paper_account import PaperAccount
+        account = PaperAccount()
+        total_assets = account.total_assets()
+        cash = account.cash
+        positions = list(account.positions.keys())
+    except Exception:
+        pass
+    
+    status_data = {
+        "timestamp": datetime.now().isoformat(),
+        "health": {
+            "ok": health_ok,
+            "failed_required": health_failed,
+        },
+        "watchdog": {
+            "ok": watchdog_ok,
+            "criticals": watchdog_criticals,
+        },
+        "control": {
+            "paused": control_paused,
+            "reason": control_reason,
+        },
+        "account": {
+            "total_assets": total_assets,
+            "cash": cash,
+            "positions": positions,
+        },
+        "adaptive": adaptive_params,
+    }
+    print(json.dumps(status_data, ensure_ascii=False, indent=2))
 
 
 def cmd_scan():
@@ -644,6 +761,8 @@ def main():
 
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--scan", action="store_true", help="扫描信号（快链路90秒）")
+    group.add_argument("--crash-info", action="store_true", help="输出最近一次系统崩溃信息(JSON)")
+    group.add_argument("--agent-status", action="store_true", help="输出系统结构化运维状态(JSON)")
     group.add_argument("--prefetch", action="store_true", help="盘前数据预热（慢链路）")
     group.add_argument("--execute", action="store_true", help="执行交易（风控+模拟盘）")
     group.add_argument("--review", action="store_true", help="每日复盘")
@@ -713,7 +832,13 @@ def main():
     print("=" * 65)
 
     # 默认全链路
-    if args.scan:
+    if args.crash_info:
+        cmd_crash_info()
+        return
+    elif args.agent_status:
+        cmd_agent_status()
+        return
+    elif args.scan:
         result = cmd_scan()
     elif args.prefetch:
         from scheduler.pipeline import prefetch, format_pipeline_report

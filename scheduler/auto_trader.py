@@ -568,19 +568,21 @@ def run_auto_cycle(
                     f"盘后复盘进化: 步骤{len(review_result.steps)}项 "
                     f"错误{len(review_result.errors)}项"
                 )
-                # 添加复盘详细内容
-                if hasattr(review_result, 'review_text') and review_result.review_text:
-                    # 截取前500字符作为摘要
-                    review_summary = review_result.review_text[:500]
-                    if len(review_result.review_text) > 500:
-                        review_summary += "..."
-                    actions.append(f"  📝 复盘摘要: {review_summary}")
-                # 添加步骤详情
+                # 添加复盘详细内容 - 从steps中提取关键信息
                 for step in review_result.steps:
-                    if step.success and step.detail:
-                        actions.append(f"  ✅ {step.name}: {step.detail[:100]}")
-                    elif not step.success:
-                        actions.append(f"  ❌ {step.name}: 失败")
+                    status_icon = "✅" if step.success else "❌"
+                    if step.detail:
+                        # 截取前150字符，保留关键信息
+                        detail_preview = step.detail[:150].replace("\n", " ").strip()
+                        if len(step.detail) > 150:
+                            detail_preview += "..."
+                        actions.append(f"  {status_icon} {step.name}: {detail_preview}")
+                    else:
+                        actions.append(f"  {status_icon} {step.name}")
+                # 如果有错误，也显示出来
+                if review_result.errors:
+                    for err in review_result.errors:
+                        actions.append(f"  ⚠️ 错误: {err[:100]}")
             else:
                 actions.append("盘后: 等待复盘窗口或今日已复盘")
 

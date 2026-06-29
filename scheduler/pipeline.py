@@ -1117,10 +1117,32 @@ def run_review() -> PipelineResult:
         except Exception as e:
             logger.debug(f"订单审计复盘快照回写失败(非致命): {e}")
         result.review_text = review_text
+        # 提取关键财务指标作为摘要
+        daily_pnl = review_data.get("daily_pnl", 0)
+        daily_pnl_pct = review_data.get("daily_pnl_pct", 0)
+        total_assets = review_data.get("total_assets", 0)
+        cumulative_pnl_pct = review_data.get("cumulative_pnl_pct", 0)
+        position_count = len(review_data.get("position_pnls", []))
+        trade_count = len(review_data.get("trade_reviews", []))
+        win_rate = review_data.get("win_rate", 0)
+
+        summary_parts = []
+        if total_assets > 0:
+            summary_parts.append(f"总资产{total_assets:,.0f}")
+        if daily_pnl != 0:
+            summary_parts.append(f"日盈亏{daily_pnl:+,.0f}({daily_pnl_pct:+.2%})")
+        if cumulative_pnl_pct != 0:
+            summary_parts.append(f"累计{cumulative_pnl_pct:+.2%}")
+        if position_count > 0:
+            summary_parts.append(f"持仓{position_count}只")
+        if trade_count > 0:
+            summary_parts.append(f"今日交易{trade_count}笔 命中率{win_rate:.0%}")
+
+        detail_summary = " | ".join(summary_parts) if summary_parts else "暂无数据"
         result.steps.append(StepResult(
             name="复盘", success=True,
             elapsed=time.time() - t0,
-            detail=str(review_text)[:500],
+            detail=detail_summary,
         ))
 
         adaptive_data = {}
@@ -1128,10 +1150,17 @@ def run_review() -> PipelineResult:
             from strategy.adaptive import AdaptiveEngine
             adaptive = AdaptiveEngine()
             adaptive_data = adaptive.analyze_and_adjust(days=10)
+            # 提取自适应分析关键信息
+            adj_status = adaptive_data.get("status", "unknown")
+            regime = adaptive_data.get("regime", {})
+            regime_type = regime.get("type", "") if isinstance(regime, dict) else str(regime)
+            adj_detail = f"状态={adj_status}"
+            if regime_type:
+                adj_detail += f" 市场环境={regime_type}"
             result.steps.append(StepResult(
                 name="自适应分析", success=True,
                 elapsed=time.time() - t0,
-                detail=f"status={adaptive_data.get('status', 'unknown')}",
+                detail=adj_detail,
             ))
         except Exception as e:
             logger.warning(f"自适应分析失败(非致命): {e}")
@@ -1153,10 +1182,21 @@ def run_review() -> PipelineResult:
                 adaptive_data=adaptive_data,
             )
             evolution = run_decision_evolution_analysis()
+            # 提取LLM分析关键信息
+            total_decisions = evolution.get("total_decisions", 0)
+            llm_detail = f"提取教训{lesson_count}条"
+            if total_decisions > 0:
+                llm_detail += f" 分析决策样本{total_decisions}条"
+            # 如果有关键教训，添加摘要
+            if llm_analysis and isinstance(llm_analysis, str):
+                # 取第一行作为摘要
+                first_line = llm_analysis.split("\n")[0][:100]
+                if first_line:
+                    llm_detail += f" | {first_line}"
             result.steps.append(StepResult(
                 name="LLM复盘进化", success=True,
                 elapsed=time.time() - t0,
-                detail=f"教训{lesson_count}条 决策样本{evolution.get('total_decisions', 0)}条",
+                detail=llm_detail,
             ))
         except Exception as e:
             logger.warning(f"LLM复盘进化失败(非致命): {e}")

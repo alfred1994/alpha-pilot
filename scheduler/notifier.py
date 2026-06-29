@@ -6,6 +6,7 @@ Telegram通知模块
   2. 发送格式化的交易信号报告
   3. 发送每日汇总报告
   4. 支持Markdown格式化
+  5. 崩溃异常转储 (latest_crash.json)
 
 配置:
   环境变量 TELEGRAM_BOT_TOKEN 和 TELEGRAM_CHAT_ID
@@ -15,6 +16,8 @@ import os
 import requests
 import logging
 import html
+import json
+import re
 from datetime import datetime
 from scheduler.market_calendar import _now_bj
 from typing import Optional
@@ -35,14 +38,6 @@ def is_configured() -> bool:
 def send_message(text: str, parse_mode: str = "HTML", silent: bool = False) -> bool:
     """
     发送Telegram消息
-
-    Args:
-        text: 消息内容
-        parse_mode: 解析模式 "HTML" / "Markdown"
-        silent: 是否静默发送(不通知)
-
-    Returns:
-        bool: 是否发送成功
     """
     if not is_configured():
         logger.warning("Telegram未配置, 跳过发送")
@@ -75,13 +70,6 @@ def send_message(text: str, parse_mode: str = "HTML", silent: bool = False) -> b
 def send_signal_report(signals: list, title: str = "量化信号报告") -> bool:
     """
     发送信号报告
-
-    Args:
-        signals: CompositeSignal对象列表
-        title: 报告标题
-
-    Returns:
-        bool: 是否发送成功
     """
     now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>{title}</b> ({now})", ""]
@@ -114,13 +102,6 @@ def send_signal_report(signals: list, title: str = "量化信号报告") -> bool
 def send_decision_report(decisions: list, title: str = "决策报告") -> bool:
     """
     发送决策报告
-
-    Args:
-        decisions: TradeDecision对象列表
-        title: 报告标题
-
-    Returns:
-        bool: 是否发送成功
     """
     now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>{title}</b> ({now})", ""]
@@ -154,6 +135,85 @@ def send_decision_report(decisions: list, title: str = "决策报告") -> bool:
     return send_message(text, parse_mode="HTML")
 
 
+def dump_crash_info(error_type: str, message: str, traceback_str: str):
+    """
+    将崩溃信息转储到 data/latest_crash.json 中，供 AI 驾驶员 (Hermes Agent) 使用。
+    """
+    # 获取项目根目录
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    crash_file = os.path.join(project_dir, "data", "latest_crash.json")
+    os.makedirs(os.path.dirname(crash_file), exist_ok=True)
+    
+    # 尝试解析出错的文件和行数
+    lines = traceback_str.strip().split("\n")
+    error_file = ""
+    error_line = 0
+    for line in reversed(lines):
+        match = re.search(r'File "([^"]+)", line (\d+)', line)
+        if match:
+            error_file = match.group(1)
+            error_line = int(match.group(2))
+            break
+            
+    crash_data = {
+        "timestamp": datetime.now().isoformat(),
+        "error_type": error_type,
+        "message": message,
+        "file": error_file,
+        "line": error_line,
+        "traceback": traceback_str,
+    }
+    
+    try:
+        with open(crash_file, "w", encoding="utf-8") as f:
+            json.dump(crash_data, f, ensure_ascii=False, indent=2)
+        logger.info(f"已将崩溃信息转储到: {crash_file}")
+    except Exception as e:
+        logger.error(f"转储崩溃信息失败: {e}")
+
+
+def register_crash_handler():
+    """
+    注册全局未捕获异常的拦截器
+    """
+    import sys
+    import traceback
+    
+    def my_excepthook(exctype, value, tb):
+        tb_str = "".join(traceback.format_exception(exctype, value, tb))
+        error_type = exctype.__name__
+        message = str(value)
+        
+        # 1. 写入崩溃文件
+        dump_crash_info(error_type, message, tb_str)
+        
+        # 2. 推送 Tg 消息
+        error_msg = f"未处理异常: {error_type}: {message}\n\n堆栈:\n<pre>{html.escape(tb_str[-2000:])}</pre>"
+        send_error_alert(error_msg)
+        
+        # 3. 呼叫原本的 excepthook
+        sys.__excepthook__(exctype, value, tb)
+        
+    sys.excepthook = my_excepthook
+
+
+def send_error_alert(error_msg: str) -> bool:
+    """发送错误告警"""
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
+    
+    # 额外逻辑：如果不是 excepthook 触发的，且包含报错信息，也生成 crash dump，以防万一
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    crash_file = os.path.join(project_dir, "data", "latest_crash.json")
+    if not os.path.exists(crash_file):
+        try:
+            dump_crash_info("SystemAlert", error_msg, f"Manual trigger alert:\n{error_msg}")
+        except Exception:
+            pass
+
+    text = f"⚠️ <b>系统告警</b> ({now})\n\n{error_msg}"
+    return send_message(text, parse_mode="HTML")
+
+
 def send_daily_summary(
     market_status: str = "",
     signal_count: int = 0,
@@ -164,17 +224,6 @@ def send_daily_summary(
 ) -> bool:
     """
     发送每日汇总
-
-    Args:
-        market_status: 市场状态
-        signal_count: 信号总数
-        buy_count: 买入信号数
-        sell_count: 卖出信号数
-        top_picks: Top推荐列表 [(code, name, score), ...]
-        error: 错误信息
-
-    Returns:
-        bool: 是否发送成功
     """
     now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>每日汇总</b> ({now})", ""]
@@ -197,18 +246,9 @@ def send_daily_summary(
     return send_message(text, parse_mode="HTML")
 
 
-def send_error_alert(error_msg: str) -> bool:
-    """发送错误告警"""
-    now = _now_bj().strftime("%Y-%m-%d %H:%M")
-    text = f"⚠️ <b>系统告警</b> ({now})\n\n{error_msg}"
-    return send_message(text, parse_mode="HTML")
-
-
 def should_notify_auto_cycle(actions: list, error: str = "") -> bool:
     """
     判断自动盯盘本轮是否值得通知
-
-    只对关键动作通知，避免循环空转时刷屏。
     """
     if error:
         return True
@@ -270,8 +310,6 @@ def send_auto_cycle_report(date: str, status: str, actions: list,
                            force: bool = False) -> bool:
     """
     发送自动盯盘关键动作通知
-
-    Telegram未配置时静默跳过，避免影响自动交易主循环。
     """
     if not force and not should_notify_auto_cycle(actions, error):
         return False
