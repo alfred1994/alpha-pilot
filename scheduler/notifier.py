@@ -218,6 +218,80 @@ def send_error_alert(error_msg: str) -> bool:
     return send_message(text, parse_mode="HTML")
 
 
+def send_stock_picks(scan_result, title: str = "📋 今日选股") -> bool:
+    """
+    发送选股结果通知（盘中扫描出候选时调用）
+
+    Args:
+        scan_result: PipelineResult对象，包含candidates和trade_plan
+        title: 通知标题
+    """
+    now = _now_bj().strftime("%Y-%m-%d %H:%M")
+    lines = [f"<b>{title}</b> ({now})", ""]
+
+    # 从trade_plan获取买入计划
+    plan_data = getattr(scan_result, "trade_plan", {}) or {}
+    orders = plan_data.get("orders", [])
+    candidates = getattr(scan_result, "candidates", []) or []
+
+    # 市场环境
+    regime = plan_data.get("regime", "N/A")
+    regime_conf = plan_data.get("regime_confidence", 0)
+    lines.append(f"📊 市场环境: {regime} (置信度{regime_conf:.0%})")
+    lines.append("")
+
+    # 买入计划
+    if orders:
+        lines.append(f"🟢 <b>买入计划 ({len(orders)}只)</b>")
+        for o in orders:
+            code = o.get("code", "") if isinstance(o, dict) else getattr(o, "code", "")
+            name = o.get("name", "") if isinstance(o, dict) else getattr(o, "name", "")
+            score = o.get("score", 0) if isinstance(o, dict) else getattr(o, "score", 0)
+            conviction = o.get("conviction", 0) if isinstance(o, dict) else getattr(o, "conviction", 0)
+            reason = o.get("reason", "") if isinstance(o, dict) else getattr(o, "reason", "")
+            max_price = o.get("max_price", 0) if isinstance(o, dict) else getattr(o, "max_price", 0)
+            target_weight = o.get("target_weight", 0) if isinstance(o, dict) else getattr(o, "target_weight", 0)
+            lines.append(f"  🟢 <b>{code} {name}</b>")
+            lines.append(f"     分数:{score:.0f} 置信度:{conviction:.0%} 仓位:{target_weight:.0%}")
+            lines.append(f"     最高价:{max_price:.2f}")
+            if reason:
+                lines.append(f"     理由: {reason[:80]}")
+            lines.append("")
+    else:
+        lines.append("⚪ 今日无买入计划")
+        lines.append("")
+
+    # 全部候选（含HOLD的）
+    if candidates:
+        hold_candidates = [
+            c for c in candidates
+            if not any(
+                (o.get("code") if isinstance(o, dict) else getattr(o, "code", "")) == c.get("code", "")
+                for o in orders
+            )
+        ]
+        if hold_candidates:
+            lines.append(f"🟡 <b>观察池 ({len(hold_candidates)}只)</b>")
+            for c in hold_candidates[:8]:  # 最多显示8只
+                code = c.get("code", "")
+                name = c.get("name", "")
+                composite = c.get("composite", 0)
+                lines.append(f"  ⚪ {code} {name} 分数:{composite:.0f}")
+            if len(hold_candidates) > 8:
+                lines.append(f"  ... 还有{len(hold_candidates)-8}只")
+
+    # 错误
+    errors = plan_data.get("errors", [])
+    if errors:
+        lines.append("")
+        lines.append(f"⚠️ 错误 ({len(errors)})")
+        for e in errors[:3]:
+            lines.append(f"  - {e[:60]}")
+
+    text = "\n".join(lines)
+    return send_message(text, parse_mode="HTML")
+
+
 def send_daily_summary(
     market_status: str = "",
     signal_count: int = 0,

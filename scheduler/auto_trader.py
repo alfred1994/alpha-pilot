@@ -530,6 +530,14 @@ def run_auto_cycle(
                 state.last_scan_at = now_ts
                 actions.append(f"盘中扫描: 候选{len(scan_result.candidates)}只 决策{len(scan_result.decisions)}条")
 
+                # 推送选股结果通知
+                if scan_result.candidates:
+                    try:
+                        from scheduler.notifier import send_stock_picks
+                        send_stock_picks(scan_result)
+                    except Exception as e:
+                        logger.warning(f"选股通知发送失败(非致命): {e}")
+
                 exec_result = execute_trades_func()
                 state.last_execute_at = now_ts if now_ts_override is not None else time.time()
                 actions.append(
