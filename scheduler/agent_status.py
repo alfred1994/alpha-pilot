@@ -45,12 +45,18 @@ def build_agent_status_snapshot():
     positions = []
     total_assets = 1000000.0
     cash = 1000000.0
+    initial_capital = 1000000.0
+    total_pnl = 0.0
+    total_pnl_pct = 0.0
     try:
         from execution.paper_account import PaperAccount
         account = PaperAccount()
         total_assets = account.total_assets()
         cash = account.cash
         positions = list(account.positions.keys())
+        initial_capital = account.initial_capital
+        total_pnl = total_assets - initial_capital
+        total_pnl_pct = total_pnl / initial_capital if initial_capital > 0 else 0.0
     except Exception:
         pass
         
@@ -61,13 +67,17 @@ def build_agent_status_snapshot():
         try:
             with open(ADAPTIVE_FILE, "r", encoding="utf-8") as f:
                 adaptive_data = json.load(f)
+                adjustments = adaptive_data.get("adjustments", [])
+                latest_adj = adjustments[-1] if adjustments else None
                 adaptive_params = {
                     "weights": adaptive_data.get("current_weights"),
                     "buy_threshold": adaptive_data.get("current_buy_threshold"),
                     "min_score": adaptive_data.get("current_min_score"),
                     "top_k_delta": adaptive_data.get("current_top_k_delta"),
                     "position_scale": adaptive_data.get("current_position_scale"),
-                    "regime": adaptive_data.get("current_regime", "sideways")
+                    "regime": adaptive_data.get("current_regime", "sideways"),
+                    "last_update": adaptive_data.get("last_update") or adaptive_data.get("timestamp"),
+                    "latest_adjustment": latest_adj
                 }
         except Exception:
             pass
@@ -85,6 +95,83 @@ def build_agent_status_snapshot():
         except Exception:
             pass
 
+    # 7. 读取自动盯盘状态文件中的进度与循环计数
+    from scheduler.auto_trader import AUTO_STATE_FILE
+    pipeline_progress = {
+        "prefetch": False,
+        "scan": False,
+        "execute": False,
+        "review": False
+    }
+    loop_count = 0
+    last_loop_time = "-"
+    if os.path.exists(AUTO_STATE_FILE):
+        try:
+            with open(AUTO_STATE_FILE, "r", encoding="utf-8") as f:
+                state_data = json.load(f)
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            pipeline_progress["prefetch"] = (state_data.get("last_prefetch_date") == today)
+            
+            last_scan_at = state_data.get("last_scan_at", 0.0)
+            if last_scan_at > 0:
+                scan_date = datetime.fromtimestamp(last_scan_at).strftime("%Y-%m-%d")
+                pipeline_progress["scan"] = (scan_date == today)
+                
+            last_execute_at = state_data.get("last_execute_at", 0.0)
+            if last_execute_at > 0:
+                exec_date = datetime.fromtimestamp(last_execute_at).strftime("%Y-%m-%d")
+                pipeline_progress["execute"] = (exec_date == today)
+                
+            pipeline_progress["review"] = (state_data.get("last_review_date") == today)
+            
+            loop_count = state_data.get("loop_count", 0)
+            if state_data.get("updated_at"):
+                last_loop_time = state_data.get("updated_at")
+        except Exception:
+            pass
+
+    # 8. 读取最近系统运行日志事件
+    recent_logs = []
+    try:
+        from data.database import Database
+        with Database() as db:
+            events = db.get_auto_events(limit=15)
+            for event in events:
+                actions = event.get("actions")
+                if actions:
+                    try:
+                        actions_list = json.loads(actions) if isinstance(actions, str) else actions
+                    except Exception:
+                        actions_list = [actions]
+                    for action in actions_list:
+                        created_at_time = ""
+                        if event.get("created_at"):
+                            try:
+                                created_at_time = event.get("created_at").split("T")[-1][:8]
+                            except Exception:
+                                created_at_time = event.get("created_at")[:19]
+                        recent_logs.append({
+                            "time": created_at_time,
+                            "type": event.get("event_type"),
+                            "status": event.get("status"),
+                            "action": action,
+                            "error": event.get("error")
+                        })
+    except Exception:
+        pass
+
+    # 9. 构建驾驶舱风险报警列表
+    risk_warnings = []
+    if not health_ok:
+        risk_warnings.append(f"环境自检异常: {', '.join(health_failed)}")
+    if not watchdog_ok:
+        risk_warnings.append(f"看门狗监测报警: {', '.join(watchdog_criticals)}")
+    if crash_open:
+        risk_warnings.append("系统未决崩溃(Crash)报警！")
+    if control_paused:
+        risk_warnings.append(f"交易挂起暂停: {control_reason}")
+
     return {
         "timestamp": datetime.now().isoformat(),
         "health": {
@@ -100,10 +187,19 @@ def build_agent_status_snapshot():
             "reason": control_reason
         },
         "account": {
+            "initial_capital": initial_capital,
             "total_assets": total_assets,
             "cash": cash,
-            "positions": positions
+            "positions": positions,
+            "total_pnl": total_pnl,
+            "total_pnl_pct": total_pnl_pct
         },
         "adaptive": adaptive_params,
-        "crash_open": crash_open
+        "crash_open": crash_open,
+        "pipeline_progress": pipeline_progress,
+        "recent_logs": recent_logs[:20],
+        "risk_warnings": risk_warnings,
+        "loop_count": loop_count,
+        "last_loop_time": last_loop_time
     }
+

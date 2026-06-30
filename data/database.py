@@ -125,6 +125,8 @@ class Database:
                 signal_detail TEXT,
                 market_regime TEXT,
                 dimensions    TEXT,
+                pnl           REAL,
+                pnl_pct       REAL,
                 created_at    TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -206,6 +208,16 @@ class Database:
             c.execute("ALTER TABLE llm_decisions ADD COLUMN trade_id INTEGER")
         except sqlite3.OperationalError:
             pass  # 字段已存在，忽略
+
+        # 确保 trades 表有 pnl 和 pnl_pct 字段
+        try:
+            c.execute("ALTER TABLE trades ADD COLUMN pnl REAL")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            c.execute("ALTER TABLE trades ADD COLUMN pnl_pct REAL")
+        except sqlite3.OperationalError:
+            pass
 
         # ── 交易教训库 ──
         c.execute("""
@@ -385,8 +397,8 @@ class Database:
         c.execute("""
             INSERT INTO trades
             (code, name, action, price, shares, amount, commission,
-             reason, signal_score, signal_detail, market_regime, dimensions, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             reason, signal_score, signal_detail, market_regime, dimensions, pnl, pnl_pct, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             trade.get("code", ""),
             trade.get("name", ""),
@@ -400,6 +412,8 @@ class Database:
             trade.get("signal_detail"),
             trade.get("market_regime"),
             trade.get("dimensions"),
+            trade.get("pnl"),
+            trade.get("pnl_pct"),
             trade.get("created_at", datetime.now().isoformat()),
         ))
         self.conn.commit()
@@ -433,6 +447,7 @@ class Database:
     _TRADE_UPDATE_COLUMNS = {
         "code", "name", "action", "price", "shares", "amount", "commission",
         "reason", "signal_score", "signal_detail", "market_regime", "dimensions",
+        "pnl", "pnl_pct",
     }
 
     def update_trade(self, trade_id: int, updates: Dict):
@@ -783,15 +798,25 @@ class Database:
                         or trade.get("date")
                         or datetime.now().isoformat()
                     )
+                    action_upper = str(action).upper()
+                    pnl_pct_val = 0.0
+                    pnl_val = 0.0
+                    if action_upper == "SELL":
+                        profit_pct = trade.get("profit_pct") or trade.get("pnl_pct") or 0.0
+                        pnl_pct_val = profit_pct / 100.0 if profit_pct != 0 else 0.0
+                        pnl_val = trade.get("pnl") or (trade.get("amount", 0) * pnl_pct_val / (1 + pnl_pct_val) if pnl_pct_val != -1 else 0.0)
+
                     self.insert_trade({
                         "code": trade.get("code", ""),
                         "name": trade.get("name", ""),
-                        "action": str(action).upper(),
+                        "action": action_upper,
                         "price": trade.get("price", 0),
                         "shares": trade.get("shares", 0),
                         "amount": trade.get("amount", 0),
                         "commission": trade.get("commission", 0),
                         "reason": trade.get("reason", ""),
+                        "pnl": pnl_val,
+                        "pnl_pct": pnl_pct_val,
                         "created_at": created_at,
                     })
                     result["trades"] += 1
@@ -964,6 +989,8 @@ class Database:
             "signal_detail": trade.get("signal_detail"),
             "market_regime": trade.get("market_regime"),
             "dimensions": trade.get("dimensions"),
+            "pnl": trade.get("pnl"),
+            "pnl_pct": trade.get("pnl_pct"),
             "created_at": trade.get("timestamp", datetime.now().isoformat()),
         })
 

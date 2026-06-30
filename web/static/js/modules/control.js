@@ -7,6 +7,14 @@ export class ControlTab {
     init() {
         document.getElementById('btn-pause').addEventListener('click', () => this.setTradingState(true));
         document.getElementById('btn-resume').addEventListener('click', () => this.setTradingState(false));
+
+        const tokenInput = document.getElementById('control-token');
+        if (tokenInput) {
+            tokenInput.value = localStorage.getItem('control_token') || '';
+            tokenInput.addEventListener('input', (e) => {
+                localStorage.setItem('control_token', e.target.value.trim());
+            });
+        }
     }
 
     async load() {
@@ -43,12 +51,24 @@ export class ControlTab {
         
         const body = pause ? JSON.stringify({ reason }) : JSON.stringify({});
         
+        const headers = { 'Content-Type': 'application/json' };
+        const token = (localStorage.getItem('control_token') || '').trim();
+        if (token) {
+            headers['Authorization'] = `Bearer ${token}`;
+        }
+
         try {
             const res = await fetch(url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body
             });
+            
+            if (res.status === 401) {
+                alert("控制 Token 校验失败，请检查控制面板的 Token 设置！");
+                return;
+            }
+
             const result = await res.json();
             if (result.success) {
                 await this.app.loadGlobalStatus();

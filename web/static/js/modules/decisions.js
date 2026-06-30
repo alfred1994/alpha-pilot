@@ -33,7 +33,7 @@ export class DecisionsTab {
                 <div class="decision-item-body">
                     <p style="margin-bottom:8px;"><b>决策时间:</b> ${d.date}</p>
                     <p style="margin-bottom:8px;"><b>逻辑摘要:</b> ${d.reasoning.substring(0, 180)}${d.reasoning.length > 180 ? '...' : ''}</p>
-                    <button class="decision-btn-detail" data-id="${d.id}">查看完整思维链</button>
+                    <button class="decision-btn-detail" data-id="${d.id}">查看决策详情</button>
                 </div>
             `;
             container.appendChild(div);

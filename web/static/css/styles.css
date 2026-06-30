@@ -51,8 +51,8 @@ body {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
     backdrop-filter: blur(12px);
-    border-radius: 16px;
-    padding: 15px 24px;
+    border-radius: 8px;
+    padding: 12px 20px;
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -93,8 +93,8 @@ body {
     background: transparent;
     border: none;
     color: var(--text-secondary);
-    padding: 10px 16px;
-    border-radius: 10px;
+    padding: 8px 14px;
+    border-radius: 6px;
     cursor: pointer;
     display: flex;
     align-items: center;
@@ -149,8 +149,8 @@ body {
 .card {
     background: var(--card-bg);
     border: 1px solid var(--card-border);
-    border-radius: 16px;
-    padding: 24px;
+    border-radius: 8px;
+    padding: 16px 20px;
     backdrop-filter: blur(12px);
     transition: all 0.3s ease;
 }
@@ -287,8 +287,8 @@ body {
 .position-item, .lesson-item, .decision-item {
     background: rgba(255, 255, 255, 0.02);
     border: 1px solid rgba(255, 255, 255, 0.04);
-    border-radius: 12px;
-    padding: 16px;
+    border-radius: 6px;
+    padding: 12px;
     transition: all 0.2s ease;
 }
 
@@ -315,7 +315,7 @@ body {
 }
 
 .data-table th, .data-table td {
-    padding: 14px 16px;
+    padding: 10px 12px;
     border-bottom: 1px solid rgba(255, 255, 255, 0.04);
 }
 
@@ -336,8 +336,8 @@ body {
 
 .btn {
     border: none;
-    border-radius: 10px;
-    padding: 12px 20px;
+    border-radius: 6px;
+    padding: 10px 16px;
     cursor: pointer;
     font-weight: 600;
     display: flex;
@@ -510,4 +510,250 @@ body {
 .decision-btn-detail:hover {
     background: var(--primary-color);
     border-color: var(--primary-color);
+}
+
+/* --- 自动驾驶监控与驾驶舱新增样式 --- */
+.flex-center {
+    display: flex;
+    align-items: center;
+}
+
+/* 指示灯状态样式 */
+.status-indicator-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+}
+.green-dot {
+    background-color: var(--success-color);
+    box-shadow: 0 0 6px var(--success-color);
+}
+.red-dot {
+    background-color: var(--danger-color);
+    box-shadow: 0 0 6px var(--danger-color);
+}
+.orange-dot {
+    background-color: var(--warn-color);
+    box-shadow: 0 0 6px var(--warn-color);
+}
+.pulse-dot.green-dot::after {
+    box-shadow: 0 0 0 4px rgba(92, 226, 164, 0.4);
+}
+.pulse-dot.red-dot::after {
+    box-shadow: 0 0 0 4px rgba(226, 92, 92, 0.4);
+}
+.pulse-dot.orange-dot::after {
+    box-shadow: 0 0 0 4px rgba(247, 202, 94, 0.4);
+}
+
+/* 警报条样式 */
+.autopilot-alert-bar {
+    background: rgba(226, 92, 92, 0.12);
+    border: 1px solid rgba(226, 92, 92, 0.25);
+    border-radius: 6px;
+    padding: 10px 16px;
+    margin-bottom: 20px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    color: var(--danger-color);
+    animation: fadeIn 0.3s ease-out;
+}
+.autopilot-alert-bar .alert-content {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+}
+.autopilot-alert-bar .alert-actions .suggestion {
+    font-size: 11.5px;
+    opacity: 0.85;
+}
+
+/* 闭环进度步骤样式 */
+.pipeline-progress-container {
+    border-top: 1px solid rgba(255, 255, 255, 0.04);
+    padding-top: 15px;
+}
+.pipeline-steps {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    position: relative;
+}
+.pipeline-steps::before {
+    content: '';
+    position: absolute;
+    top: 16px;
+    left: 20px;
+    right: 20px;
+    height: 2px;
+    background: rgba(255, 255, 255, 0.04);
+    z-index: 1;
+}
+.pipe-step {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    position: relative;
+    z-index: 2;
+}
+.step-circle {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    background: rgba(25, 30, 45, 0.95);
+    border: 2px solid rgba(255, 255, 255, 0.06);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    transition: all 0.3s ease;
+}
+.step-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+}
+.pipe-step.completed .step-circle {
+    background: var(--success-color);
+    border-color: var(--success-color);
+    color: #0d111d;
+    box-shadow: 0 0 10px rgba(92, 226, 164, 0.3);
+}
+.pipe-step.completed .step-label {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+/* 风险与日志条目 */
+.risk-warning-item {
+    background: rgba(226, 92, 92, 0.06);
+    border: 1px solid rgba(226, 92, 92, 0.15);
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12.5px;
+    color: var(--danger-color);
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.log-item {
+    margin-bottom: 6px;
+    line-height: 1.45;
+}
+
+/* 详细持仓卡片样式 */
+.position-item-card {
+    background: rgba(255, 255, 255, 0.02);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 6px;
+    padding: 12px 14px;
+    margin-bottom: 10px;
+    transition: all 0.2s ease;
+}
+.position-item-card:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.08);
+}
+.badge-success {
+    background-color: var(--success-bg) !important;
+    color: var(--success-color) !important;
+    border: 1px solid rgba(92, 226, 164, 0.2);
+}
+.badge-danger {
+    background-color: var(--danger-bg) !important;
+    color: var(--danger-color) !important;
+    border: 1px solid rgba(226, 92, 92, 0.2);
+}
+.badge-neutral {
+    background-color: rgba(255, 255, 255, 0.04) !important;
+    color: var(--text-secondary) !important;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* 教训库分类筛选标签 */
+.lessons-filter button {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-secondary);
+    padding: 4px 10px;
+    border-radius: 6px;
+    transition: all 0.2s ease;
+}
+.lessons-filter button.active-filter {
+    background: var(--primary-color);
+    color: #fff;
+}
+.lessons-filter button:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-primary);
+}
+
+/* --- 移动端响应式面板控制 --- */
+@media (max-width: 768px) {
+    .app-container {
+        padding: 10px;
+    }
+    .app-header {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 8px;
+    }
+    .logo-area {
+        justify-content: center;
+    }
+    .app-nav {
+        overflow-x: auto;
+        white-space: nowrap;
+        padding-bottom: 4px;
+        -webkit-overflow-scrolling: touch;
+        justify-content: flex-start;
+    }
+    .nav-btn {
+        padding: 8px 12px;
+        font-size: 13px;
+        flex-shrink: 0;
+    }
+    .header-status {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        border-top: 1px solid rgba(255, 255, 255, 0.04);
+        padding-top: 10px;
+    }
+    .status-item {
+        align-items: center;
+        text-align: center;
+    }
+    .grid-layout {
+        grid-template-columns: 1fr !important;
+        gap: 16px;
+    }
+    .card {
+        padding: 16px;
+    }
+    .data-table th, .data-table td {
+        padding: 8px 10px;
+        font-size: 12.5px;
+    }
+    .pipeline-steps::before {
+        display: none;
+    }
+    .pipeline-steps {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+    }
+    .pipe-step {
+        flex-direction: row;
+        gap: 10px;
+        align-items: center;
+    }
 }

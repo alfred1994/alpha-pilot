@@ -39,6 +39,22 @@
                 </button>
             </nav>
             <div class="header-status">
+                <div class="status-item flex-center">
+                    <span class="status-indicator-dot" id="indicator-health" title="环境健康"></span>
+                    <span class="label">环境</span>
+                </div>
+                <div class="status-item flex-center">
+                    <span class="status-indicator-dot" id="indicator-watchdog" title="看门狗"></span>
+                    <span class="label">看门狗</span>
+                </div>
+                <div class="status-item flex-center">
+                    <span class="status-indicator-dot" id="indicator-crash" title="无崩溃"></span>
+                    <span class="label">无崩溃</span>
+                </div>
+                <div class="status-item flex-center">
+                    <span class="status-indicator-dot" id="indicator-control" title="交易控制"></span>
+                    <span class="label">交易</span>
+                </div>
                 <div class="status-item">
                     <span class="label">大盘环境:</span>
                     <span class="value" id="header-regime">-</span>
@@ -52,11 +68,84 @@
 
         <!-- 主内容区域 -->
         <main class="app-main">
+            <!-- 自动驾驶异常通知警报条 -->
+            <div class="autopilot-alert-bar" id="autopilot-alert-bar" style="display: none;">
+                <div class="alert-content">
+                    <i data-lucide="alert-triangle" class="alert-icon"></i>
+                    <span id="alert-message">自动驾驶异常：-</span>
+                </div>
+                <div class="alert-actions">
+                    <span class="suggestion">建议：检查 quant-pilot-auto.service 或运行 python3 main.py --doctor</span>
+                </div>
+            </div>
+
             <!-- 仪表盘面板 Dashboard Tab -->
             <section class="tab-content active" id="tab-dashboard">
+                <!-- 自动驾驶驾驶舱监控 (Autopilot Cockpit) -->
+                <div class="grid-layout mb-4">
+                    <!-- 左侧：驾驶舱状态与进度 -->
+                    <div class="card card-hero">
+                        <h2>自动驾驶监控 (Autopilot Cockpit)</h2>
+                        <div class="cockpit-status-grid mt-3" style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
+                            <div class="stat-box flex-center" style="gap: 8px;">
+                                <span class="status-indicator-dot" id="cockpit-watchdog"></span>
+                                <div>
+                                    <span class="stat-label">看门狗守护</span>
+                                    <span class="pos-value" id="cockpit-watchdog-text">-</span>
+                                </div>
+                            </div>
+                            <div class="stat-box flex-center" style="gap: 8px;">
+                                <span class="status-indicator-dot" id="cockpit-trading"></span>
+                                <div>
+                                    <span class="stat-label">日内交易阀门</span>
+                                    <span class="pos-value" id="cockpit-trading-text">-</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="pipeline-progress-container mt-4">
+                            <h3 style="font-size:14px; font-weight:600; color:var(--text-secondary); margin-bottom:10px;">今日运行日历/闭环进度</h3>
+                            <div class="pipeline-steps mt-2">
+                                <div class="pipe-step" id="step-prefetch">
+                                    <div class="step-circle">1</div>
+                                    <div class="step-label">盘前预热</div>
+                                </div>
+                                <div class="pipe-step" id="step-scan">
+                                    <div class="step-circle">2</div>
+                                    <div class="step-label">盘中扫描</div>
+                                </div>
+                                <div class="pipe-step" id="step-execute">
+                                    <div class="step-circle">3</div>
+                                    <div class="step-label">模拟执行</div>
+                                </div>
+                                <div class="pipe-step" id="step-review">
+                                    <div class="step-circle">4</div>
+                                    <div class="step-label">盘后复盘</div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 右侧：风险报警与运行日志 -->
+                    <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
+                        <div>
+                            <h2>系统风险警报</h2>
+                            <div class="risk-warnings" id="risk-warnings-list" style="margin-top:10px;">
+                                <div class="empty-state" style="padding: 10px;">运行状况正常</div>
+                            </div>
+                        </div>
+                        <div class="events-log mt-3" style="border-top:1px solid rgba(255,255,255,0.04); padding-top:10px; flex-grow:1;">
+                            <h3 style="font-size:14px; font-weight:600; color:var(--text-secondary);">最新动作日志</h3>
+                            <div class="events-list" id="events-list" style="max-height:120px; overflow-y:auto; font-family:monospace; font-size:11px; color:var(--text-secondary); margin-top:6px;">
+                                <div class="empty-state" style="padding: 10px;">暂无日志</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
                 <div class="grid-layout">
                     <!-- 左侧：资产/盈亏统计 -->
-                    <div class="card card-hero">
+                    <div class="card">
                         <h2>账户总览</h2>
                         <div class="stats-grid">
                             <div class="stat-box">
@@ -77,7 +166,7 @@
                             </div>
                         </div>
                         <!-- 收益率曲线图 chart -->
-                        <div class="chart-container mt-4" id="perf-chart" style="height: 280px;"></div>
+                        <div class="chart-container mt-4" id="perf-chart" style="height: 250px;"></div>
                     </div>
 
                     <!-- 右侧：当前持仓 -->
@@ -127,6 +216,46 @@
 
             <!-- 自适应进化面板 Evolution Tab -->
             <section class="tab-content" id="tab-evolution">
+                <!-- 自适应交易参数汇总卡片 -->
+                <div class="card mb-4" id="adaptive-params-card">
+                    <h2>自适应核心参数</h2>
+                    <div class="stats-grid" id="adaptive-params-grid">
+                        <div class="stat-box">
+                            <span class="stat-label">买入决策阈值 (buy_threshold)</span>
+                            <span class="stat-val font-outfit" id="param-buy-threshold">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">选股最低入选分 (min_score)</span>
+                            <span class="stat-val font-outfit" id="param-min-score">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">自适应TopK微调 (top_k_delta)</span>
+                            <span class="stat-val font-outfit" id="param-top-k-delta">-</span>
+                        </div>
+                        <div class="stat-box">
+                            <span class="stat-label">单笔仓位缩放 (position_scale)</span>
+                            <span class="stat-val font-outfit" id="param-position-scale">-</span>
+                        </div>
+                    </div>
+                    <div class="adaptive-meta mt-3" style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-secondary);">
+                        <span id="param-last-update">上次参数进化时间: -</span>
+                        <span id="param-regime">当前自适应环境识别: -</span>
+                    </div>
+                </div>
+
+                <!-- 最近参数进化详情 -->
+                <div class="card mb-4" id="latest-evolution-card" style="display: none;">
+                    <h2>最近参数进化详情</h2>
+                    <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-secondary);">
+                        <p><b>执行时间:</b> <span id="evo-date">-</span></p>
+                        <p><b>阶段胜率:</b> <span id="evo-win-rate">-</span> | <b>盈亏比:</b> <span id="evo-profit-factor">-</span> | <b>阶段交易数:</b> <span id="evo-trades">-</span></p>
+                        <p><b>进化动作及原因:</b></p>
+                        <ul id="evo-actions" style="margin-left: 20px; margin-top: 6px; padding-left: 0;">
+                            <li>无参数变更</li>
+                        </ul>
+                    </div>
+                </div>
+
                 <div class="grid-layout">
                     <!-- 左侧：权重变动图 -->
                     <div class="card card-double">
@@ -137,6 +266,13 @@
                     <!-- 右侧：交易教训库 -->
                     <div class="card">
                         <h2>教训库 (Self-Lessons)</h2>
+                        <div class="lessons-filter mb-3" style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button class="badge active-filter" data-category="all" style="cursor: pointer; border: none;">全部</button>
+                            <button class="badge" data-category="buy" style="cursor: pointer; border: none;">买入</button>
+                            <button class="badge" data-category="sell" style="cursor: pointer; border: none;">卖出</button>
+                            <button class="badge" data-category="risk" style="cursor: pointer; border: none;">风控</button>
+                            <button class="badge" data-category="regime" style="cursor: pointer; border: none;">环境</button>
+                        </div>
                         <div class="lessons-list" id="lessons-list">
                             <div class="empty-state">暂无教训记录</div>
                         </div>
@@ -167,6 +303,10 @@
                             <label for="pause-reason">暂停原因 (可选):</label>
                             <input type="text" id="pause-reason" placeholder="例如：大盘日内宽幅震荡观察">
                         </div>
+                        <div class="form-group mt-4" id="token-group" style="border-top: 1px solid rgba(255,255,255,0.04); padding-top: 15px;">
+                            <label for="control-token" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 6px;">控制 Token (Authorization Token):</label>
+                            <input type="password" id="control-token" placeholder="请输入公网控制 Token" style="width: 100%; box-sizing: border-box; text-align: center;">
+                        </div>
                     </div>
                 </div>
             </section>
@@ -183,7 +323,7 @@
     <div class="modal" id="decision-modal">
         <div class="modal-content card">
             <header class="modal-header">
-                <h3 id="modal-title">决策推理详情</h3>
+                <h3 id="modal-title">决策详情</h3>
                 <button class="close-btn" id="modal-close-btn">&times;</button>
             </header>
             <div class="modal-body">
@@ -199,7 +339,7 @@
                 </div>
                 <h4>5维信号雷达</h4>
                 <div class="chart-container mb-4" id="radar-chart" style="height: 250px;"></div>
-                <h4>LLM 推理思维链 (Reasoning Content)</h4>
+                <h4>决策推理与分析 (Decision Analysis)</h4>
                 <div class="reasoning-text" id="modal-reasoning"></div>
             </div>
         </div>

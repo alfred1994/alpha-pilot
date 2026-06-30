@@ -57,10 +57,40 @@ class App {
             document.getElementById('header-assets').textContent = `￥${data.account?.total_assets?.toLocaleString('zh-CN', {minimumFractionDigits:0, maximumFractionDigits:0}) || '-'}`;
             
             const pulse = document.getElementById('status-pulse');
-            if (data.health?.ok && data.watchdog?.ok) {
+            if (data.health?.ok && data.watchdog?.ok && !data.crash_open && !data.control?.paused) {
                 pulse.className = 'pulse-dot green';
             } else {
                 pulse.className = 'pulse-dot red';
+            }
+
+            // 更新头部 4 个核心状态指示灯
+            const hDot = document.getElementById('indicator-health');
+            if (hDot) {
+                hDot.className = data.health?.ok ? 'status-indicator-dot green-dot' : 'status-indicator-dot red-dot pulse-dot';
+            }
+            const wdDot = document.getElementById('indicator-watchdog');
+            if (wdDot) {
+                wdDot.className = data.watchdog?.ok ? 'status-indicator-dot green-dot' : 'status-indicator-dot red-dot pulse-dot';
+            }
+            const cDot = document.getElementById('indicator-crash');
+            if (cDot) {
+                cDot.className = !data.crash_open ? 'status-indicator-dot green-dot' : 'status-indicator-dot red-dot pulse-dot';
+            }
+            const ctrlDot = document.getElementById('indicator-control');
+            if (ctrlDot) {
+                ctrlDot.className = !data.control?.paused ? 'status-indicator-dot green-dot' : 'status-indicator-dot orange-dot pulse-dot';
+            }
+
+            // 更新顶部警告条
+            const alertBar = document.getElementById('autopilot-alert-bar');
+            const alertMsg = document.getElementById('alert-message');
+            if (alertBar && alertMsg) {
+                if (data.risk_warnings && data.risk_warnings.length > 0) {
+                    alertMsg.textContent = `自动驾驶异常报警: ${data.risk_warnings.join(' | ')}`;
+                    alertBar.style.display = 'flex';
+                } else {
+                    alertBar.style.display = 'none';
+                }
             }
 
             const timeStr = new Date(data.timestamp).toLocaleTimeString();

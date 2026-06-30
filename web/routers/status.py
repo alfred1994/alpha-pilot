@@ -7,3 +7,72 @@ router = APIRouter()
 def get_system_status():
     """获取系统运行健康状态、Watchdog及仓位账户信息"""
     return build_agent_status_snapshot()
+
+
+@router.get("/positions")
+def get_detailed_positions():
+    """获取当前持仓的详细交易信息（包括浮盈亏、持仓占比、止损及决策）"""
+    try:
+        from execution.paper_account import PaperAccount
+        account = PaperAccount()
+        
+        total_assets = account.total_assets()
+        pos_list = []
+        for code, pos in account.positions.items():
+            buy_price = pos.get("buy_price", 0.0)
+            current_price = pos.get("current_price") or pos.get("buy_price", buy_price)
+            shares = pos.get("shares", 0)
+            cost = pos.get("cost") or (buy_price * shares)
+            market_val = current_price * shares
+            pnl = market_val - cost
+            pnl_pct = (current_price - buy_price) / buy_price if buy_price > 0 else 0.0
+            weight = market_val / total_assets if total_assets > 0 else 0.0
+            
+            # 计算 ATR 止损线
+            import config
+            from risk.stop_loss import StopLossManager
+            slm = StopLossManager(atr_multiplier=config.ATR_MULTIPLIER, use_atr=config.USE_ATR_STOP)
+            atr = pos.get("atr_at_buy", 0)
+            levels = slm.get_stop_levels(
+                buy_price=buy_price,
+                highest_price=pos.get("highest_price", buy_price),
+                atr=atr if atr > 0 else None
+            )
+            
+            # 获取最近一次 LLM 决策
+            latest_decision = None
+            try:
+                from data.database import Database
+                with Database() as db:
+                    decs = db.get_llm_decisions(code=code, limit=1)
+                    if decs:
+                        latest_decision = {
+                            "action": decs[0].get("action"),
+                            "date": decs[0].get("date"),
+                            "reasoning": decs[0].get("reasoning"),
+                            "confidence": decs[0].get("confidence")
+                        }
+            except Exception:
+                pass
+
+            pos_list.append({
+                "code": code,
+                "name": pos.get("name") or code,
+                "shares": shares,
+                "buy_price": buy_price,
+                "current_price": current_price,
+                "highest_price": pos.get("highest_price", buy_price),
+                "market_value": market_val,
+                "pnl": pnl,
+                "pnl_pct": pnl_pct,
+                "weight": weight,
+                "stop_loss_price": levels.get("stop_loss"),
+                "take_profit_price": levels.get("take_profit"),
+                "trailing_stop_price": levels.get("trailing_stop"),
+                "latest_decision": latest_decision
+            })
+            
+        return {"success": True, "positions": pos_list}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+

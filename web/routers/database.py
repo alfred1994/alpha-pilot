@@ -18,24 +18,30 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
             offset = (page - 1) * limit
             cursor = db.conn.cursor()
             cursor.execute(
-                "SELECT id, date, code, name, action, price, shares, fee, pnl, pnl_pct, reason "
-                "FROM trades ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
+                "SELECT id, created_at, code, name, action, price, shares, commission, pnl, pnl_pct, reason "
+                "FROM trades ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
                 (limit, offset)
             )
             rows = cursor.fetchall()
             trades_list = []
             for r in rows:
+                date_str = r[1] or ""
+                if "T" in date_str:
+                    date_str = date_str.replace("T", " ")
+                if len(date_str) > 19:
+                    date_str = date_str[:19]
+
                 trades_list.append({
                     "id": r[0],
-                    "date": r[1],
+                    "date": date_str,
                     "code": r[2],
                     "name": r[3],
                     "action": r[4],
                     "price": r[5],
                     "shares": r[6],
-                    "fee": r[7],
-                    "pnl": r[8],
-                    "pnl_pct": r[9],
+                    "fee": r[7] or 0.0,
+                    "pnl": r[8] or 0.0,
+                    "pnl_pct": r[9] or 0.0,
                     "reason": r[10]
                 })
             
@@ -129,7 +135,7 @@ def get_lessons(limit: int = Query(20, ge=1, le=100)):
         return {"success": False, "error": str(e)}
 
 @router.get("/performance")
-def get_performance(days: int = Query(10, ge=3, le=90)):
+def get_performance(days: int = Query(10, ge=2, le=90)):
     """获取近N天收益及基准(对比沪深300)走势，用于业绩画图"""
     try:
         project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

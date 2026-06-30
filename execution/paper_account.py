@@ -302,6 +302,8 @@ class PaperAccount:
                 "shares": shares,
                 "amount": cost,
                 "commission": commission,
+                "pnl": 0.0,
+                "pnl_pct": 0.0,
                 "reason": reason,
                 "timestamp": datetime.now().isoformat(),
                 "cash_after": self.cash,
@@ -382,6 +384,8 @@ class PaperAccount:
                 pos["shares"] -= shares
 
             profit_pct = (price - pos_snapshot["buy_price"]) / pos_snapshot["buy_price"] * 100
+            pnl_val = (price - pos_snapshot["buy_price"]) * shares - commission - stamp_tax
+            pnl_pct_val = (price - pos_snapshot["buy_price"]) / pos_snapshot["buy_price"]
 
             trade = {
                 "action": "SELL",
@@ -393,6 +397,8 @@ class PaperAccount:
                 "commission": commission,
                 "stamp_tax": stamp_tax,
                 "profit_pct": profit_pct,
+                "pnl": pnl_val,
+                "pnl_pct": pnl_pct_val,
                 "reason": reason,
                 "timestamp": datetime.now().isoformat(),
                 "cash_after": self.cash,

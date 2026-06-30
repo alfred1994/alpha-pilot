@@ -137,6 +137,34 @@ def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
     return None
 
 
+def clean_reasoning(text: str) -> str:
+    if not text:
+        return ""
+    # 移除 XML 风格 think 标签及其中间的内容
+    text = re.sub(r'<think>.*?</think>', '', text, flags=re.DOTALL)
+    # 移除 Markdown 代码块包装器
+    text = re.sub(r'```json.*?```', '', text, flags=re.DOTALL)
+    text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    # 移除常见的 AI 角色/思考/提示语引导词前缀
+    prefixes = [
+        r'^推理推断[:：\s]*',
+        r'^首先[，,\s]*',
+        r'^对于.*?的分析[:：\s]*',
+        r'^根据.*?分析[:：\s]*',
+        r'^作为资深.*?交易员[，,\s]*',
+        r'^我需要.*?返回[，,\s]*',
+        r'^用户要求我.*?返回[，,\s]*',
+        r'^在.*?环境下[，,\s]*',
+        r'^分析如下[:：\s]*',
+    ]
+    for p in prefixes:
+        text = re.sub(p, '', text, flags=re.IGNORECASE)
+    # 移除提示词中关于格式要求的引用
+    text = re.sub(r'严格按照.*?格式.*?', '', text)
+    text = re.sub(r'返回\s*JSON.*?', '', text)
+    return text.strip()
+
+
 def _extract_from_dict(data: dict) -> tuple:
     """从字典中防御性提取决策字段"""
     action = str(data.get("action", "HOLD")).upper()
@@ -147,6 +175,7 @@ def _extract_from_dict(data: dict) -> tuple:
     confidence = max(0.0, min(1.0, confidence))
 
     reasoning = str(data.get("reasoning", data.get("reason", ""))).strip()
+    reasoning = clean_reasoning(reasoning)
     return action, confidence, reasoning
 
 
@@ -206,14 +235,7 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
         buy_keywords = ["建议买入", "可以买入", "买入信号", "看多", "buy"]
 
         # 提取更干净、更长的推理摘要
-        clean_text = raw
-        if "<think>" in clean_text:
-            clean_parts = clean_text.split("</think>")
-            clean_text = clean_parts[-1]
-        
-        clean_text = clean_text.strip()
-        # 清除常见的 AI 角色/思考引导词前缀
-        clean_text = re.sub(r'^(首先|第一|我的分析|分析如下|针对该股|对于.*?|代码.*?|名称.*?|推理推断|根据.*?分析)[:，\s]*', '', clean_text)
+        clean_text = clean_reasoning(raw)
         
         reason_summary = clean_text[:200]
         if len(clean_text) > 200:
