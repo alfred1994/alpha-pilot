@@ -1,0 +1,101 @@
+name: Deploy Hermes Server
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: hermes-deploy-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy to Hermes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HERMES_HOST: ${{ secrets.HERMES_HOST }}
+      HERMES_USER: ${{ secrets.HERMES_USER }}
+      HERMES_SSH_PRIVATE_KEY: ${{ secrets.HERMES_SSH_PRIVATE_KEY }}
+      HERMES_PASSWORD: ${{ secrets.HERMES_PASSWORD }}
+      HERMES_SSH_PORT: ${{ vars.HERMES_SSH_PORT || '22' }}
+      HERMES_PROJECT_DIR: ${{ vars.HERMES_PROJECT_DIR || '/home/ubuntu/projects/quant-pilot' }}
+      HERMES_BRANCH: main
+      HERMES_USER_UNITS: ${{ vars.HERMES_USER_UNITS || 'quant-pilot-auto.service quant-pilot-auto-restart.timer quant-pilot-doctor.timer quant-pilot-report.timer quant-pilot-status.timer' }}
+      HERMES_SYSTEM_UNITS: ${{ vars.HERMES_SYSTEM_UNITS || '' }}
+      HERMES_PYTHON_CMD: ${{ vars.HERMES_PYTHON_CMD || 'python3' }}
+      HERMES_RUN_INSTALL_SYSTEMD: ${{ vars.HERMES_RUN_INSTALL_SYSTEMD || 'true' }}
+      HERMES_HEALTH_URL: ${{ vars.HERMES_HEALTH_URL || 'https://alphapilot.pp.ua/api/status' }}
+      HERMES_REPO_URL: https://github.com/${{ github.repository }}.git
+      HERMES_REPO_TOKEN: ${{ secrets.HERMES_REPO_TOKEN || github.token }}
+      HERMES_RESTART_WEB: ${{ vars.HERMES_RESTART_WEB || 'true' }}
+      HERMES_WEB_HOST: ${{ vars.HERMES_WEB_HOST || '0.0.0.0' }}
+      HERMES_WEB_PORT: ${{ vars.HERMES_WEB_PORT || '8000' }}
+
+    steps:
+      - name: Checkout deploy script
+        uses: actions/checkout@v4
+
+      - name: Validate required secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in HERMES_HOST HERMES_USER; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is required"
+              missing=1
+            fi
+          done
+          if [ -z "${HERMES_SSH_PRIVATE_KEY:-}" ] && [ -z "${HERMES_PASSWORD:-}" ]; then
+            echo "::error::HERMES_SSH_PRIVATE_KEY or HERMES_PASSWORD is required"
+            missing=1
+          fi
+          exit "$missing"
+
+      - name: Configure SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          if [ -n "${HERMES_SSH_PRIVATE_KEY:-}" ]; then
+            printf '%s\n' "$HERMES_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+            chmod 600 ~/.ssh/id_ed25519
+          else
+            sudo apt-get update
+            sudo apt-get install -y sshpass
+          fi
+          ssh-keyscan -p "$HERMES_SSH_PORT" -H "$HERMES_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy over SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          quote() { printf '%q' "$1"; }
+          remote_cmd="bash -s -- $(quote "$HERMES_PROJECT_DIR") $(quote "$HERMES_BRANCH") $(quote "$HERMES_USER_UNITS") $(quote "$HERMES_SYSTEM_UNITS") $(quote "$HERMES_PYTHON_CMD") $(quote "$HERMES_RUN_INSTALL_SYSTEMD") $(quote "$HERMES_REPO_URL") $(quote "$HERMES_REPO_TOKEN") $(quote "$HERMES_RESTART_WEB") $(quote "$HERMES_WEB_HOST") $(quote "$HERMES_WEB_PORT")"
+          if [ -n "${HERMES_SSH_PRIVATE_KEY:-}" ]; then
+            ssh -p "$HERMES_SSH_PORT" \
+              -o BatchMode=yes \
+              -o StrictHostKeyChecking=yes \
+              "$HERMES_USER@$HERMES_HOST" \
+              "$remote_cmd" < scripts/deploy_hermes.sh
+          else
+            SSHPASS="$HERMES_PASSWORD" sshpass -e ssh -p "$HERMES_SSH_PORT" \
+              -o PreferredAuthentications=password \
+              -o PubkeyAuthentication=no \
+              -o StrictHostKeyChecking=yes \
+              "$HERMES_USER@$HERMES_HOST" \
+              "$remote_cmd" < scripts/deploy_hermes.sh
+          fi
+
+      - name: Check public dashboard API
+        if: ${{ env.HERMES_HEALTH_URL != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --show-error --silent --max-time 20 "$HERMES_HEALTH_URL" | python -m json.tool
