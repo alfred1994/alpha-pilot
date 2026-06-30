@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 多日模拟回放测试
 
@@ -11,7 +11,7 @@ import tempfile
 from dataclasses import asdict
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
 from execution.broker import PaperBrokerAdapter

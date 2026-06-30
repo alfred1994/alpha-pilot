@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 自动盯盘Doctor测试
 
@@ -12,7 +12,7 @@ import tempfile
 from datetime import datetime
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
 from scheduler.control import get_auto_control_state, pause_auto_trader

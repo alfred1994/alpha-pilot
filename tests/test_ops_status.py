@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 自动盯盘运维状态汇总测试
 
@@ -11,7 +11,7 @@ import sys
 import tempfile
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
 from scheduler.control import resume_auto_trader

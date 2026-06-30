@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 自动盯盘暂停/恢复测试
 
@@ -11,7 +11,7 @@ import tempfile
 from datetime import datetime
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scheduler.auto_trader import AutoTraderState, run_auto_cycle
 from scheduler.control import (

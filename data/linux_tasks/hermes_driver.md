@@ -72,7 +72,7 @@ Hermes Agent 读取出错文件附近的代码块：
 
 #### Step 4. 车辆自检门禁 (测试验证)
 为了保证修复后的赛车能够安全上路，驾驶员需运行以下命令进行快速验证：
-1.  **运行单元测试**：针对修复的文件执行测试。如果是 `low_position_picker.py` 报错，则跑 `python3 test_low_position.py`。
+1.  **运行单元测试**：针对修复的文件执行测试。如果是 `low_position_picker.py` 报错，则跑 `python3 tests/test_low_position.py`。
 2.  **就绪状态自检**：
     ```bash
     python3 main.py --health

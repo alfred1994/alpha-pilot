@@ -2,7 +2,7 @@
 
 ## 一键测试
 ```bash
-python test_realtime.py
+python tests/test_realtime.py
 ```
 
 ## 启动命令

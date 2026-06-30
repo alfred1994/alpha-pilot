@@ -2,6 +2,11 @@
 测试低位选股器
 """
 import logging
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from strategy.stock_picker import pick_stocks, format_picker_report
 
 logging.basicConfig(

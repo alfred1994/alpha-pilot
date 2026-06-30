@@ -98,7 +98,7 @@ TELEGRAM_BOT_ENABLED=1             # 新增：是否启用Bot控制
   - 文档: `docs/选股优化说明.md`
   
 - [ ] **测试验证** (待完成)
-  - [ ] 运行 `test_low_position.py` 验证数据源
+  - [ ] 运行 `tests/test_low_position.py` 验证数据源
   - [ ] 回测低位模式 vs 混合模式收益对比
   - [ ] 调整评分权重（可能需要优化）
 

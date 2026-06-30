@@ -34,9 +34,9 @@ This is expected until a sample-data mode is added.
 ```bash
 python3 main.py --health
 python3 main.py --paper-ready --unattended-platform linux
-python3 test_web_public_dashboard.py
-python3 test_auto_control.py
-python3 test_auto_watchdog.py
+python3 tests/test_web_public_dashboard.py
+python3 tests/test_auto_control.py
+python3 tests/test_auto_watchdog.py
 ```
 
 ## Planned Zero-Key Demo Mode

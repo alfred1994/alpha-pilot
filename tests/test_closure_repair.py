@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 正式模拟盘闭环缺口自愈测试
 
@@ -12,7 +12,7 @@ import sys
 import tempfile
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scheduler.closure_repair import format_closure_repair, run_closure_repair
 

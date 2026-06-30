@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 a-stock-data v3.3集成回归测试
 验证:
@@ -10,7 +10,7 @@ import os
 import sys
 import types
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _install_fake_requests_if_needed():

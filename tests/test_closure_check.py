@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 正式模拟盘日内闭环缺口诊断测试
 
@@ -11,7 +11,7 @@ import os
 import sys
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import scheduler.closure_check as closure_check
 from scheduler.closure_check import format_closure_check, run_closure_check

@@ -3,6 +3,11 @@
 """
 import asyncio
 import logging
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from realtime.event_bus import Event, get_event_bus
 from realtime.event_handlers import StopLossHandler
 
@@ -78,6 +83,10 @@ async def test_stop_loss():
     """测试止损处理器"""
     account = MockAccount()
     handler = StopLossHandler(account)
+    messages = []
+
+    import scheduler.notifier as notifier
+    old_send_message = notifier.send_message
 
     # 模拟价格跌破止损位
     event = Event(
@@ -85,11 +94,16 @@ async def test_stop_loss():
         data={"code": "600519", "price": 1650}  # -8.3%
     )
 
-    await handler.on_quote_update(event)
-    await asyncio.sleep(0.1)
+    try:
+        notifier.send_message = lambda message: messages.append(message)
+        await handler.on_quote_update(event)
+        await asyncio.sleep(0.1)
+    finally:
+        notifier.send_message = old_send_message
 
-    assert len(account.sells) == 1, "应该触发1次卖出"
-    assert account.sells[0]["code"] == "600519"
+    assert len(account.sells) == 0, "实时传感器不应该直接卖出"
+    assert len(messages) == 1, "应该广播1条止损建议"
+    assert "600519" in messages[0]
     print("[OK] 止损处理器测试通过")
 
 
@@ -98,6 +112,10 @@ async def test_integration():
     bus = get_event_bus()
     account = MockAccount()
     handler = StopLossHandler(account)
+    messages = []
+
+    import scheduler.notifier as notifier
+    old_send_message = notifier.send_message
 
     # 注册处理器
     bus.subscribe("quote_update", handler.on_quote_update)
@@ -105,18 +123,23 @@ async def test_integration():
     # 启动事件循环
     bus_task = asyncio.create_task(bus.start())
 
-    # 发布行情事件
-    await bus.publish(Event(
-        type="quote_update",
-        data={"code": "600519", "price": 1650}
-    ))
+    try:
+        notifier.send_message = lambda message: messages.append(message)
 
-    await asyncio.sleep(0.5)
+        # 发布行情事件
+        await bus.publish(Event(
+            type="quote_update",
+            data={"code": "600519", "price": 1650}
+        ))
 
-    bus.stop()
-    await bus_task
+        await asyncio.sleep(0.5)
+    finally:
+        notifier.send_message = old_send_message
+        bus.stop()
+        await bus_task
 
-    assert len(account.sells) == 1, "应该触发1次止损"
+    assert len(account.sells) == 0, "实时传感器不应该直接卖出"
+    assert len(messages) == 1, "应该触发1次止损建议广播"
     print("[OK] 集成测试通过")
 
 

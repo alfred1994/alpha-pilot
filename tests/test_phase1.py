@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 Phase 1 测试 - SQLite存储层 + 长桥数据源集成
 验证:
@@ -12,7 +12,7 @@ import os
 import json
 import tempfile
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 passed = 0
 failed = 0

@@ -1,5 +1,7 @@
 # Quant Pilot
 
+[English](README.md) | [中文](README.zh-CN.md)
+
 Self-healing AI paper-trading cockpit for A-shares.
 
 Quant Pilot turns an A-share paper trading system into an autonomous trading race car:
@@ -110,7 +112,7 @@ scheduler/                Auto loop, watchdog, doctor, notifications
 web/                      FastAPI server and static dashboard
 data/linux_tasks/         Generated Linux/Hermes systemd user task templates
 docs/                     Architecture and operations docs
-test_*.py                 Local contract and regression tests
+tests/                    Local contract and regression tests
 ```
 
 ## Quick Start
@@ -216,15 +218,15 @@ BROKER_MODE=paper
 The project uses local Python scripts as contract tests:
 
 ```bash
-python3 -m compileall -q web scheduler strategy execution data main.py config.py
-python3 test_web_public_dashboard.py
-python3 test_agent_driver_contract.py
-python3 test_auto_control.py
-python3 test_auto_watchdog.py
-python3 test_auto_doctor.py
-python3 test_auto_trader.py
-python3 test_paper_readiness.py
-python3 test_paper_bootstrap.py
+python3 -m compileall -q web scheduler strategy execution data main.py config.py tests
+python3 tests/test_web_public_dashboard.py
+python3 tests/test_agent_driver_contract.py
+python3 tests/test_auto_control.py
+python3 tests/test_auto_watchdog.py
+python3 tests/test_auto_doctor.py
+python3 tests/test_auto_trader.py
+python3 tests/test_paper_readiness.py
+python3 tests/test_paper_bootstrap.py
 ```
 
 Run broader tests as your data-source credentials and local environment allow.

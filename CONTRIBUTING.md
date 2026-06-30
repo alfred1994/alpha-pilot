@@ -32,15 +32,15 @@ Keep `BROKER_MODE=paper`.
 ## Useful Test Commands
 
 ```bash
-python3 -m compileall -q web scheduler strategy execution data main.py config.py
-python3 test_web_public_dashboard.py
-python3 test_agent_driver_contract.py
-python3 test_auto_control.py
-python3 test_auto_watchdog.py
-python3 test_auto_doctor.py
-python3 test_auto_trader.py
-python3 test_paper_readiness.py
-python3 test_paper_bootstrap.py
+python3 -m compileall -q web scheduler strategy execution data main.py config.py tests
+python3 tests/test_web_public_dashboard.py
+python3 tests/test_agent_driver_contract.py
+python3 tests/test_auto_control.py
+python3 tests/test_auto_watchdog.py
+python3 tests/test_auto_doctor.py
+python3 tests/test_auto_trader.py
+python3 tests/test_paper_readiness.py
+python3 tests/test_paper_bootstrap.py
 ```
 
 Some tests depend on local credentials or market-data availability. If a test cannot

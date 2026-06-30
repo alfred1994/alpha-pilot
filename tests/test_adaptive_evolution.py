@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 自适应参数演进测试
 
@@ -11,7 +11,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from config import DECISION_BUY_THRESHOLD, TRADE_ADAPTIVE_MIN_SCORE_BASE
 from data.database import Database

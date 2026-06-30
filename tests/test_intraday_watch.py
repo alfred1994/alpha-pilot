@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """
 盘中轻量盯盘测试
 
@@ -11,7 +11,7 @@ import tempfile
 from datetime import datetime
 from types import SimpleNamespace
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from scheduler.auto_trader import AutoTraderState, run_auto_cycle
 from scheduler.intraday_watch import filter_trade_plan_for_rescue, run_watch_cycle
