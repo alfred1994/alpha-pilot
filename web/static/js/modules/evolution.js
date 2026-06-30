@@ -69,7 +69,7 @@ export class EvolutionTab {
             : this.allLessons.filter(l => l.category === this.currentCategory);
 
         if (filtered.length === 0) {
-            container.innerHTML = '<div class="empty-state">暂无符合条件的教训记录</div>';
+            container.innerHTML = '<div class="empty-state-illustrated"><div style="font-size:48px; margin-bottom:12px;">📚</div><div>暂无符合条件的教训记录</div></div>';
             return;
         }
 

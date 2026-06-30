@@ -29,6 +29,8 @@ export class DecisionsTab {
             return;
         }
 
+        this.renderStats(data.decisions);
+
         data.decisions.forEach(d => {
             const div = document.createElement('div');
             div.className = 'decision-item';
@@ -68,6 +70,24 @@ export class DecisionsTab {
         document.getElementById('modal-close-btn').addEventListener('click', () => {
             document.getElementById('decision-modal').classList.remove('active');
         });
+    }
+
+    renderStats(decisions) {
+        if (!decisions || !decisions.length) return;
+
+        const total = decisions.length;
+        const buys = decisions.filter(d => d.action === 'BUY').length;
+        const sells = decisions.filter(d => d.action === 'SELL').length;
+        const avgConf = decisions.reduce((s, d) => s + Number(d.confidence || 0), 0) / total;
+
+        const totalEl = document.getElementById('dec-total-count');
+        if (totalEl) totalEl.textContent = total;
+
+        const ratioEl = document.getElementById('dec-buy-sell-ratio');
+        if (ratioEl) ratioEl.textContent = `${buys} / ${sells}`;
+
+        const confEl = document.getElementById('dec-avg-confidence');
+        if (confEl) confEl.textContent = `${(avgConf * 100).toFixed(0)}%`;
     }
 
     showDetailModal(d) {
