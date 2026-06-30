@@ -255,7 +255,8 @@ def send_stock_picks(scan_result, title: str = "📋 今日选股") -> bool:
             lines.append(f"     分数:{score:.0f} 置信度:{conviction:.0%} 仓位:{target_weight:.0%}")
             lines.append(f"     最高价:{max_price:.2f}")
             if reason:
-                lines.append(f"     理由: {reason[:80]}")
+                reason_disp = reason[:300] + "..." if len(reason) > 300 else reason
+                lines.append(f"     理由: {reason_disp}")
             lines.append("")
     else:
         lines.append("⚪ 今日无买入计划")
@@ -266,16 +267,16 @@ def send_stock_picks(scan_result, title: str = "📋 今日选股") -> bool:
         hold_candidates = [
             c for c in candidates
             if not any(
-                (o.get("code") if isinstance(o, dict) else getattr(o, "code", "")) == c.get("code", "")
+                (o.get("code") if isinstance(o, dict) else getattr(o, "code", "")) == (c.get("code", "") if isinstance(c, dict) else getattr(c, "code", str(c)))
                 for o in orders
             )
         ]
         if hold_candidates:
             lines.append(f"🟡 <b>观察池 ({len(hold_candidates)}只)</b>")
             for c in hold_candidates[:8]:  # 最多显示8只
-                code = c.get("code", "")
-                name = c.get("name", "")
-                composite = c.get("composite", 0)
+                code = c.get("code", "") if isinstance(c, dict) else getattr(c, "code", str(c))
+                name = c.get("name", "") if isinstance(c, dict) else getattr(c, "name", "N/A")
+                composite = c.get("composite", 0) if isinstance(c, dict) else getattr(c, "composite", 0)
                 lines.append(f"  ⚪ {code} {name} 分数:{composite:.0f}")
             if len(hold_candidates) > 8:
                 lines.append(f"  ... 还有{len(hold_candidates)-8}只")

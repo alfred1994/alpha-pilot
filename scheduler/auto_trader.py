@@ -57,6 +57,7 @@ class AutoTraderState:
     last_status: str = ""
     last_error: str = ""
     updated_at: str = ""
+    last_sentiment: dict = field(default_factory=dict)
 
 
 class AutoLoopLockError(RuntimeError):
@@ -578,15 +579,18 @@ def run_auto_cycle(
                 )
                 # 添加复盘详细内容 - 从steps中提取关键信息
                 for step in review_result.steps:
-                    status_icon = "✅" if step.success else "❌"
-                    if step.detail:
+                    success = getattr(step, "success", True) if not isinstance(step, dict) else step.get("success", True)
+                    name = getattr(step, "name", str(step)) if not isinstance(step, dict) else step.get("name", "")
+                    detail = getattr(step, "detail", "") if not isinstance(step, dict) else step.get("detail", "")
+                    status_icon = "✅" if success else "❌"
+                    if detail:
                         # 截取前150字符，保留关键信息
-                        detail_preview = step.detail[:150].replace("\n", " ").strip()
-                        if len(step.detail) > 150:
+                        detail_preview = detail[:150].replace("\n", " ").strip()
+                        if len(detail) > 150:
                             detail_preview += "..."
-                        actions.append(f"  {status_icon} {step.name}: {detail_preview}")
+                        actions.append(f"  {status_icon} {name}: {detail_preview}")
                     else:
-                        actions.append(f"  {status_icon} {step.name}")
+                        actions.append(f"  {status_icon} {name}")
                 # 如果有错误，也显示出来
                 if review_result.errors:
                     for err in review_result.errors:

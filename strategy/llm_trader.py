@@ -16,6 +16,7 @@ LLM决策引擎
 """
 import json
 import os
+import re
 import logging
 from typing import Dict, List, Optional
 from datetime import datetime
@@ -26,17 +27,14 @@ from strategy.mimo_client import DEFAULT_HTTP_TIMEOUT, post_chat_completion
 logger = logging.getLogger("strategy.llm_trader")
 
 # MiMo API 配置 (舆情分析等)
-MIMO_API_KEY=os.environ.get("XIAOMI_API_KEY", "")
+MIMO_API_KEY = os.environ.get("XIAOMI_API_KEY", "")
 MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
 LLM_MODEL = "mimo-v2.5-pro"
 
 # DeepSeek API 配置 (标的分析)
-DEEPSEEK_API_KEY=os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
-MIMO_API_KEY = os.environ.get("XIAOMI_API_KEY", "")
-MIMO_BASE_URL = "https://token-plan-cn.xiaomimimo.com/v1"
-LLM_MODEL = "mimo-v2.5-pro"
 
 
 def _call_deepseek(prompt: str, max_tokens: int = 2000, retries: int = 2,
@@ -139,6 +137,19 @@ def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
     return None
 
 
+def _extract_from_dict(data: dict) -> tuple:
+    """从字典中防御性提取决策字段"""
+    action = str(data.get("action", "HOLD")).upper()
+    if action not in ("BUY", "SELL", "HOLD"):
+        action = "HOLD"
+
+    confidence = float(data.get("confidence", 0.5))
+    confidence = max(0.0, min(1.0, confidence))
+
+    reasoning = str(data.get("reasoning", data.get("reason", ""))).strip()
+    return action, confidence, reasoning
+
+
 def _parse_decision_response(raw: Optional[str]) -> tuple:
     """
     解析LLM决策响应
@@ -149,47 +160,44 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
     if not raw:
         return "HOLD", 0.0, "LLM无响应"
 
+    # 1. 尝试直接作为完整 JSON 解析
+    content = raw.strip()
     try:
-        content = raw.strip()
-        if content.startswith("```"):
-            content = content.split("```")[1]
-            if content.startswith("json"):
-                content = content[4:]
-            content = content.strip()
-
         data = json.loads(content)
+        return _extract_from_dict(data)
+    except Exception:
+        pass
 
-        action = str(data.get("action", "HOLD")).upper()
-        if action not in ("BUY", "SELL", "HOLD"):
-            action = "HOLD"
+    # 2. 尝试寻找 Markdown 代码块
+    if "```" in content:
+        try:
+            parts = content.split("```")
+            # markdown 块在奇数位
+            for i in range(1, len(parts), 2):
+                block = parts[i].strip()
+                if block.startswith("json"):
+                    block = block[4:].strip()
+                try:
+                    data = json.loads(block)
+                    return _extract_from_dict(data)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
-        confidence = float(data.get("confidence", 0.5))
-        confidence = max(0.0, min(1.0, confidence))
+    # 3. 寻找第一个 { 和最后一个 } 范围尝试解析 (支持包含嵌套及前后杂言的回复)
+    start = content.find('{')
+    end = content.rfind('}')
+    if start != -1 and end != -1 and end > start:
+        try:
+            json_str = content[start:end+1]
+            data = json.loads(json_str)
+            return _extract_from_dict(data)
+        except Exception:
+            pass
 
-        reasoning = str(data.get("reasoning", ""))
-        if not reasoning:
-            reasoning = str(data.get("reason", ""))
-
-        return action, confidence, reasoning
-
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        # 尝试用正则从文本中提取JSON
-        import re
-        match = re.search(r'\{[^{}]*"action"\s*:\s*"[^"]+?"[^{}]*\}', raw)
-        if match:
-            try:
-                data = json.loads(match.group())
-                action = str(data.get("action", "HOLD")).upper()
-                if action in ("BUY", "SELL", "HOLD"):
-                    confidence = float(data.get("confidence", 0.5))
-                    confidence = max(0.0, min(1.0, confidence))
-                    reasoning = str(data.get("reasoning", data.get("reason", "")))
-                    logger.info(f"正则提取JSON成功: {action} conf={confidence}")
-                    return action, confidence, reasoning
-            except Exception:
-                pass
-
-        # 最后兜底：从自然语言推理文本中推断决策
+    # 4. 最后兜底：从自然语言推理文本中推断决策
+    try:
         text_lower = raw.lower()
         # 优先检查明确的卖出信号
         sell_keywords = ["建议卖出", "应卖出", "建议清仓", "卖出信号", "sell"]
@@ -197,21 +205,37 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
                          "风险较高", "谨慎", "hold", "暂时不买", "不建议买入"]
         buy_keywords = ["建议买入", "可以买入", "买入信号", "看多", "buy"]
 
+        # 提取更干净、更长的推理摘要
+        clean_text = raw
+        if "<think>" in clean_text:
+            clean_parts = clean_text.split("</think>")
+            clean_text = clean_parts[-1]
+        
+        clean_text = clean_text.strip()
+        # 清除常见的 AI 角色/思考引导词前缀
+        clean_text = re.sub(r'^(首先|第一|我的分析|分析如下|针对该股|对于.*?|代码.*?|名称.*?|推理推断|根据.*?分析)[:，\s]*', '', clean_text)
+        
+        reason_summary = clean_text[:200]
+        if len(clean_text) > 200:
+            reason_summary += "..."
+
         for kw in sell_keywords:
             if kw in text_lower:
                 logger.info(f"从推理文本推断: SELL (关键词: {kw})")
-                return "SELL", 0.3, f"推理推断: {raw[:100]}"
+                return "SELL", 0.3, f"从文本推断: {reason_summary}"
         for kw in hold_keywords:
             if kw in text_lower:
                 logger.info(f"从推理文本推断: HOLD (关键词: {kw})")
-                return "HOLD", 0.3, f"推理推断: {raw[:100]}"
+                return "HOLD", 0.3, f"从文本推断: {reason_summary}"
         for kw in buy_keywords:
             if kw in text_lower:
                 logger.info(f"从推理文本推断: BUY (关键词: {kw})")
-                return "BUY", 0.3, f"推理推断: {raw[:100]}"
+                return "BUY", 0.3, f"从文本推断: {reason_summary}"
 
         # 完全无法推断，默认HOLD
         logger.warning(f"LLM决策解析失败，无法推断: {raw[:200]}")
+        return "HOLD", 0.0, f"解析失败，文本摘要: {reason_summary}"
+    except Exception as e:
         return "HOLD", 0.0, f"解析失败: {e}"
 
 
