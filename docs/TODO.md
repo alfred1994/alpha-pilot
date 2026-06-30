@@ -47,8 +47,8 @@
 
 **环境变量**：
 ```bash
-TELEGRAM_BOT_TOKEN=your_bot_token  # 已配置
-TELEGRAM_CHAT_ID=your_chat_id      # 已配置
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
 TELEGRAM_BOT_ENABLED=1             # 新增：是否启用Bot控制
 ```
 

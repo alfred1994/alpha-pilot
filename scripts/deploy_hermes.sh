@@ -12,6 +12,7 @@ REPO_TOKEN="${8:-}"
 RESTART_WEB="${9:-true}"
 WEB_HOST="${10:-0.0.0.0}"
 WEB_PORT="${11:-8000}"
+PUBLIC_ORIGIN="${12:-${HERMES_PUBLIC_ORIGIN:-https://alphapilot.pp.ua}}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 LEGACY_SYSTEM_UNITS="${LEGACY_SYSTEM_UNITS:-alphapilot-web.service quant-auto.service}"
 
@@ -87,7 +88,7 @@ PY
     printf 'PRODUCTION=true\n' >> "$HERMES_ENV_FILE"
   fi
   if ! grep -q '^ALPHAPILOT_CORS_ORIGINS=' "$HERMES_ENV_FILE"; then
-    printf 'ALPHAPILOT_CORS_ORIGINS=https://alphapilot.pp.ua\n' >> "$HERMES_ENV_FILE"
+    printf 'ALPHAPILOT_CORS_ORIGINS=%s\n' "$PUBLIC_ORIGIN" >> "$HERMES_ENV_FILE"
   fi
 }
 

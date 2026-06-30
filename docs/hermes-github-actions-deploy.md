@@ -3,14 +3,16 @@
 日期：2026-06-30
 执行者：Codex
 
-本文档说明 `main` 分支推送后自动部署 Quant Pilot 到 Hermes 所在 Linux 服务器的契约。
+本文档说明维护者如何把 `main` 分支自动部署到自己的 Hermes Linux 服务器。
+公开仓库的 fork 默认不会执行该私有部署任务；workflow 中的 deploy job 只在
+`alfred1994/quant-pilot` 仓库内运行。
 
 ## 触发方式
 
 `.github/workflows/deploy-hermes.yml` 会在以下场景触发：
 
-- 推送到 `main`
-- GitHub Actions 页面手动执行 `Deploy Hermes Server`
+- 维护者仓库推送到 `main`
+- 维护者在 GitHub Actions 页面手动执行 `Deploy Hermes Server`
 
 ## GitHub Secrets
 
@@ -22,7 +24,7 @@
 | `HERMES_USER` | 运行 Quant Pilot 的 Linux 用户，例如 `ubuntu` |
 | `HERMES_SSH_PRIVATE_KEY` | GitHub Actions 连接服务器使用的私钥内容，推荐 |
 | `HERMES_PASSWORD` | SSH 密码，未配置私钥时使用 |
-| `HERMES_REPO_TOKEN` | 可选，服务器首次从私有仓库 clone 时使用；默认使用 workflow 的 `GITHUB_TOKEN` |
+| `HERMES_REPO_TOKEN` | 可选，服务器首次 clone 私有仓库时使用；公开仓库通常不需要 |
 
 推荐使用 `HERMES_SSH_PRIVATE_KEY`。如果暂时沿用密码登录，可配置 `HERMES_PASSWORD`，workflow 会在 runner 中临时安装 `sshpass` 后部署。
 使用私钥时，服务器的 `~/.ssh/authorized_keys` 需要包含上述私钥对应的公钥。
@@ -43,6 +45,7 @@
 | `HERMES_RESTART_WEB` | `true` | 是否在部署后重启 `main.py --web` 仪表盘进程 |
 | `HERMES_WEB_HOST` | `0.0.0.0` | Web 仪表盘监听地址 |
 | `HERMES_WEB_PORT` | `8000` | Web 仪表盘监听端口 |
+| `HERMES_PUBLIC_ORIGIN` | `https://alphapilot.pp.ua` | 写入服务器 `ALPHAPILOT_CORS_ORIGINS` 的公开仪表盘来源 |
 
 如果仪表盘是系统级服务，建议把实际服务名加入 `HERMES_SYSTEM_UNITS`，例如：
 
@@ -54,7 +57,7 @@ quant-pilot-dashboard.service quant-pilot-fastapi-server.service
 
 ## 服务器前置条件
 
-服务器项目目录推荐是 Git 仓库，并且服务器本机可以拉取私有 GitHub 仓库：
+服务器项目目录推荐是 Git 仓库，并且服务器本机可以拉取 GitHub 仓库：
 
 ```bash
 cd /home/ubuntu/projects/quant-pilot
@@ -107,6 +110,6 @@ curl -fsS https://alphapilot.pp.ua/api/status
 
 - `HERMES_HOST is required`：GitHub secret 没配置。
 - `Permission denied (publickey)`：服务器 `authorized_keys` 未加入部署公钥，或 secret 私钥不匹配。
-- `git fetch` 失败：服务器本机没有私有仓库读取权限，需要配置 GitHub deploy key 或服务器侧 GitHub token。
+- `git fetch` 失败：服务器本机没有仓库读取权限；私有仓库需要配置 GitHub deploy key 或服务器侧 GitHub token。
 - `sudo: a password is required`：`HERMES_SYSTEM_UNITS` 配了系统级服务，但 Hermes 用户没有免密重启权限。
 - 公网状态接口还是旧结构：Web 仪表盘服务没有被纳入 `HERMES_USER_UNITS` 或 `HERMES_SYSTEM_UNITS` 重启列表。

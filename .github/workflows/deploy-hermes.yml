@@ -16,6 +16,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy to Hermes
+    if: ${{ github.repository == 'alfred1994/quant-pilot' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -36,6 +37,7 @@ jobs:
       HERMES_RESTART_WEB: ${{ vars.HERMES_RESTART_WEB || 'true' }}
       HERMES_WEB_HOST: ${{ vars.HERMES_WEB_HOST || '0.0.0.0' }}
       HERMES_WEB_PORT: ${{ vars.HERMES_WEB_PORT || '8000' }}
+      HERMES_PUBLIC_ORIGIN: ${{ vars.HERMES_PUBLIC_ORIGIN || 'https://alphapilot.pp.ua' }}
 
     steps:
       - name: Checkout deploy script
@@ -77,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           quote() { printf '%q' "$1"; }
-          remote_cmd="bash -s -- $(quote "$HERMES_PROJECT_DIR") $(quote "$HERMES_BRANCH") $(quote "$HERMES_USER_UNITS") $(quote "$HERMES_SYSTEM_UNITS") $(quote "$HERMES_PYTHON_CMD") $(quote "$HERMES_RUN_INSTALL_SYSTEMD") $(quote "$HERMES_REPO_URL") $(quote "$HERMES_REPO_TOKEN") $(quote "$HERMES_RESTART_WEB") $(quote "$HERMES_WEB_HOST") $(quote "$HERMES_WEB_PORT")"
+          remote_cmd="bash -s -- $(quote "$HERMES_PROJECT_DIR") $(quote "$HERMES_BRANCH") $(quote "$HERMES_USER_UNITS") $(quote "$HERMES_SYSTEM_UNITS") $(quote "$HERMES_PYTHON_CMD") $(quote "$HERMES_RUN_INSTALL_SYSTEMD") $(quote "$HERMES_REPO_URL") $(quote "$HERMES_REPO_TOKEN") $(quote "$HERMES_RESTART_WEB") $(quote "$HERMES_WEB_HOST") $(quote "$HERMES_WEB_PORT") $(quote "$HERMES_PUBLIC_ORIGIN")"
           if [ -n "${HERMES_SSH_PRIVATE_KEY:-}" ]; then
             ssh -p "$HERMES_SSH_PORT" \
               -o BatchMode=yes \

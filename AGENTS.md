@@ -1,90 +1,69 @@
-# A股量化交易系统 - 重构为AI交易员
+# AGENTS.md
 
-## 项目概述
-A股量化模拟盘系统，正在从"固定规则+打分机器"改造为"全自动AI交易员"。
+Guidance for AI coding agents working on Quant Pilot.
 
-## 技术栈
-- Python 3.12
-- SQLite (本地数据存储)
-- LongBridge OpenAPI (A股数据源)
-- MiMo LLM API (决策引擎)
-- Baostock (备用历史数据)
-- 东方财富 API (涨停板/龙虎榜)
+Quant Pilot is a research and paper-trading system for A-share market automation.
+Keep changes conservative, observable, and safe by default.
 
-## 项目结构
-```
-a-stock-quant/
-├── config.py              # 全局配置
-├── main.py                # 主入口 (--scan/--execute/--review/--full)
-├── data/                  # 数据层
-│   ├── realtime.py        # 腾讯实时行情
-│   ├── history.py         # Baostock历史数据
-│   ├── eastmoney.py       # 东方财富数据
-│   ├── market.py          # 市场数据聚合
-│   ├── sentiment.py       # 舆情数据
-│   └── database.py        # [新建] SQLite存储层
-├── signals/               # 信号层
-│   ├── technical.py       # 技术信号 (Ichimoku/Volume Profile等)
-│   ├── capital.py         # 资金面信号
-│   ├── emotion.py         # 情绪面信号
-│   ├── fundamental.py     # 基本面信号
-│   ├── sentiment.py       # 舆情信号 (LLM)
-│   ├── composite.py       # 综合信号
-│   └── market_timing.py   # 市场择时
-├── strategy/              # 策略层
-│   ├── stock_picker.py    # 选股器
-│   ├── decision.py        # 决策引擎
-│   ├── adaptive.py        # 自适应引擎
-│   ├── llm_trader.py      # [新建] LLM决策引擎
-│   ├── market_regime.py   # [新建] 市场环境识别
-│   ├── regime_config.py   # [新建] 策略配置中心
-│   └── memory.py          # [新建] 交易记忆系统
-├── execution/             # 执行层
-│   ├── paper_account.py   # 模拟账户
-│   └── order.py           # 订单管理
-├── risk/                  # 风控层
-│   ├── position.py        # 仓位管理
-│   ├── stop_loss.py       # 止损管理
-│   └── drawdown.py        # 回撤控制
-├── review/                # 复盘层
-│   ├── daily_review.py    # 每日复盘
-│   ├── performance.py     # 绩效统计
-│   └── llm_review.py      # LLM复盘
-├── scheduler/             # 调度层
-│   ├── pipeline.py        # 管道
-│   ├── market_calendar.py # 交易日历
-│   └── notifier.py        # 通知推送
-└── data/                  # 数据目录
-    ├── paper_account.json # 模拟账户 (将迁移到SQLite)
-    ├── signal_cache.json  # 信号缓存
-    ├── adaptive_state.json # 自适应状态
-    └── quant.db           # [新建] SQLite数据库
+## Core Principles
+
+- Preserve `BROKER_MODE=paper` as the default documented mode.
+- Do not introduce real-money execution paths without explicit design review.
+- Do not commit secrets, runtime databases, logs, private server details, or account
+  snapshots.
+- Keep the public dashboard read-only in production.
+- Prefer standard SDKs and maintained ecosystem packages over custom infrastructure.
+- Keep implementation style consistent with the existing Python modules and tests.
+- Add or update tests when changing trading decisions, scheduler behavior, risk,
+  persistence, web security, or deployment contracts.
+
+## Useful Local Commands
+
+```bash
+python3 -m compileall -q web scheduler strategy execution data main.py config.py
+python3 test_web_public_dashboard.py
+python3 test_agent_driver_contract.py
+python3 test_auto_control.py
+python3 test_auto_watchdog.py
+python3 test_auto_doctor.py
+python3 test_auto_trader.py
+python3 test_paper_readiness.py
+python3 test_paper_bootstrap.py
 ```
 
-## 关键命令
-- `python3 main.py --scan` — 扫描信号（选股+打分+决策）
-- `python3 main.py --execute` — 执行交易（风控+模拟盘）
-- `python3 main.py --review` — 每日复盘
-- `python3 main.py --full` — 全链路
+Some checks require market-data or LLM credentials. If a test cannot run locally,
+record the reason and the residual risk.
 
-## 数据源配置
-长桥API凭证在 ~/.hermes/.env:
-- LONGPORT_APP_KEY
-- LONGPORT_APP_SECRET
-- LONGPORT_ACCESS_TOKEN
+## Web and Security Notes
 
-## 重构目标
-将系统从"加权打分"改为"LLM推理决策"，分7个阶段：
-1. SQLite存储层 + 长桥数据源集成
-2. 市场环境识别器
-3. LLM决策引擎
-4. 交易记忆系统
-5. 策略配置中心
-6. 执行层+风控层改造
-7. 回测引擎改造
+Production web mode should use:
 
-## 代码规范
-- 所有中文注释
-- 每个模块有docstring
-- 错误处理完善，API调用有重试
-- 数据库操作用context manager
+```bash
+ALPHAPILOT_ENV=production
+BROKER_MODE=paper
+```
+
+The production dashboard must not expose:
+
+- control buttons
+- control tokens
+- raw environment variables
+- internal file paths
+- raw tracebacks
+- shell repair commands
+- broker credentials
+
+Control APIs should stay unmounted in production unless explicitly enabled for a
+private network.
+
+## Documentation Expectations
+
+User-facing behavior changes should update README or `docs/`. Risky operational
+changes should mention rollback and verification steps.
+
+## Git Hygiene
+
+- Keep commits focused.
+- Do not rewrite unrelated user changes.
+- Do not remove safety checks or redaction layers to make a test pass.
+- Avoid committing generated runtime files under `data/`, `logs/`, or `.codex/`.

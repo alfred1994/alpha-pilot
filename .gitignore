@@ -51,3 +51,4 @@ Thumbs.db
 *.tmp
 data/reviews/
 data/*.db-*
+.codex/
