@@ -78,28 +78,56 @@
             <!-- 仪表盘面板 Dashboard Tab -->
             <section class="tab-content active" id="tab-dashboard">
                 <div class="public-kpi-strip mb-4">
-                    <div class="strip-item">
-                        <span class="strip-label">驾驶员</span>
-                        <span class="strip-value">Hermes Agent</span>
+                    <div class="kpi-card border-success">
+                        <div class="kpi-label">账户净值</div>
+                        <div class="kpi-value font-outfit num-animate" id="kpi-total-assets">-</div>
+                        <div class="kpi-trend">
+                            <span class="trend-flat" id="kpi-assets-trend">
+                                <span class="trend-arrow">→</span>
+                                <span class="trend-change">0.00%</span>
+                            </span>
+                        </div>
+                        <div class="kpi-icon-wrap"><i data-lucide="wallet" class="kpi-icon"></i></div>
                     </div>
-                    <div class="strip-item">
-                        <span class="strip-label">运行模式</span>
-                        <span class="strip-value" id="public-mode-label">只读公开驾驶舱</span>
+                    <div class="kpi-card border-success">
+                        <div class="kpi-label">今日盈亏</div>
+                        <div class="kpi-value font-outfit num-animate" id="kpi-daily-pnl">-</div>
+                        <div class="kpi-trend">
+                            <span class="trend-flat" id="kpi-pnl-trend">
+                                <span class="trend-arrow">→</span>
+                                <span class="trend-change">-</span>
+                            </span>
+                        </div>
+                        <div class="kpi-icon-wrap"><i data-lucide="trending-up" class="kpi-icon"></i></div>
                     </div>
-                    <div class="strip-item">
-                        <span class="strip-label">循环圈数</span>
-                        <span class="strip-value font-outfit" id="loop-count">-</span>
+                    <div class="kpi-card border-warn">
+                        <div class="kpi-label">持仓市值</div>
+                        <div class="kpi-value font-outfit num-animate" id="kpi-position-value">-</div>
+                        <div class="kpi-trend">
+                            <span class="trend-flat" id="kpi-pos-trend">
+                                <span class="trend-arrow">→</span>
+                                <span class="trend-change" id="kpi-exposure-text">-</span>
+                            </span>
+                        </div>
+                        <div class="kpi-icon-wrap"><i data-lucide="briefcase" class="kpi-icon"></i></div>
                     </div>
-                    <div class="strip-item">
-                        <span class="strip-label">上次心跳</span>
-                        <span class="strip-value" id="last-loop-time">-</span>
+                    <div class="kpi-card border-danger">
+                        <div class="kpi-label">最大回撤</div>
+                        <div class="kpi-value font-outfit num-animate" id="kpi-max-drawdown">-</div>
+                        <div class="kpi-trend">
+                            <span class="trend-flat" id="kpi-dd-trend">
+                                <span class="trend-arrow">→</span>
+                                <span class="trend-change">风险指标</span>
+                            </span>
+                        </div>
+                        <div class="kpi-icon-wrap"><i data-lucide="shield-alert" class="kpi-icon"></i></div>
                     </div>
                 </div>
 
                 <!-- 自动驾驶驾驶舱监控 (Autopilot Cockpit) -->
                 <div class="grid-layout mb-4">
                     <!-- 左侧：驾驶舱状态与进度 -->
-                    <div class="card card-hero">
+                    <div class="card card-hero card-glow-blue">
                         <h2>自动驾驶监控 (Autopilot Cockpit)</h2>
                         <div class="cockpit-status-grid mt-3" style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
                             <div class="stat-box flex-center" style="gap: 8px;">
@@ -156,7 +184,7 @@
                     </div>
 
                     <!-- 右侧：风险报警与公开动作流 -->
-                    <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
+                    <div class="card card-glow-red" style="display:flex; flex-direction:column; justify-content:space-between;">
                         <div>
                             <h2>系统风险警报</h2>
                             <div class="risk-warnings" id="risk-warnings-list" style="margin-top:10px;">
@@ -174,40 +202,40 @@
 
                 <div class="grid-layout">
                     <!-- 左侧：资产/盈亏统计 -->
-                    <div class="card">
+                    <div class="card card-glow-green">
                         <h2>账户总览</h2>
                         <div class="stats-grid">
                             <div class="stat-box">
                                 <span class="stat-label">总资产</span>
-                                <span class="stat-val font-outfit" id="total-assets">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="total-assets" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">可用资金</span>
-                                <span class="stat-val font-outfit" id="available-cash">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="available-cash" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">总盈亏</span>
-                                <span class="stat-val font-outfit" id="total-pnl">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="total-pnl" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">今日盈亏</span>
-                                <span class="stat-val font-outfit" id="daily-pnl">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="daily-pnl" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">持仓市值</span>
-                                <span class="stat-val font-outfit" id="position-value">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="position-value" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">持仓数量</span>
-                                <span class="stat-val font-outfit" id="position-count">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="position-count" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">交易次数</span>
-                                <span class="stat-val font-outfit" id="trade-count">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="trade-count" style="min-width:80px;">-</span>
                             </div>
                             <div class="stat-box">
                                 <span class="stat-label">平仓胜率</span>
-                                <span class="stat-val font-outfit" id="win-rate">-</span>
+                                <span class="stat-val font-outfit skeleton skeleton-text" id="win-rate" style="min-width:80px;">-</span>
                             </div>
                         </div>
                         <!-- 收益率曲线图 chart -->
@@ -220,6 +248,30 @@
                         <div class="positions-list" id="positions-list">
                             <div class="empty-state">暂无持仓</div>
                         </div>
+                    </div>
+                </div>
+
+                <!-- 风险指标面板 -->
+                <div class="risk-metrics-grid mt-4">
+                    <div class="risk-metric-card">
+                        <span class="metric-label">最大回撤</span>
+                        <span class="metric-value font-outfit" id="risk-max-drawdown">-</span>
+                        <span class="metric-status status-good" id="risk-dd-status">低风险</span>
+                    </div>
+                    <div class="risk-metric-card">
+                        <span class="metric-label">夏普比率</span>
+                        <span class="metric-value font-outfit" id="risk-sharpe">-</span>
+                        <span class="metric-status status-good" id="risk-sharpe-status">优秀</span>
+                    </div>
+                    <div class="risk-metric-card">
+                        <span class="metric-label">年化收益率</span>
+                        <span class="metric-value font-outfit" id="risk-annualized">-</span>
+                        <span class="metric-status status-medium" id="risk-annual-status">-</span>
+                    </div>
+                    <div class="risk-metric-card">
+                        <span class="metric-label">收益波动率</span>
+                        <span class="metric-value font-outfit" id="risk-volatility">-</span>
+                        <span class="metric-status status-medium" id="risk-vol-status">-</span>
                     </div>
                 </div>
 
@@ -277,6 +329,21 @@
                         </table>
                     </div>
                 </div>
+
+                <div class="grid-layout mt-4">
+                    <!-- 持仓行业分布 -->
+                    <div class="card card-glow-blue">
+                        <h2>持仓分布分析</h2>
+                        <div class="chart-container" id="position-dist-chart" style="height: 280px;"></div>
+                    </div>
+                    <!-- 交易热力日历 -->
+                    <div class="card">
+                        <h2>交易盈亏热力图</h2>
+                        <div class="heatmap-container" id="heatmap-container">
+                            <div class="heatmap-grid" id="heatmap-grid"></div>
+                        </div>
+                    </div>
+                </div>
             </section>
 
             <!-- LLM 决策面板 Decisions Tab -->
@@ -284,6 +351,20 @@
                 <div class="grid-layout">
                     <div class="card card-wide">
                         <h2>最新 LLM 交易决策记录</h2>
+                        <div class="decision-stats-grid">
+                            <div class="decision-stat-card">
+                                <span class="stat-label">总决策数</span>
+                                <span class="stat-val font-outfit" id="dec-total-count">-</span>
+                            </div>
+                            <div class="decision-stat-card">
+                                <span class="stat-label">买入 / 卖出</span>
+                                <span class="stat-val font-outfit" id="dec-buy-sell-ratio">-</span>
+                            </div>
+                            <div class="decision-stat-card">
+                                <span class="stat-label">平均置信度</span>
+                                <span class="stat-val font-outfit" id="dec-avg-confidence">-</span>
+                            </div>
+                        </div>
                         <div class="decisions-container" id="decisions-list">
                             <div class="empty-state">暂无决策数据</div>
                         </div>

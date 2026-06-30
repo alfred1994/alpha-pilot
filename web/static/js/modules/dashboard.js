@@ -2,6 +2,7 @@ export class DashboardTab {
     constructor(app) {
         this.app = app;
         this.chart = null;
+        this.distChart = null;
         this.resizeBound = false;
     }
 
@@ -51,23 +52,46 @@ export class DashboardTab {
     }
 
     async load() {
+        this.showSkeletons();
         const data = this.app.globalData;
         if (!data || !data.account) return;
 
-        const positions = await this.loadPositions();
-        const performance = await this.loadPerformance();
-        const trades = await this.loadTrades();
-        const decisions = await this.loadDecisions();
+        const [positions, performance, tradesData, decisions] = await Promise.all([
+            this.loadPositions(),
+            this.loadPerformance(),
+            this.loadTrades(),
+            this.loadDecisions()
+        ]);
 
-        this.renderAccount(data, positions, trades, performance);
+        this.hideSkeletons();
+        this.renderKPIs(data, performance, positions, tradesData);
+        this.renderAccount(data, positions, tradesData, performance);
         this.renderCockpit(data, positions);
         this.renderWarnings(data);
         this.renderPublicEvents(data);
         this.renderPositions(positions);
         this.renderDecisionSummary(decisions);
         this.renderStrategySnapshot(data);
-        this.renderPerformanceChart(performance);
-        this.renderRecentTrades(trades);
+        this.renderRiskMetrics(performance);
+        this.renderPerformanceChart(performance, tradesData);
+        this.renderPositionDistribution(positions);
+        this.renderHeatmap(tradesData);
+        this.renderRecentTrades(tradesData);
+    }
+
+    showSkeletons() {
+        ['kpi-total-assets', 'kpi-daily-pnl', 'kpi-position-value', 'kpi-max-drawdown',
+         'total-assets', 'available-cash', 'total-pnl', 'daily-pnl',
+         'position-value', 'position-count', 'trade-count', 'win-rate'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.classList.add('skeleton', 'skeleton-text');
+        });
+    }
+
+    hideSkeletons() {
+        document.querySelectorAll('.skeleton').forEach(el => {
+            el.classList.remove('skeleton', 'skeleton-text');
+        });
     }
 
     async fetchJson(url) {
@@ -88,7 +112,7 @@ export class DashboardTab {
 
     async loadPerformance() {
         try {
-            const data = await this.fetchJson(`${this.app.apiBase}/performance?days=15`);
+            const data = await this.fetchJson(`${this.app.apiBase}/performance?days=30`);
             return data.success ? (data.performance || []) : [];
         } catch (e) {
             console.error('Failed to load performance:', e);
@@ -98,7 +122,7 @@ export class DashboardTab {
 
     async loadTrades() {
         try {
-            const data = await this.fetchJson(`${this.app.apiBase}/trades?limit=12`);
+            const data = await this.fetchJson(`${this.app.apiBase}/trades?limit=50`);
             return data.success ? {
                 total: data.total || 0,
                 trades: data.trades || []
@@ -330,12 +354,188 @@ export class DashboardTab {
         this.setText('strategy-position-scale', adaptive.position_scale ?? '-');
     }
 
-    renderPerformanceChart(performance) {
+    renderKPIs(data, performance, positions, tradesData) {
+        const account = data.account || {};
+        const totalAssets = Number(account.total_assets || 0);
+        const latest = performance.length ? performance[performance.length - 1] : {};
+        const dailyPnl = Number(latest.daily_pnl || 0);
+        const positionValue = positions.reduce((sum, pos) => sum + Number(pos.market_value || 0), 0);
+        const exposure = totalAssets > 0 ? positionValue / totalAssets : 0;
+        const risk = this.computeRiskMetrics(performance);
+
+        // 账户净值
+        this.setText('kpi-total-assets', this.money(totalAssets));
+
+        // 资产趋势：计算近两天变化
+        if (performance.length >= 2) {
+            const prev = Number(performance[performance.length - 2].total_assets || totalAssets);
+            const curr = Number(performance[performance.length - 1].total_assets || totalAssets);
+            const changePct = prev > 0 ? ((curr - prev) / prev) * 100 : 0;
+            const trendEl = document.getElementById('kpi-assets-trend');
+            if (trendEl) {
+                const arrow = trendEl.querySelector('.trend-arrow');
+                const change = trendEl.querySelector('.trend-change');
+                if (arrow) arrow.textContent = changePct > 0.001 ? '↑' : changePct < -0.001 ? '↓' : '→';
+                if (change) change.textContent = `${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%`;
+                trendEl.className = `${changePct > 0.001 ? 'trend-up' : changePct < -0.001 ? 'trend-down' : 'trend-flat'}`;
+            }
+        }
+
+        // 今日盈亏
+        this.setText('kpi-daily-pnl', `${dailyPnl >= 0 ? '+' : ''}${this.money(Math.abs(dailyPnl))}`);
+        const pnlTrendEl = document.getElementById('kpi-pnl-trend');
+        if (pnlTrendEl) {
+            pnlTrendEl.className = `${dailyPnl >= 0 ? 'trend-up' : 'trend-down'}`;
+            const arrow = pnlTrendEl.querySelector('.trend-arrow');
+            const change = pnlTrendEl.querySelector('.trend-change');
+            if (arrow) arrow.textContent = dailyPnl >= 0 ? '↑' : '↓';
+            if (change) change.textContent = dailyPnl >= 0 ? '盈利' : '亏损';
+        }
+
+        // 持仓市值
+        this.setText('kpi-position-value', this.money(positionValue));
+        const posTrendEl = document.getElementById('kpi-pos-trend');
+        if (posTrendEl) {
+            posTrendEl.className = `${exposure > 0.8 ? 'trend-down' : 'trend-flat'}`;
+            const arrow = posTrendEl.querySelector('.trend-arrow');
+            const change = posTrendEl.querySelector('.trend-change');
+            if (arrow) arrow.textContent = exposure > 0.8 ? '⚠' : '→';
+            if (change) change.textContent = `${(exposure * 100).toFixed(1)}% 仓位`;
+        }
+        this.setText('kpi-exposure-text', `${(exposure * 100).toFixed(1)}%`);
+
+        // 最大回撤
+        const ddPct = risk.maxDrawdown * 100;
+        this.setText('kpi-max-drawdown', `${ddPct.toFixed(2)}%`);
+        const ddTrendEl = document.getElementById('kpi-dd-trend');
+        if (ddTrendEl) {
+            ddTrendEl.className = `${ddPct > 15 ? 'trend-down' : ddPct > 5 ? 'trend-flat' : 'trend-up'}`;
+            const arrow = ddTrendEl.querySelector('.trend-arrow');
+            const change = ddTrendEl.querySelector('.trend-change');
+            if (arrow) arrow.textContent = ddPct > 15 ? '⚠' : ddPct > 5 ? '→' : '✓';
+            if (change) change.textContent = ddPct > 15 ? '高风险' : ddPct > 5 ? '中风险' : '低风险';
+        }
+    }
+
+    computeRiskMetrics(performance) {
+        if (!performance || performance.length < 2) {
+            return { maxDrawdown: 0, sharpe: 0, annualized: 0, volatility: 0 };
+        }
+
+        // 日收益率序列
+        const returns = [];
+        for (let i = 1; i < performance.length; i++) {
+            const prev = Number(performance[i - 1].total_assets || 1000000);
+            const curr = Number(performance[i].total_assets || prev);
+            returns.push((curr - prev) / prev);
+        }
+
+        // 最大回撤
+        let peak = Number(performance[0].total_assets || 1000000);
+        let maxDD = 0;
+        for (const p of performance) {
+            const val = Number(p.total_assets || 1000000);
+            if (val > peak) peak = val;
+            const dd = (peak - val) / peak;
+            if (dd > maxDD) maxDD = dd;
+        }
+
+        // 波动率（年化，假设 252 个交易日）
+        const mean = returns.reduce((s, r) => s + r, 0) / returns.length;
+        const variance = returns.reduce((s, r) => s + (r - mean) ** 2, 0) / returns.length;
+        const dailyVol = Math.sqrt(variance);
+        const annualVol = dailyVol * Math.sqrt(252);
+
+        // 夏普比率（假设无风险利率 2%）
+        const riskFreeDaily = 0.02 / 252;
+        const excessReturns = returns.map(r => r - riskFreeDaily);
+        const excessMean = excessReturns.reduce((s, r) => s + r, 0) / excessReturns.length;
+        const sharpe = dailyVol > 0 ? (excessMean / dailyVol) * Math.sqrt(252) : 0;
+
+        // 年化收益率
+        const firstAsset = Number(performance[0].total_assets || 1000000);
+        const lastAsset = Number(performance[performance.length - 1].total_assets || firstAsset);
+        const totalReturn = firstAsset > 0 ? (lastAsset - firstAsset) / firstAsset : 0;
+        const days = performance.length;
+        const annualized = days > 0 ? (Math.pow(1 + totalReturn, 252 / days) - 1) : 0;
+
+        return { maxDrawdown: maxDD, sharpe, annualized, volatility: annualVol };
+    }
+
+    renderRiskMetrics(performance) {
+        const risk = this.computeRiskMetrics(performance);
+
+        // 最大回撤
+        this.setText('risk-max-drawdown', `${(risk.maxDrawdown * 100).toFixed(2)}%`);
+        const ddStatus = document.getElementById('risk-dd-status');
+        if (ddStatus) {
+            if (risk.maxDrawdown < 0.05) {
+                ddStatus.textContent = '低风险';
+                ddStatus.className = 'metric-status status-good';
+            } else if (risk.maxDrawdown < 0.15) {
+                ddStatus.textContent = '中风险';
+                ddStatus.className = 'metric-status status-medium';
+            } else {
+                ddStatus.textContent = '高风险';
+                ddStatus.className = 'metric-status status-bad';
+            }
+        }
+
+        // 夏普比率
+        this.setText('risk-sharpe', risk.sharpe.toFixed(2));
+        const sharpeStatus = document.getElementById('risk-sharpe-status');
+        if (sharpeStatus) {
+            if (risk.sharpe > 1) {
+                sharpeStatus.textContent = '优秀';
+                sharpeStatus.className = 'metric-status status-good';
+            } else if (risk.sharpe > 0.5) {
+                sharpeStatus.textContent = '良好';
+                sharpeStatus.className = 'metric-status status-medium';
+            } else {
+                sharpeStatus.textContent = '较差';
+                sharpeStatus.className = 'metric-status status-bad';
+            }
+        }
+
+        // 年化收益率
+        this.setText('risk-annualized', `${(risk.annualized * 100).toFixed(2)}%`);
+        const annualStatus = document.getElementById('risk-annual-status');
+        if (annualStatus) {
+            if (risk.annualized > 0.10) {
+                annualStatus.textContent = '优秀';
+                annualStatus.className = 'metric-status status-good';
+            } else if (risk.annualized > 0) {
+                annualStatus.textContent = '一般';
+                annualStatus.className = 'metric-status status-medium';
+            } else {
+                annualStatus.textContent = '亏损';
+                annualStatus.className = 'metric-status status-bad';
+            }
+        }
+
+        // 波动率
+        this.setText('risk-volatility', `${(risk.volatility * 100).toFixed(2)}%`);
+        const volStatus = document.getElementById('risk-vol-status');
+        if (volStatus) {
+            if (risk.volatility < 0.15) {
+                volStatus.textContent = '低波动';
+                volStatus.className = 'metric-status status-good';
+            } else if (risk.volatility < 0.25) {
+                volStatus.textContent = '中波动';
+                volStatus.className = 'metric-status status-medium';
+            } else {
+                volStatus.textContent = '高波动';
+                volStatus.className = 'metric-status status-bad';
+            }
+        }
+    }
+
+    renderPerformanceChart(performance, tradesData) {
         const chartDom = document.getElementById('perf-chart');
         if (!chartDom) return;
 
         if (!performance.length) {
-            chartDom.innerHTML = '<div class="empty-state" style="padding:40px;">暂无近15天业绩对比数据</div>';
+            chartDom.innerHTML = '<div class="empty-state" style="padding:40px;">暂无业绩对比数据</div>';
             return;
         }
 
@@ -344,6 +544,86 @@ export class DashboardTab {
         const dates = performance.map(item => item.date);
         const returns = performance.map(item => (Number(item.cumulative_pnl_pct || 0) * 100).toFixed(2));
         const benchmarks = performance.map(item => (Number(item.benchmark_pnl_pct || 0) * 100).toFixed(2));
+
+        // 计算回撤序列
+        const assets = performance.map(item => Number(item.total_assets || 1000000));
+        const drawdowns = [];
+        let peak = assets[0];
+        for (const val of assets) {
+            if (val > peak) peak = val;
+            const dd = peak > 0 ? ((peak - val) / peak) * 100 : 0;
+            drawdowns.push(dd.toFixed(2));
+        }
+
+        // 提取买卖点标注
+        const buyPoints = [];
+        const sellPoints = [];
+        const trades = (tradesData && tradesData.trades) || [];
+        trades.forEach(t => {
+            const tradeDate = (t.date || '').split(' ')[0];
+            if (!tradeDate) return;
+            const dateIdx = dates.indexOf(tradeDate);
+            if (dateIdx < 0) return;
+            const point = {
+                coord: [tradeDate, Number(returns[dateIdx] || 0)],
+                symbol: 'triangle',
+                symbolSize: 12,
+                label: { show: false }
+            };
+            if (t.action === 'BUY') {
+                point.itemStyle = { color: '#5ce2a4' };
+                point.symbolRotate = 0;
+                buyPoints.push(point);
+            } else if (t.action === 'SELL') {
+                point.itemStyle = { color: '#e25c5c' };
+                point.symbolRotate = 180;
+                sellPoints.push(point);
+            }
+        });
+
+        const series = [
+            {
+                name: 'AI交易员',
+                type: 'line',
+                yAxisIndex: 0,
+                data: returns,
+                smooth: true,
+                itemStyle: { color: '#5ce2a4' },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(92, 226, 164, 0.2)' },
+                        { offset: 1, color: 'rgba(92, 226, 164, 0)' }
+                    ])
+                },
+                markPoint: {
+                    data: [...buyPoints, ...sellPoints]
+                }
+            },
+            {
+                name: '沪深300',
+                type: 'line',
+                yAxisIndex: 0,
+                data: benchmarks,
+                smooth: true,
+                itemStyle: { color: '#5b79e2' }
+            },
+            {
+                name: '回撤',
+                type: 'line',
+                yAxisIndex: 1,
+                data: drawdowns,
+                smooth: true,
+                lineStyle: { width: 0 },
+                itemStyle: { color: 'transparent' },
+                areaStyle: {
+                    color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                        { offset: 0, color: 'rgba(226, 92, 92, 0)' },
+                        { offset: 1, color: 'rgba(226, 92, 92, 0.25)' }
+                    ])
+                },
+                symbol: 'none'
+            }
+        ];
 
         this.chart.setOption({
             backgroundColor: 'transparent',
@@ -354,7 +634,7 @@ export class DashboardTab {
                 textStyle: { color: '#f0f3f8' }
             },
             legend: {
-                data: ['AI交易员', '沪深300'],
+                data: ['AI交易员', '沪深300', '回撤'],
                 textStyle: { color: '#8a96a8' }
             },
             grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
@@ -364,38 +644,118 @@ export class DashboardTab {
                 axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
                 axisLabel: { color: '#8a96a8' }
             },
-            yAxis: {
-                type: 'value',
-                axisLabel: { formatter: '{value}%', color: '#8a96a8' },
-                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } }
-            },
-            series: [
+            yAxis: [
                 {
-                    name: 'AI交易员',
-                    type: 'line',
-                    data: returns,
-                    smooth: true,
-                    itemStyle: { color: '#5ce2a4' },
-                    areaStyle: {
-                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                            { offset: 0, color: 'rgba(92, 226, 164, 0.2)' },
-                            { offset: 1, color: 'rgba(92, 226, 164, 0)' }
-                        ])
-                    }
+                    type: 'value',
+                    name: '收益率',
+                    nameTextStyle: { color: '#8a96a8' },
+                    axisLabel: { formatter: '{value}%', color: '#8a96a8' },
+                    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } }
                 },
                 {
-                    name: '沪深300',
-                    type: 'line',
-                    data: benchmarks,
-                    smooth: true,
-                    itemStyle: { color: '#5b79e2' }
+                    type: 'value',
+                    name: '回撤',
+                    nameTextStyle: { color: '#8a96a8' },
+                    axisLabel: { formatter: '-{value}%', color: '#8a96a8' },
+                    splitLine: { show: false },
+                    inverse: false,
+                    max: function (value) {
+                        return Math.max(value.max * 1.5, 5);
+                    }
                 }
-            ]
-        });
+            ],
+            series
+        }, true);
 
         if (!this.resizeBound) {
             window.addEventListener('resize', () => this.chart?.resize());
             this.resizeBound = true;
+        }
+    }
+
+    renderPositionDistribution(positions) {
+        const chartDom = document.getElementById('position-dist-chart');
+        if (!chartDom || !window.echarts) return;
+
+        if (!positions.length) {
+            chartDom.innerHTML = '<div class="empty-state">暂无持仓数据</div>';
+            return;
+        }
+
+        if (!this.distChart) this.distChart = echarts.init(chartDom);
+
+        const pieData = positions.map(pos => ({
+            name: pos.name || pos.code,
+            value: Number(pos.market_value || 0)
+        }));
+
+        this.distChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'item',
+                backgroundColor: 'rgba(25, 30, 45, 0.9)',
+                borderWidth: 0,
+                textStyle: { color: '#f0f3f8' },
+                formatter: '{b}: {d}%'
+            },
+            legend: {
+                orient: 'vertical',
+                right: '5%',
+                top: 'center',
+                textStyle: { color: '#8a96a8', fontSize: 12 }
+            },
+            series: [{
+                type: 'pie',
+                radius: ['40%', '70%'],
+                center: ['40%', '50%'],
+                avoidLabelOverlap: true,
+                itemStyle: { borderRadius: 6, borderColor: 'rgba(25,30,45,0.8)', borderWidth: 2 },
+                label: { show: false },
+                emphasis: {
+                    label: { show: true, fontSize: 14, fontWeight: 'bold', color: '#f0f3f8' }
+                },
+                data: pieData,
+                color: ['#5b79e2', '#5ce2a4', '#f7ca5e', '#e25c5c', '#a78bfa', '#38bdf8', '#fb923c', '#e879f9']
+            }]
+        });
+
+        window.addEventListener('resize', () => this.distChart?.resize());
+    }
+
+    renderHeatmap(tradesData) {
+        const grid = document.getElementById('heatmap-grid');
+        if (!grid) return;
+
+        grid.innerHTML = '';
+        const trades = tradesData.trades || [];
+
+        // 按日期汇总盈亏
+        const dailyPnl = {};
+        trades.forEach(t => {
+            const date = (t.date || '').split(' ')[0];
+            if (!date) return;
+            dailyPnl[date] = (dailyPnl[date] || 0) + Number(t.pnl || 0);
+        });
+
+        // 生成最近 35 天（5周）的热力图
+        const today = new Date();
+        for (let i = 34; i >= 0; i--) {
+            const d = new Date(today);
+            d.setDate(d.getDate() - i);
+            const dateStr = d.toISOString().split('T')[0];
+            const pnl = dailyPnl[dateStr] || 0;
+
+            let level = 'level-0';
+            if (pnl > 0) {
+                level = pnl > 5000 ? 'level-pos-3' : pnl > 2000 ? 'level-pos-2' : 'level-pos-1';
+            } else if (pnl < 0) {
+                level = pnl < -5000 ? 'level-neg-3' : pnl < -2000 ? 'level-neg-2' : 'level-neg-1';
+            }
+
+            const cell = document.createElement('div');
+            cell.className = `heatmap-cell ${level}`;
+            cell.title = `${dateStr}: ${pnl >= 0 ? '+' : ''}${pnl.toFixed(0)}元`;
+            grid.appendChild(cell);
         }
     }
 
