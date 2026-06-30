@@ -1,4 +1,4 @@
-# Quant Pilot
+# AlphaPilot
 
 [中文](README.md) | [English](README.en.md)
 
@@ -14,17 +14,17 @@
 
 面向 A 股的自愈式 AI 模拟盘交易驾驶舱。
 
-Quant Pilot 把 A 股模拟盘系统改造成一辆可被 Agent 驾驶的交易赛车：
+AlphaPilot 把 A 股模拟盘系统改造成一辆可被 Agent 驾驶的交易赛车：
 LLM 负责交易决策，Linux/Hermes Agent 可以无人值守驾驶，Watchdog 和 Doctor
 负责监控与自愈，公网只读仪表盘展示驾驶舱状态，但不暴露控制动作。
 
-> 仅用于研究、教育和模拟盘观察。Quant Pilot 不构成投资建议，不保证收益。
+> 仅用于研究、教育和模拟盘观察。AlphaPilot 不构成投资建议，不保证收益。
 > 除非你完全理解风险，请保持 `BROKER_MODE=paper`。
 
 ## 项目为什么存在
 
 大多数 AI 交易项目主要聚焦三类内容：Notebook、回测或 LLM Prompt。
-Quant Pilot 更关注 AI 交易员周围的工程闭环：
+AlphaPilot 更关注 AI 交易员周围的工程闭环：
 
 - 盘前预热
 - 盘中扫描和模拟执行
@@ -121,8 +121,8 @@ tests/                    本地契约与回归测试
 最后打开本地驾驶舱。默认只跑模拟盘，不会触发真实交易。
 
 ```bash
-git clone https://github.com/alfred1994/quant-pilot.git
-cd quant-pilot
+git clone https://github.com/alfred1994/alpha-pilot.git
+cd alpha-pilot
 
 python3 -m venv .venv
 . .venv/bin/activate
@@ -147,7 +147,7 @@ python3 main.py --web --host 127.0.0.1 --port 8000
 
 ## AI 驾驶员 Skill
 
-Quant Pilot 不只是一个脚本集合，它更像一辆已经装好传感器、仪表盘、维修舱和安全阀的交易赛车。
+AlphaPilot 不只是一个脚本集合，它更像一辆已经装好传感器、仪表盘、维修舱和安全阀的交易赛车。
 LLM 负责判断路线，Watchdog 像赛道监控，Doctor 像维修技师，而 Hermes / Codex / Claude
 这类 AI Agent 可以作为驾驶员接管日常巡航。
 
@@ -212,12 +212,12 @@ python3 main.py --linux-unattended-status
 
 ## Linux / Hermes 无人值守模式
 
-Quant Pilot 可以生成 Linux `systemd --user` 任务：
+AlphaPilot 可以生成 Linux `systemd --user` 任务：
 
 ```bash
 python3 main.py --linux-tasks
 bash data/linux_tasks/install_systemd_user.sh
-systemctl --user status quant-pilot-auto.service
+systemctl --user status alpha-pilot-auto.service
 ```
 
 完整部署说明见 [docs/hermes-github-actions-deploy.md](docs/hermes-github-actions-deploy.md)。

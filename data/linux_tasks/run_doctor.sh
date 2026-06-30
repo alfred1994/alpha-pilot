@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -uo pipefail
 
-PROJECT_DIR='/home/ubuntu/projects/quant-pilot'
+PROJECT_DIR='/home/ubuntu/projects/alpha-pilot'
 PYTHON_CMD='python3'
-LOG_FILE='/home/ubuntu/projects/quant-pilot/logs/doctor.log'
+LOG_FILE='/home/ubuntu/projects/alpha-pilot/logs/doctor.log'
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 
 mkdir -p "$(dirname "$LOG_FILE")"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Quant Pilot 启动脚本
+# AlphaPilot 启动脚本
 # 自动加载 Hermes 环境变量
 
 # 加载 Hermes .env 文件（忽略注释和空行）

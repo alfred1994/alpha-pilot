@@ -1,12 +1,12 @@
 [Unit]
-Description=Quant Pilot Realtime Trader
+Description=AlphaPilot Realtime Trader
 After=network.target
 
 [Service]
 Type=simple
 User=%u
-WorkingDirectory=%h/projects/quant-pilot
-Environment="PATH=%h/projects/quant-pilot/.venv/bin:%h/projects/quant-pilot/venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
+WorkingDirectory=%h/projects/alpha-pilot
+Environment="PATH=%h/projects/alpha-pilot/.venv/bin:%h/projects/alpha-pilot/venv/bin:%h/.local/bin:/usr/local/bin:/usr/bin:/bin"
 Environment=BROKER_MODE=paper
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=%h/.hermes/.env

@@ -1,0 +1,9 @@
+[Unit]
+Description=AlphaPilot AI交易员模拟盘报告
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_report.sh
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1

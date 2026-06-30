@@ -1,4 +1,4 @@
-# Quant Pilot
+# AlphaPilot
 
 [中文](README.md) | [English](README.en.md)
 
@@ -14,18 +14,18 @@
 
 Self-healing AI paper-trading cockpit for A-shares.
 
-Quant Pilot turns an A-share paper trading system into an autonomous trading race car:
+AlphaPilot turns an A-share paper trading system into an autonomous trading race car:
 an LLM makes trade decisions, a Linux/Hermes agent can drive the system unattended,
 Watchdog and Doctor keep the loop observable and repairable, and a public read-only
 dashboard shows the cockpit state without exposing control actions.
 
-> Research and paper-trading only. Quant Pilot is not investment advice and does not
+> Research and paper-trading only. AlphaPilot is not investment advice and does not
 > guarantee returns. Keep `BROKER_MODE=paper` unless you fully understand the risks.
 
 ## Why This Project Exists
 
 Most AI trading repositories focus on one of three things: notebooks, backtests, or
-LLM prompts. Quant Pilot focuses on the operational loop around an AI trader:
+LLM prompts. AlphaPilot focuses on the operational loop around an AI trader:
 
 - pre-market warmup
 - intraday scan and paper execution
@@ -132,8 +132,8 @@ environment, install dependencies, check readiness, run one autonomous cycle, an
 open the local cockpit. By default this project is designed for paper trading.
 
 ```bash
-git clone https://github.com/alfred1994/quant-pilot.git
-cd quant-pilot
+git clone https://github.com/alfred1994/alpha-pilot.git
+cd alpha-pilot
 
 python3 -m venv .venv
 . .venv/bin/activate
@@ -156,7 +156,7 @@ For a quick public preview, open the read-only cockpit:
 
 ## AI Driver Skill
 
-Quant Pilot is intentionally shaped like a trading race car: sensors, dashboard,
+AlphaPilot is intentionally shaped like a trading race car: sensors, dashboard,
 watchdog, repair loop, and a paper execution engine are already wired together.
 An AI agent such as Hermes, Codex, or Claude can act as the driver.
 
@@ -168,7 +168,7 @@ Driver instructions live here:
 The basic loop is: run `python3 main.py --agent-status`, diagnose unhealthy
 signals, call `python3 main.py --doctor` when Watchdog reports critical issues,
 repair crashes through `python3 main.py --crash-info`, verify tests, resolve the
-crash, and restart `quant-pilot-auto.service`.
+crash, and restart `alpha-pilot-auto.service`.
 
 ## Important Environment Variables
 
@@ -216,12 +216,12 @@ python3 main.py --linux-unattended-status
 
 ## Linux / Hermes Unattended Mode
 
-Quant Pilot can generate Linux `systemd --user` tasks:
+AlphaPilot can generate Linux `systemd --user` tasks:
 
 ```bash
 python3 main.py --linux-tasks
 bash data/linux_tasks/install_systemd_user.sh
-systemctl --user status quant-pilot-auto.service
+systemctl --user status alpha-pilot-auto.service
 ```
 
 For a full deployment overview, see

@@ -1,7 +1,7 @@
-# Quant Pilot AI 驾驶员 Skill 使用指南
+# AlphaPilot AI 驾驶员 Skill 使用指南
 
-本文档面向想把自己的 AI Agent 接到 Quant Pilot 上的人。你可以把它理解成一份驾驶执照考试说明：
-Quant Pilot 是交易赛车，AI Agent 是驾驶员，人类用户是车队老板。
+本文档面向想把自己的 AI Agent 接到 AlphaPilot 上的人。你可以把它理解成一份驾驶执照考试说明：
+AlphaPilot 是交易赛车，AI Agent 是驾驶员，人类用户是车队老板。
 
 > 仅用于研究、教育和模拟盘观察。默认保持 `BROKER_MODE=paper`，不要把未经验证的 Agent
 > 直接接到真实交易执行链路上。
@@ -90,8 +90,8 @@ python3 tests/test_auto_trader.py
 
 ```bash
 python3 main.py --resolve-crash
-systemctl --user restart quant-pilot-auto.service
-systemctl --user status quant-pilot-auto.service
+systemctl --user restart alpha-pilot-auto.service
+systemctl --user status alpha-pilot-auto.service
 ```
 
 ## AI 驾驶员不得做的事

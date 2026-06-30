@@ -1,10 +1,10 @@
 [Unit]
-Description=Quant Pilot Doctor每5分钟巡检
+Description=AlphaPilot Doctor每5分钟巡检
 
 [Timer]
 OnBootSec=2min
 OnUnitActiveSec=5min
-Unit=quant-pilot-doctor.service
+Unit=alpha-pilot-doctor.service
 Persistent=true
 
 [Install]

@@ -34,7 +34,7 @@ def _sample_status():
                 "time": "09:30:00",
                 "type": "auto_doctor",
                 "status": "盘中",
-                "action": "systemctl --user restart quant-pilot-auto.service",
+                "action": "systemctl --user restart alpha-pilot-auto.service",
                 "error": "Traceback (most recent call last): secret",
             }
         ],

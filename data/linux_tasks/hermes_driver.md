@@ -1,19 +1,19 @@
 # Hermes Agent (AI 驾驶员) 自动驾驶与故障自愈部署手册
 
-本手册定义了 **AI 驾驶员 (Hermes Agent)** 如何对 **交易车 (Quant Pilot)** 进行全自动托管、故障诊断、热补丁修复和自动重启的配置规范。
+本手册定义了 **AI 驾驶员 (Hermes Agent)** 如何对 **交易车 (AlphaPilot)** 进行全自动托管、故障诊断、热补丁修复和自动重启的配置规范。
 
 ---
 
 ## 1. 基础配置：驾驶员与车的绑定
 
-请确保在你的服务器上，将 `quant-pilot` 源码路径和相关系统命令映射给 Hermes Agent。
+请确保在你的服务器上，将 `alpha-pilot` 源码路径和相关系统命令映射给 Hermes Agent。
 
-*   **项目根路径**: `/path/to/quant-pilot`
-*   **状态监测文件**: `/path/to/quant-pilot/data/latest_crash.json`
+*   **项目根路径**: `/path/to/alpha-pilot`
+*   **状态监测文件**: `/path/to/alpha-pilot/data/latest_crash.json`
 *   **控制命令**:
     *   体检状态: `python3 main.py --agent-status`
     *   崩溃现场: `python3 main.py --crash-info`
-    *   服务控制: `systemctl --user status/restart/stop quant-pilot-auto`
+    *   服务控制: `systemctl --user status/restart/stop alpha-pilot-auto`
 
 ---
 
@@ -39,7 +39,7 @@
 
 ## 3. 核心：自愈驾驶流程 (Self-Healing Driver Rule)
 
-当交易系统运行时，Hermes Agent 应注册一个**文件监听器 (File Watcher)**，监听 `/path/to/quant-pilot/data/latest_crash.json` 的变动。
+当交易系统运行时，Hermes Agent 应注册一个**文件监听器 (File Watcher)**，监听 `/path/to/alpha-pilot/data/latest_crash.json` 的变动。
 
 一旦该文件被写入，代表车辆发生了致命崩溃。Hermes Agent 自动执行以下 **自愈闭环工作流**：
 
@@ -63,7 +63,7 @@ python3 main.py --crash-info
 Hermes Agent 读取出错文件附近的代码块：
 *   **指令**：读取 `file` 发生报错的 `line` 上下文前后 30 行代码。
 *   **LLM 推理上下文**：
-    *   *“这是 Quant Pilot 运行时的报错：{traceback}。”*
+    *   *“这是 AlphaPilot 运行时的报错：{traceback}。”*
     *   *“出错的代码位置在：{file} 第 {line} 行。”*
     *   *“请阅读该文件上下文，分析报错成因（如拼写错误、类型未匹配、外部API返回格式变动），并输出修复后的代码补丁。”*
 
@@ -86,7 +86,7 @@ Hermes Agent 读取出错文件附近的代码块：
 python3 main.py --resolve-crash
 
 # 2. 重启自动盯盘循环
-systemctl --user restart quant-pilot-auto.service
+systemctl --user restart alpha-pilot-auto.service
 ```
 
 #### Step 6. 成果推送

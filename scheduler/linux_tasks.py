@@ -26,7 +26,7 @@ from scheduler.windows_tasks import UnattendedItem
 
 
 DEFAULT_OUTPUT_DIR = os.path.join(DATA_DIR, "linux_tasks")
-DEFAULT_SERVICE_PREFIX = "quant-pilot"
+DEFAULT_SERVICE_PREFIX = "alpha-pilot"
 SCRIPT_KEYS = [
     "run_auto",
     "restart_auto",
@@ -382,7 +382,7 @@ systemctl --user enable --now {os.path.basename(paths['report_timer'])}
 systemctl --user enable --now {os.path.basename(paths['status_timer'])}
 
 cat <<'EOF'
-Quant Pilot systemd --user tasks installed.
+AlphaPilot systemd --user tasks installed.
 
 建议在服务器上启用用户 lingering，保证Hermes用户退出后仍可运行：
   sudo loginctl enable-linger "$USER"
@@ -418,7 +418,7 @@ for unit in {units_text}; do
   rm -f "$SYSTEMD_USER_DIR/$unit"
 done
 systemctl --user daemon-reload
-echo "Quant Pilot systemd --user tasks removed."
+echo "AlphaPilot systemd --user tasks removed."
 """
 
 
@@ -476,20 +476,20 @@ def generate_linux_task_scripts(
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
     units = {
-        paths["auto_service"]: _service_unit("Quant Pilot 模拟盘自动盯盘长驻循环", target_paths["run_auto"], restart=True),
-        paths["auto_restart_service"]: _oneshot_service_unit("Quant Pilot 自动盘Watchdog重启", target_paths["restart_auto"], timeout_start_sec=240),
+        paths["auto_service"]: _service_unit("AlphaPilot 模拟盘自动盯盘长驻循环", target_paths["run_auto"], restart=True),
+        paths["auto_restart_service"]: _oneshot_service_unit("AlphaPilot 自动盘Watchdog重启", target_paths["restart_auto"], timeout_start_sec=240),
         paths["auto_restart_timer"]: _interval_timer_unit(
-            "Quant Pilot 自动盘每10分钟Watchdog重启保护",
+            "AlphaPilot 自动盘每10分钟Watchdog重启保护",
             os.path.basename(paths["auto_restart_service"]),
             "5min",
             "10min",
         ),
-        paths["doctor_service"]: _oneshot_service_unit("Quant Pilot Watchdog巡检/自愈/闭环修复", target_paths["run_doctor"], timeout_start_sec=300),
-        paths["doctor_timer"]: _interval_timer_unit("Quant Pilot Doctor每5分钟巡检", os.path.basename(paths["doctor_service"]), "2min", "5min"),
-        paths["report_service"]: _oneshot_service_unit("Quant Pilot AI交易员模拟盘报告", target_paths["run_report"]),
-        paths["report_timer"]: _calendar_timer_unit("Quant Pilot 盘后AI报告", os.path.basename(paths["report_service"]), f"Mon..Fri *-*-* {config.report_time}:00"),
-        paths["status_service"]: _oneshot_service_unit("Quant Pilot 自动盯盘运维状态", target_paths["run_status"]),
-        paths["status_timer"]: _calendar_timer_unit("Quant Pilot 盘后运维状态", os.path.basename(paths["status_service"]), f"Mon..Fri *-*-* {config.status_time}:00"),
+        paths["doctor_service"]: _oneshot_service_unit("AlphaPilot Watchdog巡检/自愈/闭环修复", target_paths["run_doctor"], timeout_start_sec=300),
+        paths["doctor_timer"]: _interval_timer_unit("AlphaPilot Doctor每5分钟巡检", os.path.basename(paths["doctor_service"]), "2min", "5min"),
+        paths["report_service"]: _oneshot_service_unit("AlphaPilot AI交易员模拟盘报告", target_paths["run_report"]),
+        paths["report_timer"]: _calendar_timer_unit("AlphaPilot 盘后AI报告", os.path.basename(paths["report_service"]), f"Mon..Fri *-*-* {config.report_time}:00"),
+        paths["status_service"]: _oneshot_service_unit("AlphaPilot 自动盯盘运维状态", target_paths["run_status"]),
+        paths["status_timer"]: _calendar_timer_unit("AlphaPilot 盘后运维状态", os.path.basename(paths["status_service"]), f"Mon..Fri *-*-* {config.status_time}:00"),
     }
     for path, content in {**scripts, **units}.items():
         with open(path, "w", encoding="utf-8", newline="\n") as f:

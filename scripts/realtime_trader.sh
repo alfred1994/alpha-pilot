@@ -13,7 +13,7 @@ if [ -f "$HERMES_ENV_FILE" ]; then
 fi
 
 # 项目目录
-PROJECT_DIR="${PROJECT_DIR:-$HOME/projects/quant-pilot}"
+PROJECT_DIR="${PROJECT_DIR:-$HOME/projects/alpha-pilot}"
 cd "$PROJECT_DIR" || exit 1
 
 if [ -f "venv/bin/activate" ]; then

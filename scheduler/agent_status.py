@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 
 def build_agent_status_snapshot():
-    """统一构建 Quant Pilot 系统当前的运行态、健康态、资产、自适应指标及未决崩溃状态"""
+    """统一构建 AlphaPilot 系统当前的运行态、健康态、资产、自适应指标及未决崩溃状态"""
     from scheduler.health import run_health_check
     from scheduler.watchdog import run_auto_watchdog
     from scheduler.control import get_auto_control_state

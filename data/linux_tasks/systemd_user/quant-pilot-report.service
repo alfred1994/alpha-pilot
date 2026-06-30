@@ -1,9 +1,0 @@
-[Unit]
-Description=Quant Pilot AI交易员模拟盘报告
-After=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/env bash /home/ubuntu/projects/quant-pilot/data/linux_tasks/run_report.sh
-Environment=BROKER_MODE=paper
-Environment=PYTHONUNBUFFERED=1

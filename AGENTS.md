@@ -1,8 +1,8 @@
 # AGENTS.md
 
-Guidance for AI coding agents working on Quant Pilot.
+Guidance for AI coding agents working on AlphaPilot.
 
-Quant Pilot is a research and paper-trading system for A-share market automation.
+AlphaPilot is a research and paper-trading system for A-share market automation.
 Keep changes conservative, observable, and safe by default.
 
 ## Core Principles

@@ -23,7 +23,7 @@ from config import DATA_DIR
 
 
 DEFAULT_OUTPUT_DIR = os.path.join(DATA_DIR, "task_scripts")
-DEFAULT_TASK_PREFIX = "QuantPilot"
+DEFAULT_TASK_PREFIX = "AlphaPilot"
 TASK_NAMES = ["Auto", "Auto-Restart", "Doctor", "Report", "Status"]
 SCRIPT_KEYS = ["run_auto", "restart_auto", "run_doctor", "run_report", "run_status", "install", "uninstall"]
 LOG_NAMES = {
@@ -73,7 +73,7 @@ def _runner_script(project_dir: str, python_cmd: str, args: str,
                    log_name: str) -> str:
     """生成单个运行脚本"""
     log_path = os.path.join(project_dir, "logs", log_name)
-    return f"""# Quant Pilot 自动生成脚本
+    return f"""# AlphaPilot 自动生成脚本
 $ErrorActionPreference = 'Stop'
 $ProjectDir = {_ps_quote(project_dir)}
 $PythonCmd = {_ps_quote(python_cmd)}
@@ -97,7 +97,7 @@ def _restart_auto_script(project_dir: str, python_cmd: str,
                          task_prefix: str) -> str:
     """生成自动盘重启脚本"""
     log_path = os.path.join(project_dir, "logs", "auto_restart.log")
-    return f"""# Quant Pilot 自动盘重启脚本
+    return f"""# AlphaPilot 自动盘重启脚本
 $ErrorActionPreference = 'Continue'
 $ProjectDir = {_ps_quote(project_dir)}
 $PythonCmd = {_ps_quote(python_cmd)}
@@ -170,7 +170,7 @@ def _install_script(config: TaskScriptConfig, paths: Dict[str, str]) -> str:
     """生成Windows计划任务安装脚本"""
     prefix = config.task_prefix
     days = "Monday,Tuesday,Wednesday,Thursday,Friday"
-    return f"""# Quant Pilot Windows计划任务安装脚本
+    return f"""# AlphaPilot Windows计划任务安装脚本
 # 请在管理员 PowerShell 中执行：
 #   Set-ExecutionPolicy -Scope Process Bypass
 #   .\\install_tasks.ps1
@@ -228,35 +228,35 @@ Register-QuantTask `
     -Name 'Auto' `
     -ScriptPath {_ps_quote(paths['run_auto'])} `
     -Trigger $AutoTrigger `
-    -Description 'Quant Pilot 模拟盘自动盯盘循环'
+    -Description 'AlphaPilot 模拟盘自动盯盘循环'
 Register-QuantTask `
     -Name 'Doctor' `
     -ScriptPath {_ps_quote(paths['run_doctor'])} `
     -Trigger $DoctorTrigger `
-    -Description 'Quant Pilot 自动盯盘Watchdog巡检与自愈'
+    -Description 'AlphaPilot 自动盯盘Watchdog巡检与自愈'
 Register-QuantTask `
     -Name 'Auto-Restart' `
     -ScriptPath {_ps_quote(paths['restart_auto'])} `
     -Trigger $RestartTrigger `
-    -Description 'Quant Pilot 自动盯盘长驻进程Watchdog重启'
+    -Description 'AlphaPilot 自动盯盘长驻进程Watchdog重启'
 Register-QuantTask `
     -Name 'Report' `
     -ScriptPath {_ps_quote(paths['run_report'])} `
     -Trigger $ReportTrigger `
-    -Description 'Quant Pilot AI交易员模拟盘试运行报告'
+    -Description 'AlphaPilot AI交易员模拟盘试运行报告'
 Register-QuantTask `
     -Name 'Status' `
     -ScriptPath {_ps_quote(paths['run_status'])} `
     -Trigger $StatusTrigger `
-    -Description 'Quant Pilot 自动盯盘一页式运维状态'
+    -Description 'AlphaPilot 自动盯盘一页式运维状态'
 
-Write-Host 'Quant Pilot scheduled tasks installed.'
+Write-Host 'AlphaPilot scheduled tasks installed.'
 """
 
 
 def _uninstall_script(task_prefix: str) -> str:
     """生成Windows计划任务卸载脚本"""
-    return f"""# Quant Pilot Windows计划任务卸载脚本
+    return f"""# AlphaPilot Windows计划任务卸载脚本
 $ErrorActionPreference = 'Continue'
 $TaskPrefix = {_ps_quote(task_prefix)}
 foreach ($Name in @('Auto', 'Auto-Restart', 'Doctor', 'Report', 'Status')) {{

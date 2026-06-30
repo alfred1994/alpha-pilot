@@ -1,0 +1,10 @@
+[Unit]
+Description=AlphaPilot 自动盘Watchdog重启
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /home/ubuntu/projects/alpha-pilot/data/linux_tasks/restart_auto.sh
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=240

@@ -14,7 +14,7 @@ from web.public_safety import is_control_api_enabled, is_production
 is_prod = is_production()
 
 app = FastAPI(
-    title="Quant Pilot Web API",
+    title="AlphaPilot Web API",
     description="AI 交易员自愈协同仪表盘后端 API",
     docs_url=None if is_prod else "/docs",
     redoc_url=None if is_prod else "/redoc",

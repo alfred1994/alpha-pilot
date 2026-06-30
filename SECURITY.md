@@ -1,6 +1,6 @@
 # Security Policy
 
-Quant Pilot is a research and paper-trading project. Treat every deployment as a
+AlphaPilot is a research and paper-trading project. Treat every deployment as a
 financial automation system and keep the public web surface read-only by default.
 
 ## Supported Versions
@@ -53,7 +53,7 @@ ALPHAPILOT_CORS_ORIGINS=https://your-dashboard-domain.example
 BROKER_MODE=paper
 ```
 
-In production mode, Quant Pilot:
+In production mode, AlphaPilot:
 
 - disables `/docs` and `/openapi.json`
 - exposes public read-only status through `/api/public/status`
@@ -69,7 +69,7 @@ network-level access controls.
 
 ## Trading Safety
 
-Quant Pilot defaults to paper trading. The project does not ship a production-ready
+AlphaPilot defaults to paper trading. The project does not ship a production-ready
 real-money broker adapter. Any real-money extension is outside the default safety
 boundary and must be reviewed independently.
 

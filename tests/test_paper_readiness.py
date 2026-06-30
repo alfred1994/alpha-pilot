@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 模拟盘AI交易员就绪检查测试
 
@@ -47,7 +47,7 @@ def main():
     ]
     unattended = [
         UnattendedItem("脚本:run_auto", True, "ok", "run_auto.ps1"),
-        UnattendedItem("计划任务:Auto", False, "warn", "未安装: QuantPilot-Auto"),
+        UnattendedItem("计划任务:Auto", False, "warn", "未安装: AlphaPilot-Auto"),
         UnattendedItem("日志:Auto", False, "warn", "暂无日志"),
     ]
     formal_report = _report(days=5, cycles=3, closed_loop=0, trades=0, lessons=0, adaptive=False)

@@ -1,6 +1,6 @@
 # Disclaimer
 
-Quant Pilot is provided for research, education, engineering experimentation, and
+AlphaPilot is provided for research, education, engineering experimentation, and
 paper-trading observation.
 
 It is not financial advice, investment advice, trading advice, tax advice, legal
@@ -22,7 +22,7 @@ The intended default mode is:
 BROKER_MODE=paper
 ```
 
-Do not connect Quant Pilot to real-money execution unless you have independently
+Do not connect AlphaPilot to real-money execution unless you have independently
 reviewed the code, risk controls, broker adapter, infrastructure, credentials,
 monitoring, compliance requirements, and failure modes.
 

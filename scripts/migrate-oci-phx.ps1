@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Oracle Cloud 东京(ap-tokyo-1) 到 PHX(us-phoenix-1) 的 Quant Pilot 自动化迁移编排脚本。
+  Oracle Cloud 东京(ap-tokyo-1) 到 PHX(us-phoenix-1) 的 AlphaPilot 自动化迁移编排脚本。
 
 .DESCRIPTION
   该脚本从本地 Windows 控制端执行，负责：
@@ -13,7 +13,7 @@
   重要边界：
   - OCI API 私钥只保存在本机，不会输出到日志。
   - 默认不会删除东京旧资源；必须使用 -Phase CleanupTokyo 且传入确认词。
-  - 默认创建 quant-pilot-phx-* 专用网络资源，避免依赖已有 PHX 网络。
+  - 默认创建 alpha-pilot-phx-* 专用网络资源，避免依赖已有 PHX 网络。
 
 .EXAMPLE
   pwsh scripts/migrate-oci-phx.ps1 -Phase InitApiKey
@@ -47,12 +47,12 @@ param(
     [string]$SshKey = "$HOME\.ssh\id_ed25519",
     [string]$SshPubKey = "$HOME\.ssh\id_ed25519.pub",
 
-    [string]$NewDisplayName = "quant-pilot-phx",
-    [string]$VcnDisplayName = "quant-pilot-phx-vcn",
-    [string]$SubnetDisplayName = "quant-pilot-phx-subnet",
-    [string]$SecurityListDisplayName = "quant-pilot-phx-security-list",
-    [string]$RouteTableDisplayName = "quant-pilot-phx-route-table",
-    [string]$InternetGatewayDisplayName = "quant-pilot-phx-igw",
+    [string]$NewDisplayName = "alpha-pilot-phx",
+    [string]$VcnDisplayName = "alpha-pilot-phx-vcn",
+    [string]$SubnetDisplayName = "alpha-pilot-phx-subnet",
+    [string]$SecurityListDisplayName = "alpha-pilot-phx-security-list",
+    [string]$RouteTableDisplayName = "alpha-pilot-phx-route-table",
+    [string]$InternetGatewayDisplayName = "alpha-pilot-phx-igw",
     [string]$AdminSourceCidr = "0.0.0.0/0",
     [int]$Ocpus = 4,
     [int]$MemoryInGBs = 24,
@@ -78,14 +78,14 @@ $Script:StateFile = Join-Path $Script:StatePath "oci-phx-migration-state.json"
 $Script:InventoryFile = Join-Path $Script:StatePath "oci-tokyo-cleanup-inventory.json"
 $Script:LogFile = Join-Path $Script:StatePath ("oci-phx-migration-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
 $Script:ServiceUnits = @(
-    "quant-pilot-auto-trader.service",
-    "quant-pilot-dashboard.service",
-    "quant-pilot-fastapi-server.service",
-    "quant-pilot-gateway.service",
-    "quant-pilot-watchdog.service",
-    "quant-pilot-auto-restart-scheduler.service",
-    "quant-pilot-market-data.service",
-    "socket-proxy-quant-pilot.service"
+    "alpha-pilot-auto-trader.service",
+    "alpha-pilot-dashboard.service",
+    "alpha-pilot-fastapi-server.service",
+    "alpha-pilot-gateway.service",
+    "alpha-pilot-watchdog.service",
+    "alpha-pilot-auto-restart-scheduler.service",
+    "alpha-pilot-market-data.service",
+    "socket-proxy-alpha-pilot.service"
 )
 
 New-Item -ItemType Directory -Force -Path $Script:StatePath | Out-Null
@@ -681,19 +681,19 @@ function New-RemoteMigrationArchives {
     $remote = @"
 set -euo pipefail
 $stopBlock
-rm -rf /tmp/quant-pilot-migration
-mkdir -p /tmp/quant-pilot-migration
-sudo tar -C /etc/systemd/system -czf /tmp/quant-pilot-migration/systemd.tgz --ignore-failed-read quant-pilot*.service socket-proxy-quant-pilot* 2>/tmp/quant-pilot-migration/systemd-tar.err || true
-tar -C "`$HOME" -czf /tmp/quant-pilot-migration/project.tgz \
-  --exclude='projects/quant-pilot/venv-quant' \
-  --exclude='projects/quant-pilot/venv' \
-  --exclude='projects/quant-pilot/.venv' \
-  --exclude='projects/quant-pilot/**/__pycache__' \
-  --exclude='projects/quant-pilot/data/auto_trader.lock' \
-  --exclude='projects/quant-pilot/.git' \
+rm -rf /tmp/alpha-pilot-migration
+mkdir -p /tmp/alpha-pilot-migration
+sudo tar -C /etc/systemd/system -czf /tmp/alpha-pilot-migration/systemd.tgz --ignore-failed-read alpha-pilot*.service socket-proxy-alpha-pilot* 2>/tmp/alpha-pilot-migration/systemd-tar.err || true
+tar -C "`$HOME" -czf /tmp/alpha-pilot-migration/project.tgz \
+  --exclude='projects/alpha-pilot/venv-quant' \
+  --exclude='projects/alpha-pilot/venv' \
+  --exclude='projects/alpha-pilot/.venv' \
+  --exclude='projects/alpha-pilot/**/__pycache__' \
+  --exclude='projects/alpha-pilot/data/auto_trader.lock' \
+  --exclude='projects/alpha-pilot/.git' \
   --exclude='.hermes/logs' \
-  projects/quant-pilot .hermes .bashrc || [ "`$?" -eq 1 ]
-ls -lh /tmp/quant-pilot-migration
+  projects/alpha-pilot .hermes .bashrc || [ "`$?" -eq 1 ]
+ls -lh /tmp/alpha-pilot-migration
 "@
     Invoke-Ssh -HostName $OldHost -User $OldUser -Command $remote | Out-Null
 }
@@ -705,24 +705,24 @@ function Copy-ArchivesToNewHost {
 
     Write-Step "从东京旧机下载迁移包"
     Invoke-Scp -ScpArgs @(
-        ("{0}@{1}:/tmp/quant-pilot-migration/project.tgz" -f $OldUser, $OldHost),
+        ("{0}@{1}:/tmp/alpha-pilot-migration/project.tgz" -f $OldUser, $OldHost),
         (Join-Path $localStage "project.tgz")
     ) | Out-Null
     Invoke-Scp -ScpArgs @(
-        ("{0}@{1}:/tmp/quant-pilot-migration/systemd.tgz" -f $OldUser, $OldHost),
+        ("{0}@{1}:/tmp/alpha-pilot-migration/systemd.tgz" -f $OldUser, $OldHost),
         (Join-Path $localStage "systemd.tgz")
     ) -AllowFailure | Out-Null
 
     Write-Step "上传迁移包到 PHX 新机"
-    Invoke-Ssh -HostName $NewHost -User $NewUser -Command "mkdir -p /tmp/quant-pilot-migration" | Out-Null
+    Invoke-Ssh -HostName $NewHost -User $NewUser -Command "mkdir -p /tmp/alpha-pilot-migration" | Out-Null
     Invoke-Scp -ScpArgs @(
         (Join-Path $localStage "project.tgz"),
-        ("{0}@{1}:/tmp/quant-pilot-migration/project.tgz" -f $NewUser, $NewHost)
+        ("{0}@{1}:/tmp/alpha-pilot-migration/project.tgz" -f $NewUser, $NewHost)
     ) | Out-Null
     if (Test-Path (Join-Path $localStage "systemd.tgz")) {
         Invoke-Scp -ScpArgs @(
             (Join-Path $localStage "systemd.tgz"),
-            ("{0}@{1}:/tmp/quant-pilot-migration/systemd.tgz" -f $NewUser, $NewHost)
+            ("{0}@{1}:/tmp/alpha-pilot-migration/systemd.tgz" -f $NewUser, $NewHost)
         ) | Out-Null
     }
 }
@@ -739,14 +739,14 @@ function Install-NewHost {
 set -euo pipefail
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y python3.12-venv python3-pip git sqlite3 curl jq rsync
-tar -C "`$HOME" -xzf /tmp/quant-pilot-migration/project.tgz
-if [ -s /tmp/quant-pilot-migration/systemd.tgz ]; then
-  sudo tar -C /etc/systemd/system -xzf /tmp/quant-pilot-migration/systemd.tgz || true
+tar -C "`$HOME" -xzf /tmp/alpha-pilot-migration/project.tgz
+if [ -s /tmp/alpha-pilot-migration/systemd.tgz ]; then
+  sudo tar -C /etc/systemd/system -xzf /tmp/alpha-pilot-migration/systemd.tgz || true
 fi
-sudo chown -R ${NewUser}:${NewUser} "`$HOME/projects/quant-pilot" "`$HOME/.hermes" 2>/dev/null || true
+sudo chown -R ${NewUser}:${NewUser} "`$HOME/projects/alpha-pilot" "`$HOME/.hermes" 2>/dev/null || true
 chmod 700 "`$HOME/.hermes" 2>/dev/null || true
 chmod 600 "`$HOME/.hermes/.env" 2>/dev/null || true
-cd "`$HOME/projects/quant-pilot"
+cd "`$HOME/projects/alpha-pilot"
 python3 -m venv venv-quant
 ./venv-quant/bin/python -m pip install --upgrade pip
 ./venv-quant/bin/pip install -r requirements.txt
@@ -779,9 +779,9 @@ set -uo pipefail
 echo "== python =="
 python3 --version
 echo "== project =="
-test -d "`$HOME/projects/quant-pilot" && echo project-ok
+test -d "`$HOME/projects/alpha-pilot" && echo project-ok
 test -f "`$HOME/.hermes/.env" && stat -c '%a %n' "`$HOME/.hermes/.env"
-cd "`$HOME/projects/quant-pilot"
+cd "`$HOME/projects/alpha-pilot"
 test -x venv-quant/bin/python && venv-quant/bin/python --version
 test -f data/quant.db && sqlite3 data/quant.db 'select name from sqlite_master limit 5;' || true
 BROKER_MODE=paper venv-quant/bin/python main.py --watchdog || true
@@ -913,7 +913,7 @@ function Remove-TokyoResources {
 
 function Show-Plan {
     Write-Host @"
-Quant Pilot OCI PHX 迁移脚本
+AlphaPilot OCI PHX 迁移脚本
 
 推荐执行顺序：
   1. 生成/配置 OCI API key：

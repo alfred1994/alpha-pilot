@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Ubuntu/Hermes无人值守任务脚本测试
 
@@ -43,7 +43,7 @@ def main():
             project_dir=temp_dir,
             output_dir=temp_dir,
             python_cmd="python3",
-            service_prefix="quant-pilot-test",
+            service_prefix="alpha-pilot-test",
             report_days=7,
         )
 
@@ -94,8 +94,8 @@ def main():
         assert_true("main.py --ops-status --report-days 7" in run_status, "状态脚本使用指定回看天数")
         assert_true("exit 0" in run_status, "状态脚本报告critical时不标记systemd失败")
         assert_true("main.py --closure-repair" in run_closure_repair, "闭环修复脚本已生成")
-        assert_true("systemctl --user enable --now quant-pilot-test-auto.service" in install, "安装脚本启用Auto服务")
-        assert_true("systemctl --user enable --now quant-pilot-test-auto-restart.timer" in install, "安装脚本启用Auto-Restart timer")
+        assert_true("systemctl --user enable --now alpha-pilot-test-auto.service" in install, "安装脚本启用Auto服务")
+        assert_true("systemctl --user enable --now alpha-pilot-test-auto-restart.timer" in install, "安装脚本启用Auto-Restart timer")
         assert_true("Restart=always" in auto_service, "Auto服务带常驻重启保护")
         assert_true("TimeoutStartSec=240" in auto_restart_service, "Auto-Restart服务带systemd超时保护")
         assert_true("TimeoutStartSec=300" in doctor_service, "Doctor服务带systemd超时保护")
@@ -160,12 +160,12 @@ def main():
         status_items = run_linux_unattended_status(
             project_dir=temp_dir,
             output_dir=temp_dir,
-            service_prefix="quant-pilot-test",
+            service_prefix="alpha-pilot-test",
             systemd_query_func=fake_systemd_query,
         )
         assert_true(not any(i.severity == "critical" for i in status_items), "Linux无人值守巡检无critical")
-        assert_true(any(i.name == "systemd状态:quant-pilot-test-auto.service" and i.ok for i in status_items), "巡检识别Auto systemd服务")
-        assert_true(any(i.name == "systemd状态:quant-pilot-test-auto-restart.timer" and i.ok for i in status_items), "巡检识别Auto-Restart timer")
+        assert_true(any(i.name == "systemd状态:alpha-pilot-test-auto.service" and i.ok for i in status_items), "巡检识别Auto systemd服务")
+        assert_true(any(i.name == "systemd状态:alpha-pilot-test-auto-restart.timer" and i.ok for i in status_items), "巡检识别Auto-Restart timer")
         assert_true(
             any(
                 i.name == "日志:Auto"

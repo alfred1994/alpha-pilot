@@ -16,7 +16,7 @@ permissions:
 jobs:
   deploy:
     name: Deploy to Hermes
-    if: ${{ github.repository == 'alfred1994/quant-pilot' }}
+    if: ${{ github.repository == 'alfred1994/alpha-pilot' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -25,9 +25,9 @@ jobs:
       HERMES_SSH_PRIVATE_KEY: ${{ secrets.HERMES_SSH_PRIVATE_KEY }}
       HERMES_PASSWORD: ${{ secrets.HERMES_PASSWORD }}
       HERMES_SSH_PORT: ${{ vars.HERMES_SSH_PORT || '22' }}
-      HERMES_PROJECT_DIR: ${{ vars.HERMES_PROJECT_DIR || '/home/ubuntu/projects/quant-pilot' }}
+      HERMES_PROJECT_DIR: ${{ vars.HERMES_PROJECT_DIR || '/home/ubuntu/projects/alpha-pilot' }}
       HERMES_BRANCH: main
-      HERMES_USER_UNITS: ${{ vars.HERMES_USER_UNITS || 'quant-pilot-auto.service quant-pilot-auto-restart.timer quant-pilot-doctor.timer quant-pilot-report.timer quant-pilot-status.timer' }}
+      HERMES_USER_UNITS: ${{ vars.HERMES_USER_UNITS || 'alpha-pilot-auto.service alpha-pilot-auto-restart.timer alpha-pilot-doctor.timer alpha-pilot-report.timer alpha-pilot-status.timer' }}
       HERMES_SYSTEM_UNITS: ${{ vars.HERMES_SYSTEM_UNITS || '' }}
       HERMES_PYTHON_CMD: ${{ vars.HERMES_PYTHON_CMD || 'python3' }}
       HERMES_RUN_INSTALL_SYSTEMD: ${{ vars.HERMES_RUN_INSTALL_SYSTEMD || 'true' }}

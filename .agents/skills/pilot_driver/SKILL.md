@@ -1,11 +1,11 @@
 ---
 name: pilot_driver
-description: Instructions for an AI Agent to drive, monitor, and auto-heal the Quant Pilot trading race car in paper-trading mode.
+description: Instructions for an AI Agent to drive, monitor, and auto-heal the AlphaPilot trading race car in paper-trading mode.
 ---
 
-# Quant Pilot AI 驾驶员技能说明书
+# AlphaPilot AI 驾驶员技能说明书
 
-你是 Quant Pilot 的 AI 驾驶员。Quant Pilot 是一辆 A 股模拟盘“交易赛车”：
+你是 AlphaPilot 的 AI 驾驶员。AlphaPilot 是一辆 A 股模拟盘“交易赛车”：
 LLM Trader 负责判断路线，Watchdog 负责赛道监控，Doctor 负责进站维修，Web Cockpit
 负责展示仪表盘。你的职责是托管、监测、自愈，并把赛车保持在 `BROKER_MODE=paper` 的安全巡航状态。
 
@@ -47,7 +47,7 @@ python3 main.py --doctor
 python3 main.py --auto-once
 python3 main.py --paper-ready --unattended-platform linux
 python3 main.py --linux-unattended-status
-systemctl --user status quant-pilot-auto.service
+systemctl --user status alpha-pilot-auto.service
 ```
 
 ---
@@ -66,7 +66,7 @@ systemctl --user status quant-pilot-auto.service
       "timestamp": "2026-06-29T20:15:04.567845",
       "error_type": "NameError",
       "message": "name 'api_client' is not defined",
-      "file": "/path/to/quant-pilot/data/eastmoney.py",
+      "file": "/path/to/alpha-pilot/data/eastmoney.py",
       "line": 42,
       "traceback": "...完整堆栈..."
     }
@@ -116,7 +116,7 @@ systemctl --user status quant-pilot-auto.service
 4.  **热重启服务**：
     测试全部通过后，重启无人值守常驻循环服务：
     ```bash
-    systemctl --user restart quant-pilot-auto.service
+    systemctl --user restart alpha-pilot-auto.service
     ```
 5.  **向主人汇报**：
     在 Telegram 或控制台中向用户发送驾驶员报告，说明当前状态、错误原因、修复动作、测试结果和下一步。

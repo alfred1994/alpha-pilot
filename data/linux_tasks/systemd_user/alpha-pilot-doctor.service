@@ -1,0 +1,10 @@
+[Unit]
+Description=AlphaPilot Watchdog巡检/自愈/闭环修复
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_doctor.sh
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=300

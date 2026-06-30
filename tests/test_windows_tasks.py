@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Windows无人值守任务脚本测试
 
@@ -43,7 +43,7 @@ def main():
             project_dir=temp_dir,
             output_dir=temp_dir,
             python_cmd="python",
-            task_prefix="QuantPilotTest",
+            task_prefix="AlphaPilotTest",
             report_days=7,
         )
 
@@ -69,7 +69,7 @@ def main():
         assert_true("main.py --doctor" in run_doctor, "Doctor脚本执行--doctor")
         assert_true("main.py --ai-report --report-days 7" in run_report, "报告脚本使用指定回看天数")
         assert_true("main.py --ops-status --report-days 7" in run_status, "状态脚本使用指定回看天数")
-        assert_true("$TaskPrefix = 'QuantPilotTest'" in install, "安装脚本使用指定任务前缀")
+        assert_true("$TaskPrefix = 'AlphaPilotTest'" in install, "安装脚本使用指定任务前缀")
         assert_true("-Name 'Auto'" in install, "安装脚本注册Auto任务")
         assert_true("-Name 'Auto-Restart'" in install, "安装脚本注册Auto-Restart任务")
         assert_true("-Name 'Doctor'" in install, "安装脚本注册Doctor任务")
@@ -103,7 +103,7 @@ def main():
         status_items = run_unattended_status(
             project_dir=temp_dir,
             output_dir=temp_dir,
-            task_prefix="QuantPilotTest",
+            task_prefix="AlphaPilotTest",
             task_query_func=fake_task_query,
         )
         assert_true(not any(i.severity == "critical" for i in status_items), "无人值守巡检无critical")
@@ -118,7 +118,7 @@ def main():
         running_items = run_unattended_status(
             project_dir=temp_dir,
             output_dir=temp_dir,
-            task_prefix="QuantPilotTest",
+            task_prefix="AlphaPilotTest",
             task_query_func=fake_task_query,
         )
         assert_true(

@@ -103,7 +103,7 @@ def _build_next_actions(
     ]
     if auto_runtime_critical:
         if platform == "linux":
-            cmd = "systemctl --user restart quant-pilot-auto.service"
+            cmd = "systemctl --user restart alpha-pilot-auto.service"
         else:
             cmd = "powershell -ExecutionPolicy Bypass -File data\\\\task_scripts\\\\restart_auto.ps1"
         _add_action(

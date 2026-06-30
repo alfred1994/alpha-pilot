@@ -1,6 +1,6 @@
 # Demo and Safe Exploration
 
-Quant Pilot is easiest to understand when viewed as a running cockpit. The current
+AlphaPilot is easiest to understand when viewed as a running cockpit. The current
 project still expects real market-data and LLM credentials for the full loop, but
 you can inspect the main surfaces safely in paper mode.
 

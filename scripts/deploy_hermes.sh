@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-PROJECT_DIR="${1:-/home/ubuntu/projects/quant-pilot}"
+PROJECT_DIR="${1:-/home/ubuntu/projects/alpha-pilot}"
 BRANCH="${2:-main}"
-USER_UNITS="${3:-quant-pilot-auto.service quant-pilot-auto-restart.timer quant-pilot-doctor.timer quant-pilot-report.timer quant-pilot-status.timer}"
+USER_UNITS="${3:-alpha-pilot-auto.service alpha-pilot-auto-restart.timer alpha-pilot-doctor.timer alpha-pilot-report.timer alpha-pilot-status.timer}"
 SYSTEM_UNITS="${4:-}"
 PYTHON_CMD="${5:-python3}"
 RUN_INSTALL_SYSTEMD="${6:-true}"
@@ -170,14 +170,14 @@ restart_web_process() {
   fi
 
   log "restart web dashboard on ${WEB_HOST}:${WEB_PORT}"
-  systemctl --user stop quant-pilot-web.service 2>/dev/null || true
+  systemctl --user stop alpha-pilot-web.service 2>/dev/null || true
   pkill -u "$(id -u)" -f "main.py --web" 2>/dev/null || true
   sleep 1
 
   if command -v systemd-run >/dev/null 2>&1; then
     web_cmd="cd '$PROJECT_DIR' && set -a && [ -f '$HERMES_ENV_FILE' ] && . '$HERMES_ENV_FILE'; set +a; export BROKER_MODE=paper PYTHONUNBUFFERED=1 ALPHAPILOT_ENV=\"\${ALPHAPILOT_ENV:-production}\" ENV=\"\${ENV:-production}\" PRODUCTION=\"\${PRODUCTION:-true}\"; exec '$VENV_PY' main.py --web --host '$WEB_HOST' --port '$WEB_PORT'"
     systemd-run --user \
-      --unit=quant-pilot-web \
+      --unit=alpha-pilot-web \
       --collect \
       --working-directory="$PROJECT_DIR" \
       --setenv=BROKER_MODE=paper \

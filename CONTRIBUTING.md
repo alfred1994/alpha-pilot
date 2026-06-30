@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for considering a contribution to Quant Pilot.
+Thanks for considering a contribution to AlphaPilot.
 
 This project sits at the intersection of AI, market data, paper trading, and
 operations automation. Please keep changes small, reviewable, and safe by default.

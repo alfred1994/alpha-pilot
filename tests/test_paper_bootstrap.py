@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 模拟盘启动引导测试
 
@@ -78,7 +78,7 @@ def main():
             project_dir=temp_dir,
             task_output_dir=temp_dir,
             python_cmd="python",
-            task_prefix="QuantPilotTest",
+            task_prefix="AlphaPilotTest",
             report_days=7,
             rehearsal_days=5,
             generate_scripts_func=fake_generate_scripts,
@@ -89,7 +89,7 @@ def main():
 
         assert_true(result["overall"]["ready"], "只有warn时允许手动启动观察")
         assert_true(result["errors"] == [], "warn不会变成错误退出")
-        assert_true(captured["scripts"]["task_prefix"] == "QuantPilotTest", "脚本生成使用任务前缀")
+        assert_true(captured["scripts"]["task_prefix"] == "AlphaPilotTest", "脚本生成使用任务前缀")
         assert_true(captured["rehearsal"]["days"] == 5, "演练使用指定天数")
         assert_true(captured["readiness"]["rehearsal_report"]["metrics"]["closed_loop_days"] == 5, "门禁复用本次演练报告")
         assert_true("install_tasks.ps1" in text, "报告包含安装脚本路径")

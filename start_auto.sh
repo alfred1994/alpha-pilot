@@ -2,7 +2,7 @@
 # 启动自动盯盘
 set -uo pipefail
 
-PROJECT_DIR="${PROJECT_DIR:-$HOME/projects/quant-pilot}"
+PROJECT_DIR="${PROJECT_DIR:-$HOME/projects/alpha-pilot}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 cd "$PROJECT_DIR"
 
