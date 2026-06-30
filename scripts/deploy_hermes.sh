@@ -12,6 +12,7 @@ REPO_TOKEN="${8:-}"
 RESTART_WEB="${9:-true}"
 WEB_HOST="${10:-0.0.0.0}"
 WEB_PORT="${11:-8000}"
+HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 
 log() {
   printf '[deploy-hermes] %s\n' "$*"
@@ -58,6 +59,35 @@ restore_runtime_state() {
     data/auto_state.json; do
     copy_if_exists "$backup_dir/$runtime_file" "$PROJECT_DIR/$runtime_file"
   done
+}
+
+ensure_hermes_web_env() {
+  mkdir -p "$(dirname "$HERMES_ENV_FILE")"
+  touch "$HERMES_ENV_FILE"
+  chmod 600 "$HERMES_ENV_FILE"
+
+  if ! grep -q '^ALPHAPILOT_CONTROL_TOKEN=' "$HERMES_ENV_FILE"; then
+    token="$("$VENV_PY" - <<'PY'
+import secrets
+print(secrets.token_urlsafe(32))
+PY
+)"
+    {
+      printf '\n'
+      printf 'ALPHAPILOT_CONTROL_TOKEN=%s\n' "$token"
+    } >> "$HERMES_ENV_FILE"
+    log "generated ALPHAPILOT_CONTROL_TOKEN in $HERMES_ENV_FILE"
+  fi
+
+  if ! grep -q '^ALPHAPILOT_ENV=' "$HERMES_ENV_FILE"; then
+    printf 'ALPHAPILOT_ENV=production\n' >> "$HERMES_ENV_FILE"
+  fi
+  if ! grep -q '^PRODUCTION=' "$HERMES_ENV_FILE"; then
+    printf 'PRODUCTION=true\n' >> "$HERMES_ENV_FILE"
+  fi
+  if ! grep -q '^ALPHAPILOT_CORS_ORIGINS=' "$HERMES_ENV_FILE"; then
+    printf 'ALPHAPILOT_CORS_ORIGINS=https://alphapilot.pp.ua\n' >> "$HERMES_ENV_FILE"
+  fi
 }
 
 prepare_git_repository() {
@@ -112,6 +142,11 @@ restart_system_units() {
   done
 }
 
+stop_stale_auto_processes() {
+  log "stop stale auto driver processes before systemd restart"
+  pkill -u "$(id -u)" -f "main.py --auto" 2>/dev/null || true
+}
+
 restart_web_process() {
   if [ "$RESTART_WEB" != "true" ]; then
     log "skip web dashboard restart"
@@ -124,15 +159,25 @@ restart_web_process() {
   sleep 1
 
   if command -v systemd-run >/dev/null 2>&1; then
+    web_cmd="cd '$PROJECT_DIR' && set -a && [ -f '$HERMES_ENV_FILE' ] && . '$HERMES_ENV_FILE'; set +a; export BROKER_MODE=paper PYTHONUNBUFFERED=1 ALPHAPILOT_ENV=\"\${ALPHAPILOT_ENV:-production}\" ENV=\"\${ENV:-production}\" PRODUCTION=\"\${PRODUCTION:-true}\"; exec '$VENV_PY' main.py --web --host '$WEB_HOST' --port '$WEB_PORT'"
     systemd-run --user \
       --unit=quant-pilot-web \
       --collect \
       --working-directory="$PROJECT_DIR" \
       --setenv=BROKER_MODE=paper \
       --setenv=PYTHONUNBUFFERED=1 \
-      "$VENV_PY" main.py --web --host "$WEB_HOST" --port "$WEB_PORT"
+      /usr/bin/env bash -lc "$web_cmd"
   else
-    nohup "$VENV_PY" main.py --web --host "$WEB_HOST" --port "$WEB_PORT" >> logs/web.log 2>&1 &
+    (
+      set -a
+      [ -f "$HERMES_ENV_FILE" ] && . "$HERMES_ENV_FILE"
+      set +a
+      export BROKER_MODE=paper PYTHONUNBUFFERED=1
+      export ALPHAPILOT_ENV="${ALPHAPILOT_ENV:-production}"
+      export ENV="${ENV:-production}"
+      export PRODUCTION="${PRODUCTION:-true}"
+      nohup "$VENV_PY" main.py --web --host "$WEB_HOST" --port "$WEB_PORT" >> logs/web.log 2>&1 &
+    )
   fi
 
   for attempt in $(seq 1 20); do
@@ -183,6 +228,8 @@ else
   log "skip linux task regeneration and installer"
 fi
 
+ensure_hermes_web_env
+stop_stale_auto_processes
 restart_user_units
 restart_system_units
 restart_web_process

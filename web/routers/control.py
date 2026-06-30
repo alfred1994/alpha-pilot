@@ -9,7 +9,17 @@ router = APIRouter()
 def verify_control_token(request: Request):
     expected_token = os.environ.get("ALPHAPILOT_CONTROL_TOKEN")
     if not expected_token:
-        return
+        is_prod = (
+            os.environ.get("ENV", "").lower() == "production"
+            or os.environ.get("ALPHAPILOT_ENV", "").lower() == "production"
+            or os.environ.get("PRODUCTION", "").lower() in ("true", "1")
+        )
+        if not is_prod:
+            return
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Control token is not configured",
+        )
     auth_header = request.headers.get("Authorization")
     if not auth_header or not auth_header.startswith("Bearer "):
         raise HTTPException(
