@@ -135,8 +135,17 @@ restart_web_process() {
     nohup "$VENV_PY" main.py --web --host "$WEB_HOST" --port "$WEB_PORT" >> logs/web.log 2>&1 &
   fi
 
-  sleep 3
-  curl -fsS --max-time 5 "http://127.0.0.1:${WEB_PORT}/api/status" >/dev/null
+  for attempt in $(seq 1 20); do
+    if curl -fsS --max-time 3 "http://127.0.0.1:${WEB_PORT}/" >/dev/null; then
+      log "web dashboard is accepting requests"
+      return 0
+    fi
+    log "waiting for web dashboard (${attempt}/20)"
+    sleep 1
+  done
+
+  log "web dashboard did not become ready"
+  return 30
 }
 
 prepare_git_repository
