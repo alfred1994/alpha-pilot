@@ -23,8 +23,8 @@ export class EvolutionTab {
     async load() {
         await this.loadLessonsData();
         this.renderLessons();
-        await this.renderWeightsChart();
         await this.renderAdaptiveParams();
+        await this.renderWeightsChart();
         this.initFilters();
     }
 
@@ -146,9 +146,7 @@ export class EvolutionTab {
         if (!data || !data.adaptive) return;
 
         const chartDom = document.getElementById('weights-chart');
-        if (!this.weightsChart) {
-            this.weightsChart = echarts.init(chartDom);
-        }
+        if (!chartDom || !window.echarts) return;
 
         const weights = data.adaptive.weights || {
             'technical': 0.40,
@@ -204,8 +202,16 @@ export class EvolutionTab {
             }]
         };
 
-        this.weightsChart.setOption(option);
-        window.addEventListener('resize', () => this.weightsChart.resize());
+        try {
+            if (!this.weightsChart) {
+                this.weightsChart = echarts.init(chartDom);
+            }
+            this.weightsChart.setOption(option);
+            window.addEventListener('resize', () => this.weightsChart?.resize());
+        } catch (e) {
+            console.error("Failed to render adaptive weights chart:", e);
+            chartDom.innerHTML = '<div class="empty-state">权重图暂时不可用</div>';
+        }
     }
 
     async renderAdaptiveParams() {
