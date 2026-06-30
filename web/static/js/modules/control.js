@@ -5,8 +5,14 @@ export class ControlTab {
     }
 
     init() {
-        document.getElementById('btn-pause').addEventListener('click', () => this.setTradingState(true));
-        document.getElementById('btn-resume').addEventListener('click', () => this.setTradingState(false));
+        const pauseBtn = document.getElementById('btn-pause');
+        const resumeBtn = document.getElementById('btn-resume');
+        if (!pauseBtn || !resumeBtn) {
+            return;
+        }
+
+        pauseBtn.addEventListener('click', () => this.setTradingState(true));
+        resumeBtn.addEventListener('click', () => this.setTradingState(false));
 
         const tokenInput = document.getElementById('control-token');
         if (tokenInput) {
@@ -23,19 +29,25 @@ export class ControlTab {
 
         const isPaused = data.control?.paused;
         const stateLabel = document.getElementById('control-state-label');
+        const pauseBtn = document.getElementById('btn-pause');
+        const resumeBtn = document.getElementById('btn-resume');
+        const reasonGroup = document.getElementById('reason-group');
+        if (!stateLabel || !pauseBtn || !resumeBtn || !reasonGroup) {
+            return;
+        }
         
         if (isPaused) {
             stateLabel.textContent = `自动交易动作已暂停 (${data.control?.reason || '人工暂停'})`;
             stateLabel.className = 'value red-text';
-            document.getElementById('btn-pause').style.display = 'none';
-            document.getElementById('btn-resume').style.display = 'flex';
-            document.getElementById('reason-group').style.display = 'none';
+            pauseBtn.style.display = 'none';
+            resumeBtn.style.display = 'flex';
+            reasonGroup.style.display = 'none';
         } else {
             stateLabel.textContent = '自动交易动作运行中';
             stateLabel.className = 'value green-text';
-            document.getElementById('btn-pause').style.display = 'flex';
-            document.getElementById('btn-resume').style.display = 'none';
-            document.getElementById('reason-group').style.display = 'flex';
+            pauseBtn.style.display = 'flex';
+            resumeBtn.style.display = 'none';
+            reasonGroup.style.display = 'flex';
         }
     }
 
