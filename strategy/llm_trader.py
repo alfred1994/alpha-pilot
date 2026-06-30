@@ -145,17 +145,18 @@ def clean_reasoning(text: str) -> str:
     # 移除 Markdown 代码块包装器
     text = re.sub(r'```json.*?```', '', text, flags=re.DOTALL)
     text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
+    text = text.strip()
     # 移除常见的 AI 角色/思考/提示语引导词前缀
     prefixes = [
-        r'^推理推断[:：\s]*',
-        r'^首先[，,\s]*',
-        r'^对于.*?的分析[:：\s]*',
-        r'^根据.*?分析[:：\s]*',
-        r'^作为资深.*?交易员[，,\s]*',
-        r'^我需要.*?返回[，,\s]*',
-        r'^用户要求我.*?返回[，,\s]*',
-        r'^在.*?环境下[，,\s]*',
-        r'^分析如下[:：\s]*',
+        r'^\s*推理推断[:：\s]*',
+        r'^\s*首先[，,\s]*',
+        r'^\s*对于.*?的分析[:：\s]*',
+        r'^\s*根据.*?分析[:：\s]*',
+        r'^\s*作为资深.*?交易员[，,\s]*',
+        r'^\s*我需要.*?返回[，,\s]*',
+        r'^\s*用户要求我.*?返回[，,\s]*',
+        r'^\s*在.*?环境下[，,\s]*',
+        r'^\s*分析如下[:：\s]*',
     ]
     for p in prefixes:
         text = re.sub(p, '', text, flags=re.IGNORECASE)

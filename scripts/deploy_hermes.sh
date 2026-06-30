@@ -13,6 +13,7 @@ RESTART_WEB="${9:-true}"
 WEB_HOST="${10:-0.0.0.0}"
 WEB_PORT="${11:-8000}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
+LEGACY_SYSTEM_UNITS="${LEGACY_SYSTEM_UNITS:-alphapilot-web.service quant-auto.service}"
 
 log() {
   printf '[deploy-hermes] %s\n' "$*"
@@ -142,9 +143,23 @@ restart_system_units() {
   done
 }
 
+stop_legacy_system_units() {
+  if [ -z "$LEGACY_SYSTEM_UNITS" ]; then
+    return 0
+  fi
+
+  for unit in $LEGACY_SYSTEM_UNITS; do
+    if systemctl list-unit-files "$unit" --no-pager 2>/dev/null | grep -q "$unit"; then
+      log "disable legacy system unit: $unit"
+      sudo -n systemctl disable --now "$unit" 2>/dev/null || true
+    fi
+  done
+}
+
 stop_stale_auto_processes() {
   log "stop stale auto driver processes before systemd restart"
   pkill -u "$(id -u)" -f "main.py --auto" 2>/dev/null || true
+  pkill -u "$(id -u)" -f "main.py --web" 2>/dev/null || true
 }
 
 restart_web_process() {
@@ -229,6 +244,7 @@ else
 fi
 
 ensure_hermes_web_env
+stop_legacy_system_units
 stop_stale_auto_processes
 restart_user_units
 restart_system_units
