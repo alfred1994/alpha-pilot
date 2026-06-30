@@ -4,6 +4,20 @@ export class DecisionsTab {
         this.radarChart = null;
     }
 
+    text(value, fallback = '-') {
+        if (value === null || value === undefined || value === '') return fallback;
+        return String(value);
+    }
+
+    escape(value) {
+        return this.text(value, '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     async load() {
         const res = await fetch(`${this.app.apiBase}/decisions?limit=10`);
         const data = await res.json();
@@ -21,18 +35,20 @@ export class DecisionsTab {
             
             const badgeClass = d.action === 'BUY' ? 'btn-success' : (d.action === 'SELL' ? 'btn-danger' : '');
             const badgeText = d.action === 'BUY' ? '买入 BUY' : (d.action === 'SELL' ? '卖出 SELL' : '持有 HOLD');
+            const reasoning = this.text(d.reasoning, '');
+            const shortReasoning = reasoning.substring(0, 180);
             
             div.innerHTML = `
                 <div class="decision-item-header">
                     <div>
-                        <span style="font-weight:700; font-size:16px;">${d.code}</span>
+                        <span style="font-weight:700; font-size:16px;">${this.escape(d.code)}</span>
                         <span class="badge" style="margin-left:8px;">置信度: ${(d.confidence * 100).toFixed(0)}%</span>
                     </div>
                     <span class="badge ${badgeClass}">${badgeText}</span>
                 </div>
                 <div class="decision-item-body">
-                    <p style="margin-bottom:8px;"><b>决策时间:</b> ${d.date}</p>
-                    <p style="margin-bottom:8px;"><b>逻辑摘要:</b> ${d.reasoning.substring(0, 180)}${d.reasoning.length > 180 ? '...' : ''}</p>
+                    <p style="margin-bottom:8px;"><b>决策时间:</b> ${this.escape(d.date)}</p>
+                    <p style="margin-bottom:8px;"><b>逻辑摘要:</b> ${this.escape(shortReasoning)}${reasoning.length > 180 ? '...' : ''}</p>
                     <button class="decision-btn-detail" data-id="${d.id}">查看决策详情</button>
                 </div>
             `;
@@ -55,14 +71,14 @@ export class DecisionsTab {
     }
 
     showDetailModal(d) {
-        document.getElementById('modal-title').textContent = `${d.code} 决策推理详情`;
+        document.getElementById('modal-title').textContent = `${this.text(d.code)} 决策推理详情`;
         document.getElementById('modal-confidence').textContent = `${(d.confidence * 100).toFixed(0)}%`;
         
         const actionEl = document.getElementById('modal-action');
         actionEl.textContent = d.action;
         actionEl.className = `value ${d.action === 'BUY' ? 'green-text' : (d.action === 'SELL' ? 'red-text' : '')}`;
 
-        document.getElementById('modal-reasoning').textContent = d.reasoning;
+        document.getElementById('modal-reasoning').textContent = this.text(d.reasoning, '暂无公开摘要');
 
         document.getElementById('decision-modal').classList.add('active');
 

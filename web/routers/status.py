@@ -1,12 +1,22 @@
 from fastapi import APIRouter
 from scheduler.agent_status import build_agent_status_snapshot
+from web.public_safety import is_internal_status_exposed, is_production, public_error_message, sanitize_public_text, sanitize_status_snapshot
 
 router = APIRouter()
 
 @router.get("/status")
 def get_system_status():
     """获取系统运行健康状态、Watchdog及仓位账户信息"""
-    return build_agent_status_snapshot()
+    snapshot = build_agent_status_snapshot()
+    if is_production() and not is_internal_status_exposed():
+        return sanitize_status_snapshot(snapshot)
+    return snapshot
+
+
+@router.get("/public/status")
+def get_public_system_status():
+    """获取公开仪表盘使用的脱敏状态快照"""
+    return sanitize_status_snapshot(build_agent_status_snapshot())
 
 
 @router.get("/positions")
@@ -49,7 +59,7 @@ def get_detailed_positions():
                         latest_decision = {
                             "action": decs[0].get("action"),
                             "date": decs[0].get("date"),
-                            "reasoning": decs[0].get("reasoning"),
+                            "reasoning": sanitize_public_text(decs[0].get("reasoning")),
                             "confidence": decs[0].get("confidence")
                         }
             except Exception:
@@ -74,5 +84,5 @@ def get_detailed_positions():
             
         return {"success": True, "positions": pos_list}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": public_error_message() if is_production() else str(e)}
 

@@ -3,6 +3,7 @@ from typing import Optional
 import os
 import json
 from datetime import datetime, timedelta
+from web.public_safety import is_production, public_error_message, sanitize_public_text
 
 router = APIRouter()
 
@@ -42,7 +43,7 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                     "fee": r[7] or 0.0,
                     "pnl": r[8] or 0.0,
                     "pnl_pct": r[9] or 0.0,
-                    "reason": r[10]
+                    "reason": sanitize_public_text(r[10])
                 })
             
             cursor.execute("SELECT COUNT(*) FROM trades")
@@ -56,7 +57,7 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                 "trades": trades_list
             }
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": public_error_message() if is_production() else str(e)}
 
 @router.get("/decisions")
 def get_decisions(limit: int = Query(10, ge=1, le=50)):
@@ -97,7 +98,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                     "code": code,
                     "date": r[2],
                     "action": r[3],
-                    "reasoning": r[4],
+                    "reasoning": sanitize_public_text(r[4], max_len=520),
                     "confidence": r[5],
                     "outcome": r[6],
                     "outcome_pct": r[7],
@@ -105,7 +106,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                 })
             return {"success": True, "decisions": decisions_list}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": public_error_message() if is_production() else str(e)}
 
 @router.get("/lessons")
 def get_lessons(limit: int = Query(20, ge=1, le=100)):
@@ -125,14 +126,14 @@ def get_lessons(limit: int = Query(20, ge=1, le=100)):
                     "id": r[0],
                     "date": r[1],
                     "category": r[2],
-                    "content": r[3],
+                    "content": sanitize_public_text(r[3], max_len=520),
                     "importance": r[4],
                     "market_regime": r[5],
                     "related_trades": r[6]
                 })
             return {"success": True, "lessons": lessons_list}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": public_error_message() if is_production() else str(e)}
 
 @router.get("/performance")
 def get_performance(days: int = Query(10, ge=2, le=90)):
@@ -175,4 +176,4 @@ def get_performance(days: int = Query(10, ge=2, le=90)):
             
         return {"success": True, "performance": perf_data}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": public_error_message() if is_production() else str(e)}

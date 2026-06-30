@@ -1,7 +1,6 @@
 import { DashboardTab } from './modules/dashboard.js';
 import { DecisionsTab } from './modules/decisions.js';
 import { EvolutionTab } from './modules/evolution.js';
-import { ControlTab } from './modules/control.js';
 
 class App {
     constructor() {
@@ -17,7 +16,6 @@ class App {
         this.tabs['dashboard'] = new DashboardTab(this);
         this.tabs['decisions'] = new DecisionsTab(this);
         this.tabs['evolution'] = new EvolutionTab(this);
-        this.tabs['control'] = new ControlTab(this);
 
         document.querySelectorAll('.nav-btn').forEach(btn => {
             btn.addEventListener('click', (e) => {
@@ -44,12 +42,14 @@ class App {
         });
 
         this.currentTab = tabName;
-        this.tabs[this.currentTab].load();
+        if (this.tabs[this.currentTab]) {
+            this.tabs[this.currentTab].load();
+        }
     }
 
     async loadGlobalStatus() {
         try {
-            const res = await fetch(`${this.apiBase}/status`);
+            const res = await fetch(`${this.apiBase}/public/status`);
             const data = await res.json();
             
             const regimeStr = data.adaptive?.regime || (data.globalData?.regime) || 'sideways';
@@ -115,7 +115,9 @@ class App {
         this.stopPoll();
         this.updateTimer = setInterval(async () => {
             await this.loadGlobalStatus();
-            this.tabs[this.currentTab].load();
+            if (this.tabs[this.currentTab]) {
+                this.tabs[this.currentTab].load();
+            }
         }, 10000);
     }
 

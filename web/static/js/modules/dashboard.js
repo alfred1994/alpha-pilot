@@ -2,58 +2,178 @@ export class DashboardTab {
     constructor(app) {
         this.app = app;
         this.chart = null;
+        this.resizeBound = false;
+    }
+
+    money(value, digits = 0) {
+        const number = Number(value || 0);
+        return `￥${number.toLocaleString('zh-CN', {
+            minimumFractionDigits: digits,
+            maximumFractionDigits: digits
+        })}`;
+    }
+
+    pct(value, digits = 1) {
+        const number = Number(value || 0) * 100;
+        return `${number >= 0 ? '+' : ''}${number.toFixed(digits)}%`;
+    }
+
+    text(value, fallback = '-') {
+        if (value === null || value === undefined || value === '') return fallback;
+        return String(value);
+    }
+
+    escape(value) {
+        return this.text(value, '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
+    setText(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    }
+
+    setClass(id, className) {
+        const el = document.getElementById(id);
+        if (el) el.className = className;
+    }
+
+    actionText(action) {
+        return {
+            BUY: '买入',
+            SELL: '卖出',
+            HOLD: '持有'
+        }[action] || this.text(action);
     }
 
     async load() {
         const data = this.app.globalData;
-        if (!data) return;
+        if (!data || !data.account) return;
 
-        // Render dashboard values
-        document.getElementById('total-assets').textContent = `￥${data.account.total_assets.toLocaleString('zh-CN', {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
-        document.getElementById('available-cash').textContent = `￥${data.account.cash.toLocaleString('zh-CN', {minimumFractionDigits: 0, maximumFractionDigits: 0})}`;
-        
-        let dailyPnl = 0.0;
-        let cumulativePnlPct = 0.0;
+        const positions = await this.loadPositions();
+        const performance = await this.loadPerformance();
+        const trades = await this.loadTrades();
+        const decisions = await this.loadDecisions();
+
+        this.renderAccount(data, positions, trades, performance);
+        this.renderCockpit(data, positions);
+        this.renderWarnings(data);
+        this.renderPublicEvents(data);
+        this.renderPositions(positions);
+        this.renderDecisionSummary(decisions);
+        this.renderStrategySnapshot(data);
+        this.renderPerformanceChart(performance);
+        this.renderRecentTrades(trades);
+    }
+
+    async fetchJson(url) {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+    }
+
+    async loadPositions() {
         try {
-            const pnlRes = await fetch(`${this.app.apiBase}/performance?days=2`);
-            if (pnlRes.ok) {
-                const pnlData = await pnlRes.json();
-                if (pnlData.success && pnlData.performance && pnlData.performance.length > 0) {
-                    const latest = pnlData.performance[pnlData.performance.length - 1];
-                    dailyPnl = latest.daily_pnl;
-                    cumulativePnlPct = latest.cumulative_pnl_pct;
-                }
-            }
+            const data = await this.fetchJson(`${this.app.apiBase}/positions`);
+            return data.success ? (data.positions || []) : [];
         } catch (e) {
-            console.error("Failed to fetch performance for PnL stats:", e);
+            console.error('Failed to load positions:', e);
+            return [];
         }
-        
-        // 优先使用后端计算的总盈亏百分比
-        if (data.account && data.account.total_pnl_pct !== undefined) {
-            cumulativePnlPct = data.account.total_pnl_pct;
+    }
+
+    async loadPerformance() {
+        try {
+            const data = await this.fetchJson(`${this.app.apiBase}/performance?days=15`);
+            return data.success ? (data.performance || []) : [];
+        } catch (e) {
+            console.error('Failed to load performance:', e);
+            return [];
         }
+    }
 
-        const totalPnlVal = data.account.total_pnl !== undefined ? data.account.total_pnl : (data.account.total_assets - 1000000.0);
-        
-        const totalPnlBox = document.getElementById('total-pnl');
-        totalPnlBox.textContent = `${totalPnlVal >= 0 ? '+' : ''}${totalPnlVal.toLocaleString('zh-CN', {maximumFractionDigits:0})} (${(cumulativePnlPct * 100).toFixed(2)}%)`;
-        totalPnlBox.className = `stat-val ${totalPnlVal >= 0 ? 'green-text' : 'red-text'}`;
+    async loadTrades() {
+        try {
+            const data = await this.fetchJson(`${this.app.apiBase}/trades?limit=12`);
+            return data.success ? {
+                total: data.total || 0,
+                trades: data.trades || []
+            } : { total: 0, trades: [] };
+        } catch (e) {
+            console.error('Failed to load trades:', e);
+            return { total: 0, trades: [] };
+        }
+    }
 
-        const dailyPnlBox = document.getElementById('daily-pnl');
-        dailyPnlBox.textContent = `${dailyPnl >= 0 ? '+' : ''}${dailyPnl.toLocaleString('zh-CN', {maximumFractionDigits:0})}`;
-        dailyPnlBox.className = `stat-val ${dailyPnl >= 0 ? 'green-text' : 'red-text'}`;
+    async loadDecisions() {
+        try {
+            const data = await this.fetchJson(`${this.app.apiBase}/decisions?limit=6`);
+            return data.success ? (data.decisions || []) : [];
+        } catch (e) {
+            console.error('Failed to load decisions:', e);
+            return [];
+        }
+    }
 
-        // Render Cockpit Status
+    renderAccount(data, positions, tradesData, performance) {
+        const account = data.account;
+        const latest = performance.length ? performance[performance.length - 1] : {};
+        const totalPnl = account.total_pnl !== undefined
+            ? Number(account.total_pnl)
+            : Number(account.total_assets || 0) - Number(account.initial_capital || 0);
+        const totalPnlPct = account.total_pnl_pct !== undefined
+            ? Number(account.total_pnl_pct)
+            : (Number(account.initial_capital || 0) > 0 ? totalPnl / Number(account.initial_capital) : 0);
+        const dailyPnl = Number(latest.daily_pnl || 0);
+        const positionValue = positions.reduce((sum, pos) => sum + Number(pos.market_value || 0), 0);
+        const sellTrades = tradesData.trades.filter(t => t.action === 'SELL');
+        const winningTrades = sellTrades.filter(t => Number(t.pnl || 0) > 0);
+        const winRate = sellTrades.length ? winningTrades.length / sellTrades.length : null;
+
+        this.setText('total-assets', this.money(account.total_assets));
+        this.setText('available-cash', this.money(account.cash));
+        this.setText('position-value', this.money(positionValue));
+        this.setText('position-count', String(positions.length));
+        this.setText('trade-count', String(tradesData.total || tradesData.trades.length || 0));
+        this.setText('win-rate', winRate === null ? '-' : `${(winRate * 100).toFixed(1)}%`);
+
+        const pnlClass = totalPnl >= 0 ? 'green-text' : 'red-text';
+        this.setText('total-pnl', `${totalPnl >= 0 ? '+' : ''}${this.money(Math.abs(totalPnl)).replace('￥', '￥')} (${this.pct(totalPnlPct, 2)})`);
+        this.setClass('total-pnl', `stat-val font-outfit ${pnlClass}`);
+
+        this.setText('daily-pnl', `${dailyPnl >= 0 ? '+' : ''}${this.money(Math.abs(dailyPnl)).replace('￥', '￥')}`);
+        this.setClass('daily-pnl', `stat-val font-outfit ${dailyPnl >= 0 ? 'green-text' : 'red-text'}`);
+
+        this.setText('loop-count', String(data.loop_count ?? '-'));
+        this.setText('last-loop-time', this.formatTime(data.last_loop_time));
+    }
+
+    renderCockpit(data, positions) {
+        const account = data.account || {};
+        const totalAssets = Number(account.total_assets || 0);
+        const cash = Number(account.cash || 0);
+        const positionValue = positions.reduce((sum, pos) => sum + Number(pos.market_value || 0), 0);
+        const cashRatio = totalAssets > 0 ? cash / totalAssets : 0;
+        const exposure = totalAssets > 0 ? positionValue / totalAssets : 0;
+
+        this.setText('cash-ratio', `${(cashRatio * 100).toFixed(1)}%`);
+        this.setText('exposure-ratio', `${(exposure * 100).toFixed(1)}%`);
+        this.setText('public-mode-label', data.public_mode ? '只读公开驾驶舱' : '内部驾驶舱');
+
         const wdDot = document.getElementById('cockpit-watchdog');
         const wdText = document.getElementById('cockpit-watchdog-text');
         if (wdDot && wdText) {
             if (data.watchdog?.ok) {
                 wdDot.className = 'status-indicator-dot green-dot';
-                wdText.textContent = '看门狗服务正常';
+                wdText.textContent = '守护正常';
                 wdText.className = 'pos-value green-text';
             } else {
                 wdDot.className = 'status-indicator-dot red-dot pulse-dot';
-                wdText.textContent = '服务异常或延滞';
+                wdText.textContent = '守护异常';
                 wdText.className = 'pos-value red-text';
             }
         }
@@ -63,259 +183,259 @@ export class DashboardTab {
         if (trDot && trText) {
             if (!data.control?.paused) {
                 trDot.className = 'status-indicator-dot green-dot';
-                trText.textContent = '自动驾驶交易中';
+                trText.textContent = '自动驾驶中';
                 trText.className = 'pos-value green-text';
             } else {
                 trDot.className = 'status-indicator-dot orange-dot pulse-dot';
-                trText.textContent = `交易暂停挂起 (${data.control?.reason || '手动暂停'})`;
+                trText.textContent = '交易暂停';
                 trText.className = 'pos-value orange-text';
             }
         }
 
-        // Render Today closed loop progress
-        const steps = ['prefetch', 'scan', 'execute', 'review'];
-        steps.forEach(step => {
+        ['prefetch', 'scan', 'execute', 'review'].forEach(step => {
             const el = document.getElementById(`step-${step}`);
-            if (el) {
-                if (data.pipeline_progress?.[step]) {
-                    el.classList.add('completed');
-                } else {
-                    el.classList.remove('completed');
-                }
-            }
+            if (el) el.classList.toggle('completed', Boolean(data.pipeline_progress?.[step]));
         });
 
-        // Render Cockpit Warning list
+        if (window.lucide) window.lucide.createIcons();
+    }
+
+    renderWarnings(data) {
         const riskList = document.getElementById('risk-warnings-list');
-        if (riskList) {
-            riskList.innerHTML = '';
-            if (data.risk_warnings && data.risk_warnings.length > 0) {
-                data.risk_warnings.forEach(warn => {
-                    const item = document.createElement('div');
-                    item.className = 'risk-warning-item';
-                    item.innerHTML = `<i data-lucide="alert-circle" style="width:14.5px; height:14.5px; color:var(--danger-color);"></i> <span>${warn}</span>`;
-                    riskList.appendChild(item);
-                });
-                if (window.lucide) {
-                    window.lucide.createIcons();
-                }
-            } else {
-                riskList.innerHTML = '<div class="empty-state" style="padding: 10px;">运行状况正常</div>';
-            }
+        if (!riskList) return;
+
+        riskList.innerHTML = '';
+        const warnings = data.risk_warnings || [];
+        if (!warnings.length) {
+            riskList.innerHTML = '<div class="empty-state compact">运行状况正常</div>';
+            return;
         }
 
-        // Render Recent Logs
+        warnings.forEach(warn => {
+            const item = document.createElement('div');
+            item.className = 'risk-warning-item';
+            item.innerHTML = `<i data-lucide="alert-circle" class="inline-icon danger"></i><span>${this.escape(warn)}</span>`;
+            riskList.appendChild(item);
+        });
+        if (window.lucide) window.lucide.createIcons();
+    }
+
+    renderPublicEvents(data) {
         const logList = document.getElementById('events-list');
-        if (logList) {
-            logList.innerHTML = '';
-            if (data.recent_logs && data.recent_logs.length > 0) {
-                data.recent_logs.forEach(log => {
-                    const item = document.createElement('div');
-                    item.className = 'log-item';
-                    const timeText = log.time ? `[${log.time}]` : '';
-                    const errText = log.error ? `<span class="red-text"> 错误: ${log.error}</span>` : '';
-                    const statusText = log.status ? `(${log.status})` : '';
-                    item.innerHTML = `${timeText} <span style="color:#f7ca5e; font-weight:500;">${log.type || 'cycle'}</span>${statusText}: ${log.action}${errText}`;
-                    logList.appendChild(item);
-                });
-            } else {
-                logList.innerHTML = '<div class="empty-state" style="padding: 10px;">暂无日志记录</div>';
-            }
+        if (!logList) return;
+
+        logList.innerHTML = '';
+        const logs = data.recent_logs || [];
+        if (!logs.length) {
+            logList.innerHTML = '<div class="empty-state compact">暂无公开动作流</div>';
+            return;
         }
 
-        // Render Positions Detailed Cockpit Cards
-        const posContainer = document.getElementById('positions-list');
-        posContainer.innerHTML = '<div class="empty-state">加载持仓数据中...</div>';
-        
-        try {
-            const posRes = await fetch(`${this.app.apiBase}/positions`);
-            if (!posRes.ok) {
-                throw new Error(`HTTP Error ${posRes.status}`);
-            }
-            const posData = await posRes.json();
-            posContainer.innerHTML = '';
-            if (posData.success && posData.positions && posData.positions.length > 0) {
-                posData.positions.forEach(pos => {
-                    const pnlClass = pos.pnl >= 0 ? 'green-text' : 'red-text';
-                    const pnlPctText = `${pos.pnl >= 0 ? '+' : ''}${(pos.pnl_pct * 100).toFixed(2)}%`;
-                    
-                    const slText = pos.stop_loss_price ? `￥${pos.stop_loss_price.toFixed(2)}` : '-';
-                    const tsText = pos.trailing_stop_price ? `￥${pos.trailing_stop_price.toFixed(2)}` : '-';
-                    
-                    let decisionTag = '';
-                    if (pos.latest_decision) {
-                        const act = pos.latest_decision.action;
-                        const actClass = act === 'BUY' ? 'badge-success' : (act === 'SELL' ? 'badge-danger' : 'badge-neutral');
-                        const actText = act === 'BUY' ? '买入' : (act === 'SELL' ? '卖出' : '持有');
-                        decisionTag = `<span class="badge ${actClass}" style="margin-left:4px;" title="最新决策原因: ${pos.latest_decision.reasoning || '-'}">${actText} (${(pos.latest_decision.confidence * 100).toFixed(0)}%)</span>`;
-                    }
-
-                    const item = document.createElement('div');
-                    item.className = 'position-item-card';
-                    item.innerHTML = `
-                        <div class="pos-card-header" style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid rgba(255,255,255,0.03); padding-bottom:6px; margin-bottom:6px;">
-                            <div>
-                                <span class="pos-name" style="font-weight:600; font-size:14px; color:var(--text-primary);">${pos.name}</span>
-                                <span class="pos-code" style="font-size:11px; color:var(--text-muted); margin-left:6px;">${pos.code}</span>
-                            </div>
-                            <div style="display:flex; align-items:center; gap: 4px;">
-                                <span class="badge" style="background:rgba(91,121,226,0.1); color:var(--primary-color);">权重 ${(pos.weight * 100).toFixed(1)}%</span>
-                                ${decisionTag}
-                            </div>
-                        </div>
-                        <div class="pos-card-body" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; font-size:12.5px;">
-                            <div>
-                                <span style="color:var(--text-secondary);">持股数: </span><span class="font-outfit" style="color:var(--text-primary);">${pos.shares}股</span>
-                            </div>
-                            <div>
-                                <span style="color:var(--text-secondary);">买入成本: </span><span class="font-outfit" style="color:var(--text-primary);">￥${pos.buy_price.toFixed(2)}</span>
-                            </div>
-                            <div>
-                                <span style="color:var(--text-secondary);">当前价格: </span><span class="font-outfit" style="color:var(--text-primary);">￥${pos.current_price.toFixed(2)}</span>
-                            </div>
-                            <div>
-                                <span style="color:var(--text-secondary);">浮动盈亏: </span><span class="font-outfit ${pnlClass}" style="font-weight:600;">￥${pos.pnl.toLocaleString('zh-CN', {maximumFractionDigits:0})} (${pnlPctText})</span>
-                            </div>
-                            <div style="grid-column: span 2; display:flex; justify-content:space-between; border-top:1px dashed rgba(255,255,255,0.03); padding-top:6px; margin-top:4px; font-size:11.5px; color:var(--text-muted);">
-                                <span>ATR止损: <span class="red-text font-outfit">${slText}</span></span>
-                                <span>移动止损: <span class="orange-text font-outfit">${tsText}</span></span>
-                            </div>
-                        </div>
-                    `;
-                    posContainer.appendChild(item);
-                });
-            } else {
-                posContainer.innerHTML = '<div class="empty-state">当前账户无持仓</div>';
-            }
-        } catch (e) {
-            console.error("Failed to load detailed positions:", e);
-            posContainer.innerHTML = `<div class="empty-state red-text" style="padding:10px;">⚠️ 获取持仓详情失败: ${e.message}</div>`;
-        }
-
-        await this.renderPerformanceChart();
-        await this.renderRecentTrades();
+        logs.slice(0, 8).forEach(log => {
+            const item = document.createElement('div');
+            item.className = 'log-item';
+            const timeText = log.time ? `[${this.escape(log.time)}]` : '';
+            const statusText = log.status ? `(${this.escape(log.status)})` : '';
+            const typeText = this.escape(log.type || 'cycle');
+            const actionText = this.escape(log.action || '-');
+            const errText = log.error ? `<span class="red-text"> ${this.escape(log.error)}</span>` : '';
+            item.innerHTML = `${timeText} <span class="log-type">${typeText}</span>${statusText}: ${actionText}${errText}`;
+            logList.appendChild(item);
+        });
     }
 
-    async renderPerformanceChart() {
+    renderPositions(positions) {
+        const container = document.getElementById('positions-list');
+        if (!container) return;
+
+        container.innerHTML = '';
+        if (!positions.length) {
+            container.innerHTML = '<div class="empty-state">当前账户无持仓</div>';
+            return;
+        }
+
+        positions.forEach(pos => {
+            const pnl = Number(pos.pnl || 0);
+            const pnlClass = pnl >= 0 ? 'green-text' : 'red-text';
+            const latestDecision = pos.latest_decision || {};
+            const action = latestDecision.action || 'HOLD';
+            const actionClass = action === 'BUY' ? 'badge-success' : (action === 'SELL' ? 'badge-danger' : 'badge-neutral');
+            const confidence = latestDecision.confidence !== undefined ? ` (${(Number(latestDecision.confidence) * 100).toFixed(0)}%)` : '';
+            const decisionTitle = this.escape(latestDecision.reasoning || '-');
+
+            const item = document.createElement('div');
+            item.className = 'position-item-card';
+            item.innerHTML = `
+                <div class="pos-card-header">
+                    <div class="pos-title-block">
+                        <span class="pos-name">${this.escape(pos.name || pos.code)}</span>
+                        <span class="pos-code">${this.escape(pos.code)}</span>
+                    </div>
+                    <div class="pos-badges">
+                        <span class="badge weight-badge">权重 ${(Number(pos.weight || 0) * 100).toFixed(1)}%</span>
+                        <span class="badge ${actionClass}" title="最新决策原因: ${decisionTitle}">${this.actionText(action)}${confidence}</span>
+                    </div>
+                </div>
+                <div class="pos-card-body">
+                    <div><span>持股数</span><b>${Number(pos.shares || 0).toLocaleString('zh-CN')}股</b></div>
+                    <div><span>买入成本</span><b>${this.money(pos.buy_price, 2)}</b></div>
+                    <div><span>当前价格</span><b>${this.money(pos.current_price, 2)}</b></div>
+                    <div><span>浮动盈亏</span><b class="${pnlClass}">${this.money(pnl)} (${this.pct(pos.pnl_pct, 2)})</b></div>
+                    <div><span>移动止损</span><b class="orange-text">${pos.trailing_stop_price ? this.money(pos.trailing_stop_price, 2) : '-'}</b></div>
+                    <div><span>目标止盈</span><b class="green-text">${pos.take_profit_price ? this.money(pos.take_profit_price, 2) : '-'}</b></div>
+                </div>
+            `;
+            container.appendChild(item);
+        });
+    }
+
+    renderDecisionSummary(decisions) {
+        const feed = document.getElementById('decision-feed');
+        if (!feed) return;
+
+        feed.innerHTML = '';
+        if (!decisions.length) {
+            feed.innerHTML = '<div class="empty-state compact">暂无决策摘要</div>';
+            this.setText('latest-decision', '-');
+            this.setText('avg-confidence', '-');
+            return;
+        }
+
+        const avgConfidence = decisions.reduce((sum, d) => sum + Number(d.confidence || 0), 0) / decisions.length;
+        const latest = decisions[0];
+        this.setText('latest-decision', `${this.escape(latest.code)} ${this.actionText(latest.action)}`);
+        this.setText('avg-confidence', `${(avgConfidence * 100).toFixed(0)}%`);
+
+        decisions.slice(0, 4).forEach(d => {
+            const row = document.createElement('div');
+            row.className = 'feed-row';
+            const actionClass = d.action === 'BUY' ? 'green-text' : (d.action === 'SELL' ? 'red-text' : '');
+            row.innerHTML = `
+                <div class="feed-main">
+                    <span class="font-outfit">${this.escape(d.code)}</span>
+                    <span class="${actionClass}">${this.actionText(d.action)}</span>
+                    <span>${(Number(d.confidence || 0) * 100).toFixed(0)}%</span>
+                </div>
+                <p>${this.escape(d.reasoning || '暂无公开摘要')}</p>
+            `;
+            feed.appendChild(row);
+        });
+    }
+
+    renderStrategySnapshot(data) {
+        const adaptive = data.adaptive || {};
+        this.setText('strategy-buy-threshold', adaptive.buy_threshold ?? '-');
+        this.setText('strategy-min-score', adaptive.min_score ?? '-');
+        this.setText('strategy-top-k', adaptive.top_k_delta ?? '-');
+        this.setText('strategy-position-scale', adaptive.position_scale ?? '-');
+    }
+
+    renderPerformanceChart(performance) {
         const chartDom = document.getElementById('perf-chart');
-        try {
-            const res = await fetch(`${this.app.apiBase}/performance?days=15`);
-            if (!res.ok) {
-                throw new Error(`HTTP Error ${res.status}`);
-            }
-            const data = await res.json();
-            if (!data.success || !data.performance || data.performance.length === 0) {
-                chartDom.innerHTML = '<div class="empty-state" style="padding:40px;">暂无近15天业绩对比数据</div>';
-                return;
-            }
+        if (!chartDom) return;
 
-            if (!this.chart) {
-                this.chart = echarts.init(chartDom);
-            }
+        if (!performance.length) {
+            chartDom.innerHTML = '<div class="empty-state" style="padding:40px;">暂无近15天业绩对比数据</div>';
+            return;
+        }
 
-            const dates = data.performance.map(item => item.date);
-            const returns = data.performance.map(item => (item.cumulative_pnl_pct * 100).toFixed(2));
-            const benchmarks = data.performance.map(item => (item.benchmark_pnl_pct * 100).toFixed(2));
+        if (!this.chart) this.chart = echarts.init(chartDom);
 
-            const option = {
-                backgroundColor: 'transparent',
-                tooltip: {
-                    trigger: 'axis',
-                    backgroundColor: 'rgba(25, 30, 45, 0.9)',
-                    borderWidth: 0,
-                    textStyle: { color: '#f0f3f8' }
-                },
-                legend: {
-                    data: ['AI交易员', '沪深300'],
-                    textStyle: { color: '#8a96a8' }
-                },
-                grid: {
-                    left: '3%', right: '4%', bottom: '3%', containLabel: true
-                },
-                xAxis: {
-                    type: 'category',
-                    data: dates,
-                    axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-                    axisLabel: { color: '#8a96a8' }
-                },
-                yAxis: {
-                    type: 'value',
-                    axisLabel: { formatter: '{value}%', color: '#8a96a8' },
-                    splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } }
-                },
-                series: [
-                    {
-                        name: 'AI交易员',
-                        type: 'line',
-                        data: returns,
-                        smooth: true,
-                        itemStyle: { color: '#5ce2a4' },
-                        areaStyle: {
-                            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                                { offset: 0, color: 'rgba(92, 226, 164, 0.2)' },
-                                { offset: 1, color: 'rgba(92, 226, 164, 0)' }
-                            ])
-                        }
-                    },
-                    {
-                        name: '沪深300',
-                        type: 'line',
-                        data: benchmarks,
-                        smooth: true,
-                        itemStyle: { color: '#5b79e2' }
+        const dates = performance.map(item => item.date);
+        const returns = performance.map(item => (Number(item.cumulative_pnl_pct || 0) * 100).toFixed(2));
+        const benchmarks = performance.map(item => (Number(item.benchmark_pnl_pct || 0) * 100).toFixed(2));
+
+        this.chart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'axis',
+                backgroundColor: 'rgba(25, 30, 45, 0.9)',
+                borderWidth: 0,
+                textStyle: { color: '#f0f3f8' }
+            },
+            legend: {
+                data: ['AI交易员', '沪深300'],
+                textStyle: { color: '#8a96a8' }
+            },
+            grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
+            xAxis: {
+                type: 'category',
+                data: dates,
+                axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
+                axisLabel: { color: '#8a96a8' }
+            },
+            yAxis: {
+                type: 'value',
+                axisLabel: { formatter: '{value}%', color: '#8a96a8' },
+                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } }
+            },
+            series: [
+                {
+                    name: 'AI交易员',
+                    type: 'line',
+                    data: returns,
+                    smooth: true,
+                    itemStyle: { color: '#5ce2a4' },
+                    areaStyle: {
+                        color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+                            { offset: 0, color: 'rgba(92, 226, 164, 0.2)' },
+                            { offset: 1, color: 'rgba(92, 226, 164, 0)' }
+                        ])
                     }
-                ]
-            };
+                },
+                {
+                    name: '沪深300',
+                    type: 'line',
+                    data: benchmarks,
+                    smooth: true,
+                    itemStyle: { color: '#5b79e2' }
+                }
+            ]
+        });
 
-            this.chart.setOption(option);
-            window.addEventListener('resize', () => this.chart.resize());
-        } catch (e) {
-            console.error("Failed to render performance chart:", e);
-            chartDom.innerHTML = `<div class="empty-state red-text" style="padding:40px;">⚠️ 收益率走势图加载失败: ${e.message}</div>`;
+        if (!this.resizeBound) {
+            window.addEventListener('resize', () => this.chart?.resize());
+            this.resizeBound = true;
         }
     }
 
-    async renderRecentTrades() {
+    renderRecentTrades(tradesData) {
         const tbody = document.getElementById('trades-table-body');
-        try {
-            const res = await fetch(`${this.app.apiBase}/trades?limit=5`);
-            if (!res.ok) {
-                throw new Error(`HTTP Error ${res.status}`);
-            }
-            const data = await res.json();
-            tbody.innerHTML = '';
+        if (!tbody) return;
 
-            if (!data.success || !data.trades || data.trades.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="text-center">暂无历史成交记录</td></tr>';
-                return;
-            }
-
-            data.trades.forEach(t => {
-                const tr = document.createElement('tr');
-                const actionClass = t.action === 'BUY' ? 'green-text' : 'red-text';
-                const actionText = t.action === 'BUY' ? '买入' : '卖出';
-                const pnlClass = t.pnl >= 0 ? 'green-text' : 'red-text';
-                
-                let pnlText = '-';
-                if (t.action === 'SELL') {
-                    pnlText = `${t.pnl >= 0 ? '+' : ''}${t.pnl.toLocaleString('zh-CN', {maximumFractionDigits:0})} (${(t.pnl_pct * 100).toFixed(2)}%)`;
-                }
-
-                tr.innerHTML = `
-                    <td>${t.date}</td>
-                    <td><span style="font-weight:600;">${t.name}</span><br><span style="font-size:11px;color:gray;">${t.code}</span></td>
-                    <td class="${actionClass}">${actionText}</td>
-                    <td class="font-outfit">￥${t.price.toFixed(2)}</td>
-                    <td class="font-outfit">${t.shares}股</td>
-                    <td class="font-outfit">￥${t.fee.toFixed(2)}</td>
-                    <td class="${pnlClass} font-outfit">${pnlText}</td>
-                    <td style="max-width: 250px; font-size:12px; color:var(--text-secondary);" title="${t.reason}">${t.reason ? t.reason : '-'}</td>
-                `;
-                tbody.appendChild(tr);
-            });
-        } catch (e) {
-            console.error("Failed to load recent trades:", e);
-            tbody.innerHTML = `<tr><td colspan="8" class="text-center red-text" style="font-weight:600; padding:20px;">⚠️ 加载交易成交明细失败: ${e.message}</td></tr>`;
+        const trades = tradesData.trades || [];
+        tbody.innerHTML = '';
+        if (!trades.length) {
+            tbody.innerHTML = '<tr><td colspan="8" class="text-center">暂无历史成交记录</td></tr>';
+            return;
         }
+
+        trades.slice(0, 8).forEach(t => {
+            const tr = document.createElement('tr');
+            const actionClass = t.action === 'BUY' ? 'green-text' : 'red-text';
+            const pnl = Number(t.pnl || 0);
+            const pnlClass = pnl >= 0 ? 'green-text' : 'red-text';
+            const pnlText = t.action === 'SELL' ? `${pnl >= 0 ? '+' : ''}${this.money(Math.abs(pnl)).replace('￥', '￥')} (${this.pct(t.pnl_pct, 2)})` : '-';
+            const reason = this.escape(t.reason || '-');
+
+            tr.innerHTML = `
+                <td>${this.escape(t.date)}</td>
+                <td><span class="table-stock-name">${this.escape(t.name || t.code)}</span><br><span class="table-stock-code">${this.escape(t.code)}</span></td>
+                <td class="${actionClass}">${this.actionText(t.action)}</td>
+                <td class="font-outfit">${this.money(t.price, 2)}</td>
+                <td class="font-outfit">${Number(t.shares || 0).toLocaleString('zh-CN')}股</td>
+                <td class="font-outfit">${this.money(t.fee, 2)}</td>
+                <td class="${pnlClass} font-outfit">${pnlText}</td>
+                <td class="table-reason" title="${reason}">${reason}</td>
+            `;
+            tbody.appendChild(tr);
+        });
+    }
+
+    formatTime(value) {
+        if (!value || value === '-') return '-';
+        const date = new Date(value);
+        if (Number.isNaN(date.getTime())) return this.text(value);
+        return date.toLocaleString('zh-CN', { hour12: false });
     }
 }

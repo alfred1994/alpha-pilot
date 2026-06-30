@@ -6,6 +6,20 @@ export class EvolutionTab {
         this.currentCategory = 'all';
     }
 
+    text(value, fallback = '-') {
+        if (value === null || value === undefined || value === '') return fallback;
+        return String(value);
+    }
+
+    escape(value) {
+        return this.text(value, '')
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    }
+
     async load() {
         await this.loadLessonsData();
         this.renderLessons();
@@ -79,7 +93,7 @@ export class EvolutionTab {
                     }
                     if (Array.isArray(trades) && trades.length > 0) {
                         tradesHtml = `<div class="mt-2" style="display:flex; gap:4px; flex-wrap:wrap;">` + 
-                            trades.map(t => `<span class="badge" style="font-size:10px; background:rgba(91,121,226,0.1); color:var(--primary-color); border:1px solid rgba(91,121,226,0.2);">${t}</span>`).join('') + 
+                            trades.map(t => `<span class="badge" style="font-size:10px; background:rgba(91,121,226,0.1); color:var(--primary-color); border:1px solid rgba(91,121,226,0.2);">${this.escape(t)}</span>`).join('') + 
                             `</div>`;
                     }
                 } catch (e) {
@@ -88,16 +102,17 @@ export class EvolutionTab {
             }
 
             // Text truncate logic
-            const isLong = l.content.length > 100;
-            const shortContent = isLong ? l.content.substring(0, 100) + '...' : l.content;
+            const content = this.text(l.content, '');
+            const isLong = content.length > 100;
+            const shortContent = isLong ? content.substring(0, 100) + '...' : content;
             
             div.innerHTML = `
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-                    <span style="font-weight:600; font-size:14px; color:#f7ca5e;">💡 ${categoryLabel}</span>
-                    <span style="font-size:11px; color:var(--text-muted);">${l.date}</span>
+                    <span style="font-weight:600; font-size:14px; color:#f7ca5e;">💡 ${this.escape(categoryLabel)}</span>
+                    <span style="font-size:11px; color:var(--text-muted);">${this.escape(l.date)}</span>
                 </div>
                 <div class="lesson-content" style="font-size:13px; color:var(--text-secondary); line-height:1.5; cursor: ${isLong ? 'pointer' : 'default'};">
-                    <span class="text-body">${shortContent}</span>
+                    <span class="text-body">${this.escape(shortContent)}</span>
                     ${isLong ? `<a class="expand-btn" style="color:var(--primary-color); font-size:12px; margin-left:4px; text-decoration:none;">展开</a>` : ''}
                 </div>
                 ${tradesHtml}
@@ -112,7 +127,7 @@ export class EvolutionTab {
                 contentDiv.addEventListener('click', (e) => {
                     isExpanded = !isExpanded;
                     if (isExpanded) {
-                        textBody.textContent = l.content;
+                        textBody.textContent = content;
                         expandBtn.textContent = '收起';
                     } else {
                         textBody.textContent = shortContent;
@@ -236,7 +251,7 @@ export class EvolutionTab {
                     if (item.old !== undefined && item.new !== undefined) {
                         oldNewText = ` (${item.old} → ${item.new})`;
                     }
-                    li.innerHTML = `<b>[${item.type || '参数调整'}]</b> ${item.reason}${oldNewText}`;
+                    li.innerHTML = `<b>[${this.escape(item.type || '参数调整')}]</b> ${this.escape(item.reason || '')}${this.escape(oldNewText)}`;
                     list.appendChild(li);
                 });
             } else {

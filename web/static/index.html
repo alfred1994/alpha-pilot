@@ -33,10 +33,6 @@
                     <i data-lucide="git-merge"></i>
                     <span>自适应进化</span>
                 </button>
-                <button class="nav-btn" data-tab="control">
-                    <i data-lucide="sliders"></i>
-                    <span>控制面板</span>
-                </button>
             </nav>
             <div class="header-status">
                 <div class="status-item flex-center">
@@ -75,12 +71,31 @@
                     <span id="alert-message">自动驾驶异常：-</span>
                 </div>
                 <div class="alert-actions">
-                    <span class="suggestion">建议：检查 quant-pilot-auto.service 或运行 python3 main.py --doctor</span>
+                    <span class="suggestion">公开页面仅展示脱敏状态，修复操作由 Hermes 驾驶员在服务器内执行</span>
                 </div>
             </div>
 
             <!-- 仪表盘面板 Dashboard Tab -->
             <section class="tab-content active" id="tab-dashboard">
+                <div class="public-kpi-strip mb-4">
+                    <div class="strip-item">
+                        <span class="strip-label">驾驶员</span>
+                        <span class="strip-value">Hermes Agent</span>
+                    </div>
+                    <div class="strip-item">
+                        <span class="strip-label">运行模式</span>
+                        <span class="strip-value" id="public-mode-label">只读公开驾驶舱</span>
+                    </div>
+                    <div class="strip-item">
+                        <span class="strip-label">循环圈数</span>
+                        <span class="strip-value font-outfit" id="loop-count">-</span>
+                    </div>
+                    <div class="strip-item">
+                        <span class="strip-label">上次心跳</span>
+                        <span class="strip-value" id="last-loop-time">-</span>
+                    </div>
+                </div>
+
                 <!-- 自动驾驶驾驶舱监控 (Autopilot Cockpit) -->
                 <div class="grid-layout mb-4">
                     <!-- 左侧：驾驶舱状态与进度 -->
@@ -99,6 +114,20 @@
                                 <div>
                                     <span class="stat-label">日内交易阀门</span>
                                     <span class="pos-value" id="cockpit-trading-text">-</span>
+                                </div>
+                            </div>
+                            <div class="stat-box flex-center" style="gap: 8px;">
+                                <i data-lucide="fuel" class="kpi-icon"></i>
+                                <div>
+                                    <span class="stat-label">现金燃料</span>
+                                    <span class="pos-value font-outfit" id="cash-ratio">-</span>
+                                </div>
+                            </div>
+                            <div class="stat-box flex-center" style="gap: 8px;">
+                                <i data-lucide="gauge" class="kpi-icon"></i>
+                                <div>
+                                    <span class="stat-label">仓位负载</span>
+                                    <span class="pos-value font-outfit" id="exposure-ratio">-</span>
                                 </div>
                             </div>
                         </div>
@@ -126,7 +155,7 @@
                         </div>
                     </div>
 
-                    <!-- 右侧：风险报警与运行日志 -->
+                    <!-- 右侧：风险报警与公开动作流 -->
                     <div class="card" style="display:flex; flex-direction:column; justify-content:space-between;">
                         <div>
                             <h2>系统风险警报</h2>
@@ -135,7 +164,7 @@
                             </div>
                         </div>
                         <div class="events-log mt-3" style="border-top:1px solid rgba(255,255,255,0.04); padding-top:10px; flex-grow:1;">
-                            <h3 style="font-size:14px; font-weight:600; color:var(--text-secondary);">最新动作日志</h3>
+                            <h3 style="font-size:14px; font-weight:600; color:var(--text-secondary);">公开动作流</h3>
                             <div class="events-list" id="events-list" style="max-height:120px; overflow-y:auto; font-family:monospace; font-size:11px; color:var(--text-secondary); margin-top:6px;">
                                 <div class="empty-state" style="padding: 10px;">暂无日志</div>
                             </div>
@@ -164,6 +193,22 @@
                                 <span class="stat-label">今日盈亏</span>
                                 <span class="stat-val font-outfit" id="daily-pnl">-</span>
                             </div>
+                            <div class="stat-box">
+                                <span class="stat-label">持仓市值</span>
+                                <span class="stat-val font-outfit" id="position-value">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">持仓数量</span>
+                                <span class="stat-val font-outfit" id="position-count">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">交易次数</span>
+                                <span class="stat-val font-outfit" id="trade-count">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">平仓胜率</span>
+                                <span class="stat-val font-outfit" id="win-rate">-</span>
+                            </div>
                         </div>
                         <!-- 收益率曲线图 chart -->
                         <div class="chart-container mt-4" id="perf-chart" style="height: 250px;"></div>
@@ -174,6 +219,38 @@
                         <h2>当前持仓</h2>
                         <div class="positions-list" id="positions-list">
                             <div class="empty-state">暂无持仓</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="grid-layout mt-4">
+                    <div class="card">
+                        <h2>LLM 决策雷达摘要</h2>
+                        <div class="decision-summary-grid">
+                            <div class="stat-box">
+                                <span class="stat-label">最新动作</span>
+                                <span class="stat-val font-outfit" id="latest-decision">-</span>
+                            </div>
+                            <div class="stat-box">
+                                <span class="stat-label">平均置信度</span>
+                                <span class="stat-val font-outfit" id="avg-confidence">-</span>
+                            </div>
+                        </div>
+                        <div class="compact-feed mt-3" id="decision-feed">
+                            <div class="empty-state">暂无决策摘要</div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <h2>策略调校快照</h2>
+                        <div class="strategy-grid">
+                            <div><span>买入阈值</span><b id="strategy-buy-threshold">-</b></div>
+                            <div><span>入选分</span><b id="strategy-min-score">-</b></div>
+                            <div><span>TopK 微调</span><b id="strategy-top-k">-</b></div>
+                            <div><span>仓位缩放</span><b id="strategy-position-scale">-</b></div>
+                        </div>
+                        <div class="public-note mt-3">
+                            公网站点只展示交易赛车的状态、资产曲线、持仓与脱敏决策摘要；暂停、恢复和修复动作不在网页暴露。
                         </div>
                     </div>
                 </div>
@@ -280,36 +357,6 @@
                 </div>
             </section>
 
-            <!-- 控制面板 Control Tab -->
-            <section class="tab-content" id="tab-control">
-                <div class="card card-narrow text-center" style="max-width: 500px; margin: 0 auto;">
-                    <h2>自动盯盘控制安全阀门</h2>
-                    <div class="control-box mt-4">
-                        <div class="control-status mb-4">
-                            <span class="label">当前运行状态:</span>
-                            <span class="value" id="control-state-label">检测中...</span>
-                        </div>
-                        <div class="btn-group">
-                            <button class="btn btn-danger" id="btn-pause">
-                                <i data-lucide="pause-circle"></i>
-                                <span>暂停自动交易动作</span>
-                            </button>
-                            <button class="btn btn-success" id="btn-resume">
-                                <i data-lucide="play-circle"></i>
-                                <span>恢复自动交易动作</span>
-                            </button>
-                        </div>
-                        <div class="form-group mt-4" id="reason-group">
-                            <label for="pause-reason">暂停原因 (可选):</label>
-                            <input type="text" id="pause-reason" placeholder="例如：大盘日内宽幅震荡观察">
-                        </div>
-                        <div class="form-group mt-4" id="token-group" style="border-top: 1px solid rgba(255,255,255,0.04); padding-top: 15px;">
-                            <label for="control-token" style="font-size: 13px; color: var(--text-secondary); margin-bottom: 6px;">控制 Token (Authorization Token):</label>
-                            <input type="password" id="control-token" placeholder="请输入公网控制 Token" style="width: 100%; box-sizing: border-box; text-align: center;">
-                        </div>
-                    </div>
-                </div>
-            </section>
         </main>
 
         <!-- 底部大屏 Footer -->
@@ -345,10 +392,6 @@
         </div>
     </div>
 
-    <!-- 初始化 Lucide Icons -->
-    <script>
-        lucide.createIcons();
-    </script>
     <script src="js/app.js" type="module"></script>
 </body>
 </html>

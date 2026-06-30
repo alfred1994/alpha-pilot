@@ -1,13 +1,17 @@
 import os
 import sys
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # 确保根目录在 search path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-is_prod = os.environ.get("ENV", "").lower() == "production" or os.environ.get("ALPHAPILOT_ENV", "").lower() == "production" or os.environ.get("PRODUCTION", "").lower() in ("true", "1")
+from web.public_safety import is_control_api_enabled, is_production
+
+is_prod = is_production()
 
 app = FastAPI(
     title="Quant Pilot Web API",
@@ -43,11 +47,37 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """给公网仪表盘补充基础安全响应头。"""
+
+    async def dispatch(self, request, call_next):
+        if is_prod and not is_control_api_enabled() and request.url.path.startswith("/api/control"):
+            return JSONResponse(status_code=404, content={"detail": "Not Found"})
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+        response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
+        if is_prod:
+            response.headers.setdefault(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+            )
+            if request.url.path.startswith("/api/"):
+                response.headers.setdefault("Cache-Control", "no-store")
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
+
 # 动态加载子路由
-from web.routers import status, database, control
+from web.routers import status, database
 app.include_router(status.router, prefix="/api", tags=["Status"])
 app.include_router(database.router, prefix="/api", tags=["Database"])
-app.include_router(control.router, prefix="/api", tags=["Control"])
+
+if not is_prod or is_control_api_enabled():
+    from web.routers import control
+    app.include_router(control.router, prefix="/api", tags=["Control"])
 
 # 挂载静态文件目录
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
