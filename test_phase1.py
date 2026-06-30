@@ -410,12 +410,12 @@ finally:
 # ════════════════════════════════════════════════════════════════
 section("4. 长桥数据源")
 
-from data.longbridge_data import LongbridgeDataSource
+from data.longbridge_data import LongbridgeDataSource, _get_config
 
 source = LongbridgeDataSource()
 
 # 检查长桥是否可用
-ctx_available = source.ctx is not None
+ctx_available = _get_config() is not None
 if ctx_available:
     ok("长桥SDK连接成功")
 else:
