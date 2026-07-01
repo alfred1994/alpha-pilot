@@ -14,7 +14,9 @@ WEB_HOST="${10:-0.0.0.0}"
 WEB_PORT="${11:-8000}"
 PUBLIC_ORIGIN="${12:-${HERMES_PUBLIC_ORIGIN:-https://alphapilot.pp.ua}}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
-LEGACY_SYSTEM_UNITS="${LEGACY_SYSTEM_UNITS:-alphapilot-web.service quant-auto.service}"
+LEGACY_PROJECT_DIR="${LEGACY_PROJECT_DIR:-$HOME/projects/quant-pilot}"
+LEGACY_USER_UNITS="${LEGACY_USER_UNITS:-quant-pilot-auto.service quant-pilot-auto-restart.service quant-pilot-auto-restart.timer quant-pilot-doctor.service quant-pilot-doctor.timer quant-pilot-report.service quant-pilot-report.timer quant-pilot-status.service quant-pilot-status.timer quant-pilot-web.service}"
+LEGACY_SYSTEM_UNITS="${LEGACY_SYSTEM_UNITS:-alphapilot-web.service quant-auto.service quant-pilot-web.service}"
 
 log() {
   printf '[deploy-hermes] %s\n' "$*"
@@ -110,11 +112,27 @@ prepare_git_repository() {
     backup_dir="${PROJECT_DIR}.pre-git.$(date '+%Y%m%d%H%M%S')"
     log "move existing non-git project to $backup_dir"
     mv "$PROJECT_DIR" "$backup_dir"
+  elif [ "$LEGACY_PROJECT_DIR" != "$PROJECT_DIR" ] && [ -d "$LEGACY_PROJECT_DIR" ]; then
+    backup_dir="$LEGACY_PROJECT_DIR"
+    log "preserve runtime state from legacy project dir: $backup_dir"
   fi
 
   log "clone $REPO_URL to $PROJECT_DIR"
   git_auth clone --branch "$BRANCH" --single-branch "$REPO_URL" "$PROJECT_DIR"
   restore_runtime_state "$backup_dir"
+}
+
+reset_git_worktree_for_deploy() {
+  if [ -n "$REPO_URL" ]; then
+    git remote set-url origin "$REPO_URL" || true
+  fi
+
+  # Generated task scripts are tracked templates, but deploy regenerates them with
+  # server-specific paths. Discard those local template changes before checkout.
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    log "discard local tracked changes before deploy checkout"
+    git reset --hard HEAD
+  fi
 }
 
 restart_user_units() {
@@ -153,6 +171,21 @@ stop_legacy_system_units() {
     if systemctl list-unit-files "$unit" --no-pager 2>/dev/null | grep -q "$unit"; then
       log "disable legacy system unit: $unit"
       sudo -n systemctl disable --now "$unit" 2>/dev/null || true
+    fi
+  done
+}
+
+stop_legacy_user_units() {
+  if [ -z "$LEGACY_USER_UNITS" ]; then
+    return 0
+  fi
+
+  systemctl --user daemon-reload || true
+  for unit in $LEGACY_USER_UNITS; do
+    if systemctl --user list-unit-files "$unit" --no-pager 2>/dev/null | grep -q "$unit" \
+      || systemctl --user status "$unit" >/dev/null 2>&1; then
+      log "disable legacy user unit: $unit"
+      systemctl --user disable --now "$unit" 2>/dev/null || systemctl --user stop "$unit" 2>/dev/null || true
     fi
   done
 }
@@ -215,8 +248,9 @@ cd "$PROJECT_DIR"
 mkdir -p logs
 
 log "deploy branch $BRANCH in $PROJECT_DIR"
+reset_git_worktree_for_deploy
 git_auth fetch --prune origin "$BRANCH"
-git checkout -B "$BRANCH" "origin/$BRANCH"
+git checkout -f -B "$BRANCH" "origin/$BRANCH"
 git reset --hard "origin/$BRANCH"
 
 if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
@@ -245,6 +279,7 @@ else
 fi
 
 ensure_hermes_web_env
+stop_legacy_user_units
 stop_legacy_system_units
 stop_stale_auto_processes
 restart_user_units
