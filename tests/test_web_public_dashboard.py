@@ -88,7 +88,9 @@ def test_public_status_is_sanitized():
         assert "failed_required" not in data["health"]
         assert "reason" not in data["control"]
         assert "systemctl" not in data["recent_logs"][0]["action"]
+        assert data["recent_logs"][0]["action"] == "自动健康巡检完成"
         assert "Traceback" not in data["recent_logs"][0]["error"]
+        assert data["recent_logs"][0]["error"] == ""
         ok("生产 /api/status 返回公开脱敏快照")
     finally:
         _restore_env(old_env)

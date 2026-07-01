@@ -50,6 +50,30 @@ _PROMPT_LEAK_MARKERS = (
     "作为资深A股量化AI交易员",
 )
 
+_PUBLIC_INTERNAL_EVENT_ACTIONS = {
+    "auto_doctor": "自动健康巡检完成",
+    "closure_repair": "闭环自愈检查已执行",
+}
+
+
+def sanitize_public_log_action(event_type: Any, action: Any) -> str:
+    """公网动作流只展示读者能理解的摘要，不暴露内部维修细节。"""
+    event_key = str(event_type or "")
+    if event_key in _PUBLIC_INTERNAL_EVENT_ACTIONS:
+        return _PUBLIC_INTERNAL_EVENT_ACTIONS[event_key]
+
+    text = sanitize_public_text(action, 120)
+    return re.sub(r"(?i)\bcritical\b", "需复查", text)
+
+
+def sanitize_public_log_error(event_type: Any, error: Any) -> str:
+    """公网不展示Doctor/闭环维修事件的内部错误标记，避免健康状态恢复后仍像在报警。"""
+    if not error:
+        return ""
+    if str(event_type or "") in _PUBLIC_INTERNAL_EVENT_ACTIONS:
+        return ""
+    return "公开页面已隐藏错误细节"
+
 
 def sanitize_public_text(value: Any, max_len: int = 220) -> str:
     """把公开页面文案压缩为可展示摘要，避免泄露命令、路径、密钥和提示词细节。"""
@@ -92,12 +116,13 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
     recent_logs = []
     for log in (snapshot.get("recent_logs") or [])[:8]:
+        event_type = log.get("type")
         recent_logs.append({
             "time": sanitize_public_text(log.get("time"), 16),
-            "type": sanitize_public_text(log.get("type"), 32),
+            "type": sanitize_public_text(event_type, 32),
             "status": sanitize_public_text(log.get("status"), 24),
-            "action": sanitize_public_text(log.get("action"), 120),
-            "error": "公开页面已隐藏错误细节" if log.get("error") else "",
+            "action": sanitize_public_log_action(event_type, log.get("action")),
+            "error": sanitize_public_log_error(event_type, log.get("error")),
         })
 
     account = snapshot.get("account") or {}
