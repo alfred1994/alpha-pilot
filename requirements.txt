@@ -1,5 +1,5 @@
 pandas>=2.2
-numpy>=1.26
+numpy>=2.5.0
 requests>=2.31
 akshare>=1.14
 baostock>=0.8.9
