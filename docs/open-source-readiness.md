@@ -17,6 +17,10 @@ repository from private to public.
 - Removed internal Codex review output from version control.
 - Added `.codex/` to `.gitignore`.
 - Replaced agent instruction files with public-safe project guidance.
+- Added README cockpit screenshot.
+- Added Dependabot configuration for Python dependencies and GitHub Actions.
+- Opened the GitHub repository to the public.
+- Created the first public release tag.
 
 ## Must Check Before Making Public
 
@@ -28,8 +32,7 @@ repository from private to public.
 
 ## Recommended Follow-Ups
 
-- Add screenshot assets for the README.
 - Add zero-key sample data mode.
 - Add a Docker Compose demo.
 - Publish a short architecture article explaining the "trading race car" model.
-- Add release tags once the demo path is stable.
+- Add more release assets such as a short dashboard GIF.

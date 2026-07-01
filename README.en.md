@@ -47,6 +47,8 @@ Public read-only dashboard:
 
 - <https://alphapilot.pp.ua>
 
+![AlphaPilot live cockpit](docs/assets/alphapilot-cockpit.png)
+
 The public dashboard is designed for observability only. It does not expose pause,
 resume, repair, token input, raw environment variables, or trading control endpoints.
 

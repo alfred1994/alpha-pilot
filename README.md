@@ -45,6 +45,8 @@ AlphaPilot 更关注 AI 交易员周围的工程闭环：
 
 - <https://alphapilot.pp.ua>
 
+![AlphaPilot 在线驾驶舱](docs/assets/alphapilot-cockpit.png)
+
 公网仪表盘只用于观测。它不会暴露暂停、恢复、修复、Token 输入、原始环境变量或交易控制接口。
 
 ## 核心特性
