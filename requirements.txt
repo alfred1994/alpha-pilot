@@ -1,6 +1,6 @@
 pandas>=2.2
 numpy>=1.26
-requests>=2.31
+requests>=2.34.2
 akshare>=1.14
 baostock>=0.8.9
 longport>=3.0
