@@ -1,6 +1,6 @@
-import { DashboardTab } from './modules/dashboard.js?v=2026070103';
-import { DecisionsTab } from './modules/decisions.js?v=2026070103';
-import { EvolutionTab } from './modules/evolution.js?v=2026070103';
+import { DashboardTab } from './modules/dashboard.js?v=2026070104';
+import { DecisionsTab } from './modules/decisions.js?v=2026070104';
+import { EvolutionTab } from './modules/evolution.js?v=2026070104';
 
 class App {
     constructor() {

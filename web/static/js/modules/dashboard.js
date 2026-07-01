@@ -14,6 +14,19 @@ export class DashboardTab {
         })}`;
     }
 
+    signedMoney(value, digits = 0) {
+        const number = Number(value || 0);
+        const prefix = number > 0 ? '+' : (number < 0 ? '-' : '');
+        return `${prefix}${this.money(Math.abs(number), digits)}`;
+    }
+
+    pnlClass(value) {
+        const number = Number(value || 0);
+        if (number > 0) return 'red-text';
+        if (number < 0) return 'green-text';
+        return '';
+    }
+
     pct(value, digits = 1) {
         const number = Number(value || 0) * 100;
         return `${number >= 0 ? '+' : ''}${number.toFixed(digits)}%`;
@@ -49,6 +62,13 @@ export class DashboardTab {
             SELL: '卖出',
             HOLD: '持有'
         }[action] || this.text(action);
+    }
+
+    stockLabel(item) {
+        const code = this.text(item?.code, '');
+        const name = this.text(item?.name, '');
+        if (name && name !== code) return `${name} ${code}`;
+        return code || '-';
     }
 
     async load() {
@@ -165,12 +185,12 @@ export class DashboardTab {
         this.setText('trade-count', String(tradesData.total || tradesData.trades.length || 0));
         this.setText('win-rate', winRate === null ? '-' : `${(winRate * 100).toFixed(1)}%`);
 
-        const pnlClass = totalPnl >= 0 ? 'green-text' : 'red-text';
-        this.setText('total-pnl', `${totalPnl >= 0 ? '+' : ''}${this.money(Math.abs(totalPnl)).replace('￥', '￥')} (${this.pct(totalPnlPct, 2)})`);
+        const pnlClass = this.pnlClass(totalPnl);
+        this.setText('total-pnl', `${this.signedMoney(totalPnl)} (${this.pct(totalPnlPct, 2)})`);
         this.setClass('total-pnl', `stat-val font-outfit ${pnlClass}`);
 
-        this.setText('daily-pnl', `${dailyPnl >= 0 ? '+' : ''}${this.money(Math.abs(dailyPnl)).replace('￥', '￥')}`);
-        this.setClass('daily-pnl', `stat-val font-outfit ${dailyPnl >= 0 ? 'green-text' : 'red-text'}`);
+        this.setText('daily-pnl', this.signedMoney(dailyPnl));
+        this.setClass('daily-pnl', `stat-val font-outfit ${this.pnlClass(dailyPnl)}`);
 
         this.setText('loop-count', String(data.loop_count ?? '-'));
         this.setText('last-loop-time', this.formatTime(data.last_loop_time));
@@ -280,7 +300,7 @@ export class DashboardTab {
 
         positions.forEach(pos => {
             const pnl = Number(pos.pnl || 0);
-            const pnlClass = pnl >= 0 ? 'green-text' : 'red-text';
+            const pnlClass = this.pnlClass(pnl);
             const latestDecision = pos.latest_decision || {};
             const action = latestDecision.action || 'HOLD';
             const actionClass = action === 'BUY' ? 'badge-success' : (action === 'SELL' ? 'badge-danger' : 'badge-neutral');
@@ -304,7 +324,7 @@ export class DashboardTab {
                     <div><span>持股数</span><b>${Number(pos.shares || 0).toLocaleString('zh-CN')}股</b></div>
                     <div><span>买入成本</span><b>${this.money(pos.buy_price, 2)}</b></div>
                     <div><span>当前价格</span><b>${this.money(pos.current_price, 2)}</b></div>
-                    <div><span>浮动盈亏</span><b class="${pnlClass}">${this.money(pnl)} (${this.pct(pos.pnl_pct, 2)})</b></div>
+                    <div><span>浮动盈亏</span><b class="${pnlClass}">${this.signedMoney(pnl)} (${this.pct(pos.pnl_pct, 2)})</b></div>
                     <div><span>移动止损</span><b class="orange-text">${pos.trailing_stop_price ? this.money(pos.trailing_stop_price, 2) : '-'}</b></div>
                     <div><span>目标止盈</span><b class="green-text">${pos.take_profit_price ? this.money(pos.take_profit_price, 2) : '-'}</b></div>
                 </div>
@@ -327,7 +347,7 @@ export class DashboardTab {
 
         const avgConfidence = decisions.reduce((sum, d) => sum + Number(d.confidence || 0), 0) / decisions.length;
         const latest = decisions[0];
-        this.setText('latest-decision', `${this.escape(latest.code)} ${this.actionText(latest.action)}`);
+        this.setText('latest-decision', `${this.stockLabel(latest)} ${this.actionText(latest.action)}`);
         this.setText('avg-confidence', `${(avgConfidence * 100).toFixed(0)}%`);
 
         decisions.slice(0, 4).forEach(d => {
@@ -336,7 +356,7 @@ export class DashboardTab {
             const actionClass = d.action === 'BUY' ? 'green-text' : (d.action === 'SELL' ? 'red-text' : '');
             row.innerHTML = `
                 <div class="feed-main">
-                    <span class="font-outfit">${this.escape(d.code)}</span>
+                    <span class="font-outfit">${this.escape(this.stockLabel(d))}</span>
                     <span class="${actionClass}">${this.actionText(d.action)}</span>
                     <span>${(Number(d.confidence || 0) * 100).toFixed(0)}%</span>
                 </div>
@@ -382,10 +402,11 @@ export class DashboardTab {
         }
 
         // 今日盈亏
-        this.setText('kpi-daily-pnl', `${dailyPnl >= 0 ? '+' : ''}${this.money(Math.abs(dailyPnl))}`);
+        this.setText('kpi-daily-pnl', this.signedMoney(dailyPnl));
+        this.setClass('kpi-daily-pnl', `kpi-value font-outfit num-animate ${this.pnlClass(dailyPnl)}`);
         const pnlTrendEl = document.getElementById('kpi-pnl-trend');
         if (pnlTrendEl) {
-            pnlTrendEl.className = `${dailyPnl >= 0 ? 'trend-up' : 'trend-down'}`;
+            pnlTrendEl.className = `${dailyPnl >= 0 ? 'trend-profit' : 'trend-loss'}`;
             const arrow = pnlTrendEl.querySelector('.trend-arrow');
             const change = pnlTrendEl.querySelector('.trend-change');
             if (arrow) arrow.textContent = dailyPnl >= 0 ? '↑' : '↓';
@@ -774,8 +795,8 @@ export class DashboardTab {
             const tr = document.createElement('tr');
             const actionClass = t.action === 'BUY' ? 'green-text' : 'red-text';
             const pnl = Number(t.pnl || 0);
-            const pnlClass = pnl >= 0 ? 'green-text' : 'red-text';
-            const pnlText = t.action === 'SELL' ? `${pnl >= 0 ? '+' : ''}${this.money(Math.abs(pnl)).replace('￥', '￥')} (${this.pct(t.pnl_pct, 2)})` : '-';
+            const pnlClass = this.pnlClass(pnl);
+            const pnlText = t.action === 'SELL' ? `${this.signedMoney(pnl)} (${this.pct(t.pnl_pct, 2)})` : '-';
             const reason = this.escape(t.reason || '-');
 
             tr.innerHTML = `

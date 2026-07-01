@@ -1002,12 +1002,13 @@ def execute_trade_plan(
 
             # 下单（默认模拟账户，经BrokerAdapter封装）
             try:
+                execution_reason = order.get("reason") or "TradePlan执行"
                 buy_order = om.create_buy_order(
                     code=code,
                     name=order.get("name", code),
                     price=current_price,
                     shares=shares,
-                    reason="TradePlan执行",
+                    reason=execution_reason,
                 )
                 if hasattr(broker, "account"):
                     om.account = broker.account
@@ -1018,7 +1019,7 @@ def execute_trade_plan(
                         name=order.get("name", code),
                         price=current_price,
                         shares=shares,
-                        reason="TradePlan执行",
+                        reason=execution_reason,
                     )
                     buy_order.status = "filled" if trade else "failed"
                 if buy_order.status == "filled":
@@ -1030,17 +1031,18 @@ def execute_trade_plan(
                         "shares": buy_order.shares,
                         "price": current_price,
                         "status": buy_order.status,
+                        "reason": execution_reason,
                     })
                 _audit_order(
                     result, order, buy_order.status,
-                    "模拟买入成交" if buy_order.status == "filled" else "买入未成交",
+                    execution_reason if buy_order.status == "filled" else "买入未成交",
                     price=current_price,
                     shares=buy_order.shares,
                     buy_amount=round(buy_amount, 2),
                     available_cash=round(available_cash, 2),
                 )
                 if buy_order.status == "filled":
-                    logger.info(f"买入 {code} {shares}股 @ {current_price}")
+                    logger.info(f"买入 {code} {shares}股 @ {current_price} ({execution_reason})")
                 else:
                     logger.info(f"买入未成交 {code} {shares}股 @ {current_price}")
             except Exception as e:

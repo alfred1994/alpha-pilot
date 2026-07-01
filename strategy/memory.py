@@ -357,6 +357,17 @@ class TradeMemory:
             新记录的id
         """
         try:
+            # LLM没有返回内容时不写入决策表，避免仪表盘把调用失败误展示为交易判断。
+            try:
+                confidence_value = float(confidence or 0)
+            except (TypeError, ValueError):
+                confidence_value = 0
+            if (not (response or "").strip()
+                    and (reasoning or "").strip() == "LLM无响应"
+                    and confidence_value <= 0):
+                logger.info(f"跳过无响应LLM决策记录: {code} {action}")
+                return -1
+
             db = self._get_db()
             decision_id = db.insert_llm_decision({
                 "code": code,

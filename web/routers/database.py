@@ -11,6 +11,73 @@ def _get_db():
     from data.database import Database
     return Database()
 
+
+def _load_signal_cache():
+    """读取本地信号缓存，用于把决策和股票名称补齐到公开接口。"""
+    project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cache_file = os.path.join(project_dir, "data", "signal_cache.json")
+    if not os.path.exists(cache_file):
+        return {}
+    try:
+        with open(cache_file, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _is_no_response_decision(reasoning: str, confidence: float, response: str = "") -> bool:
+    """LLM未返回内容不是有效交易决策，公开列表中过滤掉这类噪声记录。"""
+    reason_text = (reasoning or "").strip()
+    response_text = (response or "").strip()
+    try:
+        confidence_value = float(confidence or 0)
+    except (TypeError, ValueError):
+        confidence_value = 0
+    return reason_text == "LLM无响应" and not response_text and confidence_value <= 0
+
+
+def _resolve_stock_name(cursor, code: str, scores_map: dict) -> str:
+    """按信号缓存、持仓、成交记录的顺序补齐股票名称。"""
+    score_item = scores_map.get(code) or {}
+    name = (score_item.get("name") or "").strip()
+    if name and name != code:
+        return name
+
+    for sql in (
+        "SELECT name FROM positions WHERE code=? AND COALESCE(name, '') <> '' LIMIT 1",
+        "SELECT name FROM trades WHERE code=? AND COALESCE(name, '') <> '' ORDER BY created_at DESC, id DESC LIMIT 1",
+    ):
+        cursor.execute(sql, (code,))
+        row = cursor.fetchone()
+        if row and row[0] and row[0] != code:
+            return row[0]
+    return code
+
+
+def _resolve_trade_reason(cursor, code: str, action: str, reason: str, date_text: str) -> str:
+    """把历史成交里的泛化执行文案替换为同日LLM决策理由。"""
+    raw_reason = (reason or "").strip()
+    if raw_reason and raw_reason != "TradePlan执行":
+        return sanitize_public_text(raw_reason)
+
+    trade_date = (date_text or "").split(" ")[0].split("T")[0]
+    if not code or not trade_date:
+        return sanitize_public_text(raw_reason or "-")
+
+    cursor.execute(
+        """
+        SELECT reasoning
+        FROM llm_decisions
+        WHERE code=? AND action=? AND date=? AND COALESCE(reasoning, '') <> ''
+        ORDER BY created_at DESC, id DESC LIMIT 1
+        """,
+        (code, action, trade_date),
+    )
+    row = cursor.fetchone()
+    if row and row[0] and not _is_no_response_decision(row[0], 0, ""):
+        return sanitize_public_text(f"LLM决策: {row[0]}")
+    return sanitize_public_text(raw_reason or "-")
+
 @router.get("/trades")
 def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1)):
     """获取历史交易成交明细"""
@@ -43,7 +110,7 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                     "fee": r[7] or 0.0,
                     "pnl": r[8] or 0.0,
                     "pnl_pct": r[9] or 0.0,
-                    "reason": sanitize_public_text(r[10])
+                    "reason": _resolve_trade_reason(cursor, r[2], r[4], r[10], date_str)
                 })
             
             cursor.execute("SELECT COUNT(*) FROM trades")
@@ -65,29 +132,23 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
     try:
         with _get_db() as db:
             cursor = db.conn.cursor()
+            fetch_limit = min(limit * 5, 200)
             cursor.execute(
-                "SELECT id, code, date, action, reasoning, confidence, outcome, outcome_pct "
+                "SELECT id, code, date, action, reasoning, confidence, outcome, outcome_pct, llm_response "
                 "FROM llm_decisions ORDER BY date DESC, id DESC LIMIT ?",
-                (limit,)
+                (fetch_limit,)
             )
             rows = cursor.fetchall()
             decisions_list = []
             
-            project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            cache_file = os.path.join(project_dir, "data", "signal_cache.json")
-            cache_data = {}
-            if os.path.exists(cache_file):
-                try:
-                    with open(cache_file, "r", encoding="utf-8") as f:
-                        cache_data = json.load(f)
-                except Exception:
-                    pass
-            
+            cache_data = _load_signal_cache()
             raw_scores = cache_data.get("raw_scores", [])
             scores_map = {item.get("code"): item for item in raw_scores if "code" in item}
 
             for r in rows:
                 code = r[1]
+                if _is_no_response_decision(r[4], r[5], r[8]):
+                    continue
                 dimensions = {}
                 score_item = scores_map.get(code)
                 if score_item:
@@ -96,6 +157,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                 decisions_list.append({
                     "id": r[0],
                     "code": code,
+                    "name": _resolve_stock_name(cursor, code, scores_map),
                     "date": r[2],
                     "action": r[3],
                     "reasoning": sanitize_public_text(r[4], max_len=520),
@@ -104,6 +166,8 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                     "outcome_pct": r[7],
                     "dimensions": dimensions
                 })
+                if len(decisions_list) >= limit:
+                    break
             return {"success": True, "decisions": decisions_list}
     except Exception as e:
         return {"success": False, "error": public_error_message() if is_production() else str(e)}

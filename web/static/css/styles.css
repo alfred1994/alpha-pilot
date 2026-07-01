@@ -1115,6 +1115,14 @@ body::before {
     color: var(--danger-color);
 }
 
+.trend-profit {
+    color: var(--danger-color);
+}
+
+.trend-loss {
+    color: var(--success-color);
+}
+
 .trend-flat {
     color: var(--text-muted);
 }

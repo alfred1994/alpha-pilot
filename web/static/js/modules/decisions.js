@@ -18,6 +18,13 @@ export class DecisionsTab {
             .replace(/'/g, '&#39;');
     }
 
+    stockLabel(item) {
+        const code = this.text(item?.code, '');
+        const name = this.text(item?.name, '');
+        if (name && name !== code) return `${name} ${code}`;
+        return code || '-';
+    }
+
     async load() {
         const res = await fetch(`${this.app.apiBase}/decisions?limit=10`);
         const data = await res.json();
@@ -39,11 +46,12 @@ export class DecisionsTab {
             const badgeText = d.action === 'BUY' ? '买入 BUY' : (d.action === 'SELL' ? '卖出 SELL' : '持有 HOLD');
             const reasoning = this.text(d.reasoning, '');
             const shortReasoning = reasoning.substring(0, 180);
+            const stockText = this.escape(this.stockLabel(d));
             
             div.innerHTML = `
                 <div class="decision-item-header">
                     <div>
-                        <span style="font-weight:700; font-size:16px;">${this.escape(d.code)}</span>
+                        <span style="font-weight:700; font-size:16px;">${stockText}</span>
                         <span class="badge" style="margin-left:8px;">置信度: ${(d.confidence * 100).toFixed(0)}%</span>
                     </div>
                     <span class="badge ${badgeClass}">${badgeText}</span>
@@ -91,7 +99,7 @@ export class DecisionsTab {
     }
 
     showDetailModal(d) {
-        document.getElementById('modal-title').textContent = `${this.text(d.code)} 决策推理详情`;
+        document.getElementById('modal-title').textContent = `${this.stockLabel(d)} 决策推理详情`;
         document.getElementById('modal-confidence').textContent = `${(d.confidence * 100).toFixed(0)}%`;
         
         const actionEl = document.getElementById('modal-action');

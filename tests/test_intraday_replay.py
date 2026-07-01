@@ -101,6 +101,7 @@ def main():
             trades = db.get_trades(code="600519", limit=5)
             account_state = db.get_account_state()
         assert_true(len(trades) == 1 and trades[0]["action"] == "BUY", "SQLite写入BUY交易")
+        assert_true(trades[0]["reason"] == "端到端回放买入", "BUY交易写入TradePlan具体理由")
         assert_true(
             account_state and "600519" in account_state["positions"],
             "SQLite账户状态同步持仓",
