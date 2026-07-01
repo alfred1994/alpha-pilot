@@ -21,7 +21,7 @@ logger = logging.getLogger("data.longbridge")
 
 _oauth_cfg = None
 _token_path = os.path.expanduser(
-    "~/.longbridge/openapi/tokens/ad7d7962-1191-44ba-b4db-3b5819f94bd5"
+    os.environ.get("LONGPORT_OAUTH_TOKEN_PATH", "~/.longbridge/openapi/tokens/default")
 )
 
 
