@@ -212,6 +212,44 @@ def main():
         )
         assert_true(_by_name(error_items)["今日异常事件"].severity == "critical", "auto_events异常触发critical")
 
+        with Database(db_path=db_path) as db:
+            db.insert_auto_event({
+                "date": "2026-06-09",
+                "status": "盘中",
+                "actions": ["盘中扫描: 候选3只 决策2条", "模拟执行: 成交0笔 风控0项 错误0项"],
+                "error": "",
+                "created_at": "2026-06-09T10:07:00",
+            })
+        _write_state(state_path, fresh_state)
+        recovered_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+        )
+        assert_true(
+            _by_name(recovered_items)["今日异常事件"].severity == "warn",
+            "历史异常被后续健康循环覆盖后降级为warn",
+        )
+
+        error_state = dict(fresh_state)
+        error_state["last_error"] = "行情源失败"
+        _write_state(state_path, error_state)
+        unresolved_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+        )
+        assert_true(
+            _by_name(unresolved_items)["今日异常事件"].severity == "critical",
+            "状态文件仍有last_error时保持critical",
+        )
+
         print("自动盯盘Watchdog测试通过")
 
     finally:

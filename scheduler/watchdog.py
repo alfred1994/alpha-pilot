@@ -111,6 +111,53 @@ def _event_has_error(event: dict) -> bool:
     return any(str(action).startswith("异常") for action in event.get("actions", []))
 
 
+def _event_is_operational(event: dict) -> bool:
+    """判断事件是否来自自动驾驶主循环，排除Doctor自检留下的诊断噪声。"""
+    return event.get("event_type") not in ("auto_doctor", "ops_status")
+
+
+def _event_timestamp(event: dict) -> float:
+    """解析事件时间戳；解析失败时返回0，避免误判为新事件。"""
+    parsed = _parse_iso(event.get("created_at", ""))
+    if not parsed:
+        return 0.0
+    return parsed.timestamp()
+
+
+def _auto_event_issue_status(events: List[dict], state: dict) -> tuple:
+    """评估今日异常是否仍未恢复。
+
+    auto_events 是全天审计日志，不能因为早盘一次瞬时失败就整天保持 critical。
+    若最新自动循环已经恢复且状态文件 last_error 为空，则降级为 warn，交给用户观察。
+    """
+    error_events = [event for event in events if _event_has_error(event)]
+    if not error_events:
+        return True, "ok", "0条异常 / {count}条事件".format(count=len(events))
+
+    if state.get("last_error"):
+        return False, "critical", (
+            f"{len(error_events)}条未恢复异常 / {len(events)}条事件；"
+            f"最近循环错误: {state.get('last_error')}"
+        )
+
+    operational_events = [event for event in events if _event_is_operational(event)]
+    latest_operational = max(operational_events, key=_event_timestamp) if operational_events else None
+    latest_error = max(error_events, key=_event_timestamp)
+    latest_is_clean = (
+        latest_operational is not None
+        and _event_timestamp(latest_operational) >= _event_timestamp(latest_error)
+        and not _event_has_error(latest_operational)
+    )
+    if latest_is_clean:
+        return False, "warn", (
+            f"{len(error_events)}条历史异常已被后续循环覆盖 / {len(events)}条事件"
+        )
+
+    return False, "critical", (
+        f"{len(error_events)}条未恢复异常 / {len(events)}条事件"
+    )
+
+
 def _make_item(name: str, ok: bool, detail: str,
                severity: str = None, suggestion: str = "") -> WatchdogItem:
     """构造检查项"""
@@ -249,13 +296,13 @@ def run_auto_watchdog(
         events = []
         items.append(_make_item("自动事件读取", False, str(e), "critical", "检查SQLite数据库。"))
 
-    error_events = [e for e in events if _event_has_error(e)]
+    event_ok, event_severity, event_detail = _auto_event_issue_status(events, state)
     items.append(_make_item(
         "今日异常事件",
-        len(error_events) == 0,
-        f"{len(error_events)}条异常 / {len(events)}条事件",
-        "critical" if error_events else "ok",
-        "查看 data/quant.db 的 auto_events 表。",
+        event_ok,
+        event_detail,
+        event_severity,
+        "查看 data/quant.db 的 auto_events 表；若已恢复为warn，继续观察即可。",
     ))
     items.append(_make_item(
         "自动交易控制",
