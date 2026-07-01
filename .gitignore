@@ -37,6 +37,8 @@ data/task_scripts/
 *.log
 logs/
 .migration/
+.claude/
+scratch/
 
 # 环境变量（含API密钥）
 .env
