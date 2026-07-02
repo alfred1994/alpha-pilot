@@ -1,0 +1,36 @@
+name: Question / 使用问题
+description: Ask a question about setup, paper trading, or the AI driver workflow / 提问
+title: "[Question]: "
+labels:
+  - question
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please keep questions focused on setup, paper-trading observation, architecture, or the AI driver workflow.
+        请不要把 issue 当作投资咨询渠道；AlphaPilot 不提供买卖建议，也不保证收益。
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question / 问题
+      placeholder: "What are you trying to do, and where are you stuck?"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context / 背景
+      description: Include commands, docs you followed, and redacted output if relevant.
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist / 检查清单
+      options:
+        - label: I am not asking for financial advice or a specific buy/sell recommendation.
+          required: true
+        - label: I have removed secrets, tokens, account data, and private server details.
+          required: true
+

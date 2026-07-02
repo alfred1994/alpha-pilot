@@ -1,0 +1,89 @@
+name: Bug report / 缺陷反馈
+description: Report a reproducible bug in AlphaPilot / 反馈可复现的问题
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve AlphaPilot.
+
+        请不要粘贴 API Key、Token、账户截图、服务器地址、`.env` 内容、未脱敏日志或真实交易凭证。
+        AlphaPilot 默认只面向研究和模拟盘观察。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area / 影响范围
+      options:
+        - Web cockpit / 仪表盘
+        - Watchdog or Doctor / 监控与自愈
+        - Paper trading / 模拟盘
+        - LLM decision / LLM 决策
+        - Data source / 数据源
+        - Linux or Hermes deployment / Linux 或 Hermes 部署
+        - Documentation / 文档
+        - Other / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened? / 问题现象
+      description: Describe the actual behavior and why it seems wrong.
+      placeholder: "Example: Watchdog reports critical even after a healthy auto_cycle..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps / 复现步骤
+      description: Include exact commands when possible.
+      placeholder: |
+        1. Run `python3 main.py --...`
+        2. Open `...`
+        3. Observe `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior / 预期行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment / 运行环境
+      description: OS, Python version, deployment mode, and whether this is paper trading.
+      placeholder: |
+        OS:
+        Python:
+        Branch/commit:
+        BROKER_MODE:
+        ALPHAPILOT_ENV:
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs / 已脱敏日志
+      description: Paste only redacted logs. Remove secrets, private paths, account IDs, and tokens.
+      render: text
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist / 检查清单
+      options:
+        - label: I have removed secrets, tokens, account data, and private server details.
+          required: true
+        - label: This report is about research or paper-trading behavior, not investment advice.
+          required: true
+

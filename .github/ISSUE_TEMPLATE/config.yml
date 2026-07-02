@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability / 安全漏洞
+    url: https://github.com/alfred1994/alpha-pilot/security/advisories/new
+    about: Please report credential exposure or exploitable security issues privately.
+  - name: Live read-only cockpit / 在线只读驾驶舱
+    url: https://alphapilot.pp.ua
+    about: View the maintainer-operated public paper-trading cockpit.
+

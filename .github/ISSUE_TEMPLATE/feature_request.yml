@@ -1,0 +1,62 @@
+name: Feature request / 功能建议
+description: Suggest an improvement for AlphaPilot / 提出改进建议
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tell us how this would improve the trading race car.
+        请说明这个功能如何改善 AlphaPilot 的模拟盘、驾驶员、仪表盘或自愈闭环。
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area / 方向
+      options:
+        - AI driver workflow / AI 驾驶员工作流
+        - Web cockpit / 仪表盘
+        - Paper account / 模拟账户
+        - Watchdog or Doctor / 监控与自愈
+        - LLM decision quality / LLM 决策质量
+        - Data source adapter / 数据源适配
+        - Deployment and operations / 部署与运维
+        - Documentation / 文档
+        - Other / 其他
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / 你想解决什么问题
+      placeholder: "Example: A new user cannot understand whether the car is driving, paused, or waiting after market close..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution / 建议方案
+      placeholder: "Describe the workflow, UI, API, or documentation change."
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered / 其他方案
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety boundary / 安全边界
+      options:
+        - label: This feature keeps `BROKER_MODE=paper` as the default.
+          required: true
+        - label: This feature does not require exposing public trading control endpoints.
+          required: true
+        - label: This feature does not ask users to commit credentials or runtime account data.
+          required: true
+
