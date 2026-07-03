@@ -142,7 +142,7 @@ class PaperAccount:
                     "buy_date": pos.get("buy_date", ""),
                     "cost": pos.get("cost", 0),
                     "highest_price": pos.get("highest_price", 0),
-                    "current_price": pos.get("current_price", 0),
+                    "current_price": pos.get("current_price") or pos.get("buy_price", 0),
                 })
             db.conn.commit()
 
@@ -196,7 +196,8 @@ class PaperAccount:
             if prices and code in prices:
                 value += prices[code] * pos["shares"]
             else:
-                value += pos["buy_price"] * pos["shares"]
+                price = pos.get("current_price") or pos.get("buy_price") or 0
+                value += price * pos["shares"]
         return value
 
     def total_assets(self, prices: Dict[str, float] = None) -> float:
@@ -291,6 +292,7 @@ class PaperAccount:
                 "buy_date": datetime.now().strftime("%Y-%m-%d"),
                 "cost": cost,
                 "highest_price": price,
+                "current_price": price,
                 "atr_at_buy": atr if atr and atr > 0 else 0.0,
             }
 
@@ -382,6 +384,7 @@ class PaperAccount:
                 del self.positions[code]
             else:
                 pos["shares"] -= shares
+                pos["current_price"] = price
 
             profit_pct = (price - pos_snapshot["buy_price"]) / pos_snapshot["buy_price"] * 100
             pnl_val = (price - pos_snapshot["buy_price"]) * shares - commission - stamp_tax

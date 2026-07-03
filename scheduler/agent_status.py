@@ -51,7 +51,19 @@ def build_agent_status_snapshot():
     try:
         from execution.paper_account import PaperAccount
         account = PaperAccount()
-        total_assets = account.total_assets()
+        price_map = {}
+        if account.positions:
+            try:
+                from data.realtime import get_realtime
+                quotes = get_realtime(list(account.positions.keys()))
+                price_map = {
+                    quote.code: quote.price
+                    for quote in quotes
+                    if getattr(quote, "price", 0) > 0
+                }
+            except Exception:
+                price_map = {}
+        total_assets = account.total_assets(price_map or None)
         cash = account.cash
         positions = list(account.positions.keys())
         initial_capital = account.initial_capital

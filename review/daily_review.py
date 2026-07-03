@@ -95,6 +95,60 @@ class DailyReviewer:
         self.db_path = db_path
         os.makedirs(self.review_dir, exist_ok=True)
 
+    def _load_previous_total_assets(self, date: str) -> Optional[float]:
+        """读取指定日期之前最近一次总资产，用于计算账户级每日盈亏。"""
+        candidates = []
+
+        if os.path.exists(self.review_dir):
+            for filename in os.listdir(self.review_dir):
+                if not filename.startswith("review_") or not filename.endswith(".json"):
+                    continue
+                item_date = filename.replace("review_", "").replace(".json", "")
+                if item_date >= date:
+                    continue
+                filepath = os.path.join(self.review_dir, filename)
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    total_assets = data.get("total_assets")
+                    if total_assets is not None:
+                        candidates.append((item_date, float(total_assets)))
+                except Exception:
+                    continue
+
+        try:
+            from data.database import Database
+            with Database(db_path=self.db_path) as db:
+                row = db.conn.execute(
+                    """
+                    SELECT date, total_assets
+                    FROM daily_snapshots
+                    WHERE date < ? AND total_assets IS NOT NULL
+                    ORDER BY date DESC LIMIT 1
+                    """,
+                    (date,),
+                ).fetchone()
+                if row:
+                    candidates.append((row["date"], float(row["total_assets"])))
+        except Exception:
+            pass
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda item: item[0])
+        return candidates[-1][1]
+
+    def _fallback_daily_pnl(self, position_pnls: List[DailyPnL], trades: List[dict]) -> float:
+        """无上一日快照时，用持仓日内浮盈亏与成交影响兜底估算日盈亏。"""
+        daily_pnl = sum(p.daily_pnl for p in position_pnls)
+        for trade in trades:
+            action = str(trade.get("action", "")).upper()
+            if action == "SELL":
+                daily_pnl += float(trade.get("pnl") or 0)
+            elif action == "BUY":
+                daily_pnl -= float(trade.get("commission") or 0)
+        return daily_pnl
+
     def run_review(
         self,
         date: str,
@@ -130,7 +184,10 @@ class DailyReviewer:
 
         for code, pos in positions.items():
             current = prices.get(code, pos["buy_price"])
-            prev = prev_prices.get(code, pos["buy_price"])
+            if pos.get("buy_date") == date:
+                prev = pos["buy_price"]
+            else:
+                prev = prev_prices.get(code, pos["buy_price"])
             shares = pos["shares"]
             buy_price = pos["buy_price"]
 
@@ -193,12 +250,15 @@ class DailyReviewer:
         total_trades = win_count + lose_count
         win_rate = win_count / total_trades if total_trades > 0 else 0
 
-        # 3. 计算日盈亏
-        daily_pnl = total_assets - initial_capital  # 简化，实际应与昨日比
-        # 更准确: 用持仓日盈亏总和
-        pos_daily_pnl = sum(p.daily_pnl for p in position_pnls)
-        daily_pnl = pos_daily_pnl  # 不含已卖出的盈亏
-        daily_pnl_pct = daily_pnl / (total_assets - daily_pnl) if (total_assets - daily_pnl) > 0 else 0
+        # 3. 计算日盈亏：优先使用账户总资产相邻快照差额，避免持仓和成交口径不一致。
+        previous_total_assets = self._load_previous_total_assets(date)
+        if previous_total_assets is not None:
+            daily_pnl = total_assets - previous_total_assets
+            daily_pnl_pct = daily_pnl / previous_total_assets if previous_total_assets > 0 else 0
+        else:
+            daily_pnl = self._fallback_daily_pnl(position_pnls, trades)
+            denominator = total_assets - daily_pnl
+            daily_pnl_pct = daily_pnl / denominator if denominator > 0 else 0
 
         cumulative_pnl = total_assets - initial_capital
         cumulative_pnl_pct = cumulative_pnl / initial_capital if initial_capital > 0 else 0

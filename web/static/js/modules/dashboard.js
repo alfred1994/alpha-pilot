@@ -406,11 +406,11 @@ export class DashboardTab {
         this.setClass('kpi-daily-pnl', `kpi-value font-outfit num-animate ${this.pnlClass(dailyPnl)}`);
         const pnlTrendEl = document.getElementById('kpi-pnl-trend');
         if (pnlTrendEl) {
-            pnlTrendEl.className = `${dailyPnl >= 0 ? 'trend-profit' : 'trend-loss'}`;
+            pnlTrendEl.className = `${dailyPnl > 0 ? 'trend-profit' : (dailyPnl < 0 ? 'trend-loss' : 'trend-flat')}`;
             const arrow = pnlTrendEl.querySelector('.trend-arrow');
             const change = pnlTrendEl.querySelector('.trend-change');
-            if (arrow) arrow.textContent = dailyPnl >= 0 ? '↑' : '↓';
-            if (change) change.textContent = dailyPnl >= 0 ? '盈利' : '亏损';
+            if (arrow) arrow.textContent = dailyPnl > 0 ? '↑' : (dailyPnl < 0 ? '↓' : '→');
+            if (change) change.textContent = dailyPnl > 0 ? '盈利' : (dailyPnl < 0 ? '亏损' : '持平');
         }
 
         // 持仓市值
@@ -527,6 +527,9 @@ export class DashboardTab {
                 annualStatus.className = 'metric-status status-good';
             } else if (risk.annualized > 0) {
                 annualStatus.textContent = '一般';
+                annualStatus.className = 'metric-status status-medium';
+            } else if (risk.annualized === 0) {
+                annualStatus.textContent = '持平';
                 annualStatus.className = 'metric-status status-medium';
             } else {
                 annualStatus.textContent = '亏损';

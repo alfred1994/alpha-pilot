@@ -2,6 +2,7 @@ from fastapi import APIRouter, Query
 from typing import Optional
 import os
 import json
+import re
 from datetime import datetime, timedelta
 from web.public_safety import is_production, public_error_message, sanitize_public_text
 
@@ -10,6 +11,23 @@ router = APIRouter()
 def _get_db():
     from data.database import Database
     return Database()
+
+
+def _account_total_assets_with_realtime(account):
+    """账户总资产优先按实时价估算，行情不可用时回退到账户保存价格。"""
+    prices = {}
+    if getattr(account, "positions", None):
+        try:
+            from data.realtime import get_realtime
+            quotes = get_realtime(list(account.positions.keys()))
+            prices = {
+                quote.code: quote.price
+                for quote in quotes
+                if getattr(quote, "price", 0) > 0
+            }
+        except Exception:
+            prices = {}
+    return account.total_assets(prices or None)
 
 
 def _load_signal_cache():
@@ -36,11 +54,26 @@ def _is_no_response_decision(reasoning: str, confidence: float, response: str = 
     return reason_text == "LLM无响应" and not response_text and confidence_value <= 0
 
 
-def _resolve_stock_name(cursor, code: str, scores_map: dict) -> str:
+def _extract_name_from_prompt(prompt: str, code: str) -> str:
+    """从LLM提示词的股票信息段提取股票名称。"""
+    if not prompt:
+        return ""
+    match = re.search(r"名称[:：]\s*([^\s\n\r，,]+)", prompt)
+    if not match:
+        return ""
+    name = match.group(1).strip()
+    return name if name and name != code else ""
+
+
+def _resolve_stock_name(cursor, code: str, scores_map: dict, llm_prompt: str = "") -> str:
     """按信号缓存、持仓、成交记录的顺序补齐股票名称。"""
     score_item = scores_map.get(code) or {}
     name = (score_item.get("name") or "").strip()
     if name and name != code:
+        return name
+
+    name = _extract_name_from_prompt(llm_prompt, code)
+    if name:
         return name
 
     for sql in (
@@ -134,7 +167,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
             cursor = db.conn.cursor()
             fetch_limit = min(limit * 5, 200)
             cursor.execute(
-                "SELECT id, code, date, action, reasoning, confidence, outcome, outcome_pct, llm_response "
+                "SELECT id, code, date, action, reasoning, confidence, outcome, outcome_pct, llm_response, llm_prompt "
                 "FROM llm_decisions ORDER BY date DESC, id DESC LIMIT ?",
                 (fetch_limit,)
             )
@@ -157,7 +190,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                 decisions_list.append({
                     "id": r[0],
                     "code": code,
-                    "name": _resolve_stock_name(cursor, code, scores_map),
+                    "name": _resolve_stock_name(cursor, code, scores_map, r[9]),
                     "date": r[2],
                     "action": r[3],
                     "reasoning": sanitize_public_text(r[4], max_len=520),
@@ -226,13 +259,36 @@ def get_performance(days: int = Query(10, ge=2, le=90)):
                 except Exception:
                     pass
         
+        today = datetime.now().strftime("%Y-%m-%d")
+        if perf_data and perf_data[-1].get("date") != today:
+            try:
+                from execution.paper_account import PaperAccount
+                account = PaperAccount()
+                total_assets = _account_total_assets_with_realtime(account)
+                initial_capital = account.initial_capital or 0
+                previous_assets = float(perf_data[-1].get("total_assets") or total_assets)
+                cumulative_pnl_pct = (
+                    (total_assets - initial_capital) / initial_capital
+                    if initial_capital > 0 else 0.0
+                )
+                perf_data.append({
+                    "date": today,
+                    "total_assets": total_assets,
+                    "daily_pnl": total_assets - previous_assets,
+                    "cumulative_pnl_pct": cumulative_pnl_pct,
+                    "benchmark_pnl_pct": perf_data[-1].get("benchmark_pnl_pct", 0.0)
+                })
+                perf_data = perf_data[-days:]
+            except Exception:
+                pass
+
         if not perf_data:
             from execution.paper_account import PaperAccount
             account = PaperAccount()
-            today = datetime.now().strftime("%Y-%m-%d")
+            total_assets = _account_total_assets_with_realtime(account)
             perf_data.append({
                 "date": today,
-                "total_assets": account.total_assets(),
+                "total_assets": total_assets,
                 "daily_pnl": 0.0,
                 "cumulative_pnl_pct": 0.0,
                 "benchmark_pnl_pct": 0.0

@@ -25,12 +25,26 @@ def get_detailed_positions():
     try:
         from execution.paper_account import PaperAccount
         account = PaperAccount()
-        
-        total_assets = account.total_assets()
+
+        prices = {}
+        quote_names = {}
+        if account.positions:
+            try:
+                from data.realtime import get_realtime
+                quotes = get_realtime(list(account.positions.keys()))
+                for quote in quotes:
+                    if getattr(quote, "price", 0) > 0:
+                        prices[quote.code] = quote.price
+                    if getattr(quote, "name", ""):
+                        quote_names[quote.code] = quote.name
+            except Exception:
+                prices = {}
+
+        total_assets = account.total_assets(prices or None)
         pos_list = []
         for code, pos in account.positions.items():
             buy_price = pos.get("buy_price", 0.0)
-            current_price = pos.get("current_price") or pos.get("buy_price", buy_price)
+            current_price = prices.get(code) or pos.get("current_price") or pos.get("buy_price", buy_price)
             shares = pos.get("shares", 0)
             cost = pos.get("cost") or (buy_price * shares)
             market_val = current_price * shares
@@ -67,7 +81,7 @@ def get_detailed_positions():
 
             pos_list.append({
                 "code": code,
-                "name": pos.get("name") or code,
+                "name": quote_names.get(code) or pos.get("name") or code,
                 "shares": shares,
                 "buy_price": buy_price,
                 "current_price": current_price,
