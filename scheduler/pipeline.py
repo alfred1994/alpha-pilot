@@ -412,6 +412,16 @@ def fast_scan(
         except Exception as _e:
             logger.debug(f"[快链路] 创建共享记忆失败(可忽略): {_e}")
 
+        if _shared_memory is not None:
+            for _s in top_candidates[:5]:
+                try:
+                    _s["memory_context"] = _shared_memory.recall(
+                        stock_code=_s["code"],
+                        regime=regime,
+                    )
+                except Exception as _e:
+                    logger.debug(f"[快链路] 预取记忆失败 {_s.get('code', '?')}: {_e}")
+
         llm_count = 0
         # 并发LLM决策
         def _parallel_llm_decision(_s):
@@ -430,6 +440,7 @@ def fast_scan(
                     name=_s["name"],
                     dimensions=_dims,
                     regime=regime,
+                    memory_context=_s.get("memory_context", ""),
                     current_positions=_positions,
                     total_assets=_total_assets,
                     cash=_cash,
@@ -533,61 +544,76 @@ def fast_scan(
             _evaluated_codes = {s["code"] for s in top_candidates}
             _sell_eval_count = 0
             _sell_signal_count = 0
+            _sell_memory = None
+            try:
+                from strategy.memory import TradeMemory
+                _sell_memory = TradeMemory()
+                _sell_memory.__enter__()
+            except Exception as _e:
+                logger.debug(f"[快链路-卖出] 创建共享记忆失败(可忽略): {_e}")
 
-            for _pos_code, _pos_info in _positions_sell.items():
-                if _pos_code in _evaluated_codes:
-                    continue  # 已经评估过
-                if remaining() < 5:
-                    logger.warning("[快链路-卖出] 时间不足，跳过剩余持仓评估")
-                    break
+            try:
+                for _pos_code, _pos_info in _positions_sell.items():
+                    if _pos_code in _evaluated_codes:
+                        continue  # 已经评估过
+                    if remaining() < 5:
+                        logger.warning("[快链路-卖出] 时间不足，跳过剩余持仓评估")
+                        break
 
-                try:
-                    from strategy.decision import compute_dimension_scores, DimensionScore as _DS2
-                    _df_sell = None
                     try:
-                        from data.history import get_daily
-                        _df_sell = get_daily(_pos_code, start_date="20240101")
-                    except Exception:
-                        pass
+                        from strategy.decision import compute_dimension_scores, DimensionScore as _DS2
+                        _df_sell = None
+                        try:
+                            from data.history import get_daily
+                            _df_sell = get_daily(_pos_code, start_date="20240101")
+                        except Exception:
+                            pass
 
-                    _dims_sell = compute_dimension_scores(_pos_code, _df_sell)
-                    _pos_name = _pos_info.get("name", _pos_code)
+                        _dims_sell = compute_dimension_scores(_pos_code, _df_sell)
+                        _pos_name = _pos_info.get("name", _pos_code)
 
-                    from strategy.llm_trader import make_decision
-                    _sell_decision = make_decision(
-                        code=_pos_code,
-                        name=_pos_name,
-                        dimensions=_dims_sell,
-                        regime=regime,
-                        current_positions=_positions_sell,
-                        total_assets=_total_assets_sell,
-                        cash=_cash_sell,
-                        llm_retries=0,
-                        llm_timeout=30,
-                    )
-
-                    _sell_eval_count += 1
-                    if _sell_decision and _sell_decision.action == "SELL":
-                        # LLM建议卖出持仓股，添加SELL订单
-                        _pos_shares = _pos_info.get("shares", 0)
-                        plan.orders.append(TradeOrder(
+                        from strategy.llm_trader import make_decision
+                        _sell_decision = make_decision(
                             code=_pos_code,
                             name=_pos_name,
-                            action="SELL",
-                            priority=len(plan.orders) + 1,
-                            target_weight=0,  # 清仓
-                            max_price=0,
-                            reason=f"LLM卖出: {_sell_decision.reason[:80]}",
-                            score=_sell_decision.composite_score,
-                            conviction=_sell_decision.confidence,
-                        ))
-                        _sell_signal_count += 1
-                        logger.info(f"[快链路-卖出] LLM建议卖出: {_pos_code} {_pos_name} {_sell_decision.reason[:50]}")
-                    elif _sell_decision and _sell_decision.action == "HOLD":
-                        plan.hold_reasons[_pos_code] = f"HOLD_LLM_SELL({_sell_decision.reason[:50]})"
+                            dimensions=_dims_sell,
+                            regime=regime,
+                            current_positions=_positions_sell,
+                            total_assets=_total_assets_sell,
+                            cash=_cash_sell,
+                            memory=_sell_memory,
+                            llm_retries=0,
+                            llm_timeout=30,
+                        )
 
-                except Exception as _e:
-                    logger.warning(f"[快链路-卖出] LLM评估失败 {_pos_code}: {_e}")
+                        _sell_eval_count += 1
+                        if _sell_decision and _sell_decision.action == "SELL":
+                            # LLM建议卖出持仓股，添加SELL订单
+                            _pos_shares = _pos_info.get("shares", 0)
+                            plan.orders.append(TradeOrder(
+                                code=_pos_code,
+                                name=_pos_name,
+                                action="SELL",
+                                priority=len(plan.orders) + 1,
+                                target_weight=0,  # 清仓
+                                max_price=0,
+                                reason=f"LLM卖出: {_sell_decision.reason[:80]}",
+                                score=_sell_decision.composite_score,
+                                conviction=_sell_decision.confidence,
+                            ))
+                            _sell_signal_count += 1
+                            logger.info(f"[快链路-卖出] LLM建议卖出: {_pos_code} {_pos_name} {_sell_decision.reason[:50]}")
+                        elif _sell_decision and _sell_decision.action == "HOLD":
+                            plan.hold_reasons[_pos_code] = f"HOLD_LLM_SELL({_sell_decision.reason[:50]})"
+
+                    except Exception as _e:
+                        logger.warning(f"[快链路-卖出] LLM评估失败 {_pos_code}: {_e}")
+            finally:
+                try:
+                    if _sell_memory is not None:
+                        _sell_memory.__exit__(None, None, None)
+                except Exception:
+                    pass
 
             if _sell_eval_count > 0:
                 logger.info(f"[快链路-卖出] 持仓评估: {_sell_eval_count}只, 卖出信号: {_sell_signal_count}只")
@@ -1184,6 +1210,26 @@ def run_review() -> PipelineResult:
                 adaptive_data=adaptive_data,
             )
             evolution = run_decision_evolution_analysis()
+            memory_report = {}
+            try:
+                from strategy.memory import TradeMemory
+                with TradeMemory() as memory:
+                    memory_report = memory.consolidate_layers(
+                        date=result.date,
+                        lookback_days=10,
+                    )
+                result.steps.append(StepResult(
+                    name="分层记忆进化", success=True,
+                    elapsed=time.time() - t0,
+                    detail=(
+                        f"短期{memory_report.get('short', 0)}条 "
+                        f"中期{memory_report.get('medium', 0)}条 "
+                        f"长期{memory_report.get('long', 0)}条 "
+                        f"失效{memory_report.get('expired', 0)}条"
+                    ),
+                ))
+            except Exception as e:
+                logger.warning(f"分层记忆进化失败(非致命): {e}")
             # 提取LLM分析关键信息
             total_decisions = evolution.get("total_decisions", 0)
             llm_detail = f"提取教训{lesson_count}条"

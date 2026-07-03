@@ -152,6 +152,18 @@ def main():
                 "market_regime": "sideways",
                 "created_at": "2026-06-05T15:12:00",
             })
+            db.insert_memory_item({
+                "layer": "long",
+                "scope": "stock",
+                "key": "600519",
+                "category": "entry",
+                "content": "报告测试长期记忆: 高置信度买入需要复核成交质量。",
+                "evidence": {"lesson_ids": [1]},
+                "score": 86,
+                "source": "test",
+                "created_at": "2026-06-05T15:13:00",
+                "updated_at": "2026-06-05T15:13:00",
+            })
             db.save_review_snapshot("2026-06-05", {
                 "date": "2026-06-05",
                 "trade_reviews": [{"code": "600519", "result_pct": 3.2}],
@@ -199,12 +211,15 @@ def main():
             "报告计算下一轮仓位上限",
         )
         assert_true(len(report["prompt_hints"]) == 1, "报告包含生效prompt建议")
+        assert_true(report["memory"]["layers"]["long"] == 1, "报告包含长期分层记忆统计")
         assert_true(report["control"]["paused"], "报告包含自动交易控制状态")
         assert_true("自动交易控制: 暂停" in report["markdown"], "Markdown包含暂停状态")
         assert_true("## 纠偏应用" in report["markdown"], "Markdown包含纠偏应用段")
         assert_true("执行审计: 计划2笔，成交1笔，阻断/跳过1笔，失败0笔" in report["markdown"], "Markdown包含执行审计摘要")
         assert_true("下一轮参数: Top2，最低分60，单票仓位上限9.6%" in report["markdown"], "Markdown包含下一轮参数影响")
         assert_true("Prompt进化建议: 1条生效" in report["markdown"], "Markdown包含prompt进化建议数量")
+        assert_true("分层记忆: 共1条" in report["markdown"], "Markdown包含分层记忆摘要")
+        assert_true("报告测试长期记忆" in report["markdown"], "Markdown包含长期记忆内容")
         assert_true("状态归因: 无循环0天，仅复盘0天，暂停1天，休市1天" in report["markdown"], "Markdown包含状态归因")
         assert_true("| 2026-06-04 | 盘中 | 暂停 |" in report["markdown"], "每日明细包含暂停诊断")
         assert_true("| 2026-06-05 | 盘中,盘后 | 闭环 | 2 | 1 | 1 | 2 | 1 | 0 |" in report["markdown"], "每日明细包含执行审计列")

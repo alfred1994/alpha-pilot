@@ -308,6 +308,34 @@ def _load_active_prompt_hints(db: Database, limit: int = 3) -> List[Dict]:
         return []
 
 
+def _summarise_layered_memory(db: Database, limit: int = 3) -> Dict:
+    """读取分层记忆摘要"""
+    try:
+        stats = db.get_memory_stats()
+        latest = db.conn.execute("""
+            SELECT layer, scope, key, category, content, score, updated_at
+            FROM memory_items
+            WHERE active = 1 AND layer = 'long'
+            ORDER BY score DESC, updated_at DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        return {
+            "available": stats.get("total", 0) > 0,
+            "total": stats.get("total", 0),
+            "layers": stats.get("layers", {}),
+            "latest_update": stats.get("latest_update"),
+            "latest_long": [dict(row) for row in latest],
+        }
+    except Exception:
+        return {
+            "available": False,
+            "total": 0,
+            "layers": {},
+            "latest_update": None,
+            "latest_long": [],
+        }
+
+
 def _summarise_next_trade_params(adaptive_state: Optional[Dict],
                                  latest_regime: Dict) -> Dict:
     """计算自适应状态对下一轮交易参数的实际影响"""
@@ -380,6 +408,7 @@ def format_ai_trader_report(report: Dict) -> str:
     latest_regime = report.get("latest_regime") or {}
     next_params = report.get("next_trade_params") or {}
     prompt_hints = report.get("prompt_hints") or []
+    memory = report.get("memory") or {}
     control_status = "暂停" if control.get("paused") else "运行"
     current_params = next_params.get("current") or {}
     current_regime = next_params.get("current_regime") or latest_regime.get("regime") or "sideways"
@@ -446,9 +475,12 @@ def format_ai_trader_report(report: Dict) -> str:
         f"- 最新市场环境: {current_regime} ({latest_regime.get('date', '无记录')})",
         f"- 下一轮参数: Top{current_params.get('top_k', '-')}，最低分{min_score_text}，单票仓位上限{float(current_params.get('max_weight') or 0):.1%}",
         f"- Prompt进化建议: {len(prompt_hints)}条生效",
+        f"- 分层记忆: 共{memory.get('total', 0)}条，短期{memory.get('layers', {}).get('short', 0)}条，中期{memory.get('layers', {}).get('medium', 0)}条，长期{memory.get('layers', {}).get('long', 0)}条",
     ])
     for hint in prompt_hints[:3]:
         lines.append(f"  - {hint.get('hint', '')}")
+    for item in (memory.get("latest_long") or [])[:3]:
+        lines.append(f"  - 长期记忆: {item.get('content', '')}")
 
     lines.extend([
         "",
@@ -544,6 +576,7 @@ def generate_ai_trader_report(days: int = 5, end_date: str = None,
         account = db.get_account_state() or {}
         latest_regime = _load_latest_regime(db, end_date)
         prompt_hints = _load_active_prompt_hints(db)
+        memory = _summarise_layered_memory(db)
 
     daily_rows = _build_daily_rows(dates, events, trades, decisions, lessons, reviews)
     report = {
@@ -555,6 +588,7 @@ def generate_ai_trader_report(days: int = 5, end_date: str = None,
         "latest_regime": latest_regime,
         "next_trade_params": _summarise_next_trade_params(adaptive_state, latest_regime),
         "prompt_hints": prompt_hints,
+        "memory": memory,
         "account": account,
         "control": get_auto_control_state(control_file=control_file),
         "paths": {},

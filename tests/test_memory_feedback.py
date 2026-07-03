@@ -12,6 +12,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from strategy.decision import DimensionScore
+import strategy.llm_trader as llm_trader
 from strategy.llm_trader import make_decision
 from strategy.memory import TradeMemory
 
@@ -23,6 +24,15 @@ def main():
     os.unlink(tmp_db_path)
 
     try:
+        original_mimo_key = llm_trader.MIMO_API_KEY
+        original_deepseek_key = llm_trader.DEEPSEEK_API_KEY
+        original_call_llm = llm_trader._call_llm
+        llm_trader.MIMO_API_KEY = "test-key"
+        llm_trader.DEEPSEEK_API_KEY = ""
+        llm_trader._call_llm = lambda *args, **kwargs: (
+            '{"action":"HOLD","confidence":0.55,"reasoning":"测试稳定返回"}'
+        )
+
         with TradeMemory(db_path=tmp_db_path) as memory:
             lesson_text = "600519历史教训: 放量长上影后不要追高，先等待回踩确认。"
             lesson_id = memory.save_lesson(
@@ -69,6 +79,9 @@ def main():
         print("交易记忆反哺测试通过")
 
     finally:
+        llm_trader.MIMO_API_KEY = original_mimo_key
+        llm_trader.DEEPSEEK_API_KEY = original_deepseek_key
+        llm_trader._call_llm = original_call_llm
         if os.path.exists(tmp_db_path):
             os.unlink(tmp_db_path)
 

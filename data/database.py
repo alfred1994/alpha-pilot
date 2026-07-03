@@ -233,6 +233,25 @@ class Database:
             )
         """)
 
+        # ── 分层交易记忆 ──
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS memory_items (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                layer       TEXT NOT NULL,
+                scope       TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                category    TEXT,
+                content     TEXT NOT NULL,
+                evidence    TEXT,
+                score       REAL DEFAULT 0,
+                source      TEXT,
+                expires_at  TEXT,
+                active      INTEGER DEFAULT 1,
+                created_at  TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
         # ── 自动盯盘运行事件 ──
         c.execute("""
             CREATE TABLE IF NOT EXISTS auto_events (
@@ -255,6 +274,10 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_llm_decisions_code ON llm_decisions(code)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_llm_decisions_date ON llm_decisions(date)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_lessons_category ON lessons(category)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_layer ON memory_items(layer)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_scope_key ON memory_items(scope, key)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_active ON memory_items(active)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_updated ON memory_items(updated_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_date ON auto_events(date)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_type ON auto_events(event_type)")
 
@@ -712,6 +735,110 @@ class Database:
         self.conn.commit()
 
     # ════════════════════════════════════════════════════════════════
+    # memory_items 分层交易记忆 CRUD
+    # ════════════════════════════════════════════════════════════════
+
+    def insert_memory_item(self, item: Dict) -> int:
+        """插入分层记忆，返回 id"""
+        c = self.conn.cursor()
+        now = datetime.now().isoformat()
+        evidence = item.get("evidence", {})
+        if not isinstance(evidence, str):
+            evidence = json.dumps(evidence, ensure_ascii=False)
+        c.execute("""
+            INSERT INTO memory_items
+            (layer, scope, key, category, content, evidence, score,
+             source, expires_at, active, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            item.get("layer", ""),
+            item.get("scope", "global"),
+            item.get("key", ""),
+            item.get("category", ""),
+            item.get("content", ""),
+            evidence,
+            item.get("score", 0),
+            item.get("source", ""),
+            item.get("expires_at"),
+            item.get("active", 1),
+            item.get("created_at", now),
+            item.get("updated_at", now),
+        ))
+        self.conn.commit()
+        return c.lastrowid
+
+    def get_memory_items(self, layer: str = None, scope: str = None,
+                         key: str = None, category: str = None,
+                         active: bool = True, limit: int = 20) -> List[Dict]:
+        """查询分层记忆"""
+        conditions, params = [], []
+        if layer:
+            conditions.append("layer = ?")
+            params.append(layer)
+        if scope:
+            conditions.append("scope = ?")
+            params.append(scope)
+        if key is not None:
+            conditions.append("key = ?")
+            params.append(key)
+        if category:
+            conditions.append("category = ?")
+            params.append(category)
+        if active is not None:
+            conditions.append("active = ?")
+            params.append(1 if active else 0)
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+        c = self.conn.cursor()
+        c.execute(f"""
+            SELECT * FROM memory_items
+            WHERE {where}
+            ORDER BY score DESC, updated_at DESC
+            LIMIT ?
+        """, params + [limit])
+        return [dict(row) for row in c.fetchall()]
+
+    _MEMORY_ITEM_UPDATE_COLUMNS = {
+        "layer", "scope", "key", "category", "content", "evidence",
+        "score", "source", "expires_at", "active", "updated_at",
+    }
+
+    def update_memory_item(self, item_id: int, updates: Dict):
+        """更新分层记忆"""
+        safe_updates = {
+            k: v for k, v in updates.items()
+            if k in self._MEMORY_ITEM_UPDATE_COLUMNS
+        }
+        if not safe_updates:
+            return
+        if "evidence" in safe_updates and not isinstance(safe_updates["evidence"], str):
+            safe_updates["evidence"] = json.dumps(safe_updates["evidence"], ensure_ascii=False)
+        safe_updates.setdefault("updated_at", datetime.now().isoformat())
+        sets = ", ".join(f"{k}=?" for k in safe_updates)
+        values = list(safe_updates.values()) + [item_id]
+        c = self.conn.cursor()
+        c.execute(f"UPDATE memory_items SET {sets} WHERE id=?", values)
+        self.conn.commit()
+
+    def get_memory_stats(self) -> Dict:
+        """统计分层记忆数量"""
+        c = self.conn.cursor()
+        stats = {"total": 0, "layers": {}, "latest_update": None}
+        c.execute("SELECT COUNT(*) AS cnt FROM memory_items WHERE active = 1")
+        stats["total"] = c.fetchone()["cnt"]
+        c.execute("""
+            SELECT layer, COUNT(*) AS cnt
+            FROM memory_items
+            WHERE active = 1
+            GROUP BY layer
+        """)
+        stats["layers"] = {row["layer"]: row["cnt"] for row in c.fetchall()}
+        c.execute("SELECT MAX(updated_at) AS latest_update FROM memory_items WHERE active = 1")
+        row = c.fetchone()
+        stats["latest_update"] = row["latest_update"] if row else None
+        return stats
+
+    # ════════════════════════════════════════════════════════════════
     # get_kline_cached - 缓存优先的K线获取
     # ════════════════════════════════════════════════════════════════
 
@@ -875,7 +1002,7 @@ class Database:
 
         for table in ["k_daily", "k_minute", "trades", "positions", "account_state",
                        "daily_snapshots", "market_regimes", "llm_decisions", "lessons",
-                       "review_snapshots", "adaptive_state", "auto_events"]:
+                       "memory_items", "review_snapshots", "adaptive_state", "auto_events"]:
             c.execute(f"SELECT COUNT(*) as cnt FROM {table}")
             stats[table] = c.fetchone()["cnt"]
 
@@ -901,6 +1028,7 @@ class Database:
             f"市场环境:       {stats['market_regimes']:>8}条",
             f"LLM决策:        {stats['llm_decisions']:>8}条",
             f"教训库:         {stats['lessons']:>8}条",
+            f"分层记忆:       {stats['memory_items']:>8}条",
             f"复盘快照:       {stats['review_snapshots']:>8}条",
             f"自适应状态:     {stats['adaptive_state']:>8}条",
             f"自动盯盘事件:   {stats['auto_events']:>8}条",

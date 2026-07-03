@@ -16,10 +16,17 @@
 import json
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 logger = logging.getLogger("strategy.memory")
+
+MEMORY_LAYERS = ("short", "medium", "long")
+MEMORY_LAYER_LABELS = {
+    "short": "短期记忆",
+    "medium": "中期记忆",
+    "long": "长期记忆",
+}
 
 
 @dataclass
@@ -101,6 +108,72 @@ class TradeMemory:
         Returns:
             格式化的记忆文本，可直接放入LLM prompt
         """
+        layered = self.recall_layered(stock_code=stock_code, regime=regime)
+        if layered != "暂无分层记忆。":
+            return layered
+
+        return self._recall_legacy(stock_code=stock_code, regime=regime)
+
+    def recall_layered(self, stock_code: str = None, regime: str = None,
+                       sector: str = None, max_chars: int = 1500) -> str:
+        """
+        检索短期/中期/长期分层记忆。
+
+        分层记忆只负责给LLM提供可验证经验，不直接改变下单或风控结果。
+        """
+        try:
+            db = self._get_db()
+            rows_by_layer = {layer: [] for layer in MEMORY_LAYERS}
+            queries: List[Tuple[str, str]] = [("global", "")]
+            if regime:
+                queries.append(("regime", regime))
+            if sector:
+                queries.append(("sector", sector))
+            if stock_code:
+                queries.append(("stock", stock_code))
+
+            seen = set()
+            for layer in MEMORY_LAYERS:
+                for scope, key in queries:
+                    rows = db.get_memory_items(
+                        layer=layer, scope=scope, key=key,
+                        active=True, limit=5,
+                    )
+                    for row in rows:
+                        row_id = row.get("id")
+                        if row_id in seen:
+                            continue
+                        seen.add(row_id)
+                        rows_by_layer[layer].append(row)
+
+            parts = []
+            for layer in MEMORY_LAYERS:
+                rows = sorted(
+                    rows_by_layer[layer],
+                    key=lambda r: (float(r.get("score") or 0), r.get("updated_at") or ""),
+                    reverse=True,
+                )[:5]
+                if not rows:
+                    continue
+                parts.append(f"【{MEMORY_LAYER_LABELS[layer]}】")
+                for row in rows:
+                    category = row.get("category") or "general"
+                    score = float(row.get("score") or 0)
+                    parts.append(f"- [{category} {score:.0f}] {row.get('content', '')}")
+
+            if not parts:
+                return "暂无分层记忆。"
+
+            text = "\n".join(parts)
+            if max_chars and len(text) > max_chars:
+                text = text[:max_chars - 20].rstrip() + "\n...（记忆已截断）"
+            return text
+        except Exception as e:
+            logger.warning(f"检索分层记忆失败: {e}")
+            return "暂无分层记忆。"
+
+    def _recall_legacy(self, stock_code: str = None, regime: str = None) -> str:
+        """兼容旧版 lessons/llm_decisions 记忆检索。"""
         parts = []
 
         # 1. 该股票的历史教训
@@ -144,6 +217,274 @@ class TradeMemory:
             return "暂无相关历史记忆。"
 
         return "\n".join(parts)
+
+    def save_memory_item(self, layer: str, scope: str, key: str, category: str,
+                         content: str, evidence: dict = None, score: float = 50,
+                         source: str = "memory", expires_at: str = None) -> int:
+        """
+        保存一条分层记忆。
+
+        相同 layer/scope/key/category/content 的活跃记忆会更新而不是重复插入。
+        """
+        if layer not in MEMORY_LAYERS:
+            raise ValueError(f"非法记忆层级: {layer}")
+        content = (content or "").strip()
+        if not content:
+            return -1
+
+        try:
+            db = self._get_db()
+            c = db.conn.cursor()
+            key_value = key or ""
+            category_value = category or "general"
+            c.execute("""
+                SELECT id, score, evidence FROM memory_items
+                WHERE layer = ? AND scope = ? AND key = ? AND category = ?
+                  AND content = ? AND active = 1
+                ORDER BY updated_at DESC LIMIT 1
+            """, (layer, scope, key_value, category_value, content))
+            existing = c.fetchone()
+            item = {
+                "layer": layer,
+                "scope": scope,
+                "key": key_value,
+                "category": category_value,
+                "content": content,
+                "evidence": evidence or {},
+                "score": max(0, min(100, float(score or 0))),
+                "source": source,
+                "expires_at": expires_at,
+                "active": 1,
+            }
+            if existing:
+                merged_score = max(float(existing["score"] or 0), item["score"])
+                db.update_memory_item(existing["id"], {
+                    "evidence": item["evidence"],
+                    "score": merged_score,
+                    "source": source,
+                    "expires_at": expires_at,
+                    "active": 1,
+                })
+                return existing["id"]
+            return db.insert_memory_item(item)
+        except Exception as e:
+            logger.warning(f"保存分层记忆失败: {e}")
+            return -1
+
+    def consolidate_layers(self, date: str = None, lookback_days: int = 10) -> Dict:
+        """
+        将复盘、订单审计、LLM决策和prompt进化建议沉淀为分层记忆。
+
+        Returns:
+            {"short": 2, "medium": 1, "long": 1, "expired": 3}
+        """
+        target_date = date or datetime.now().strftime("%Y-%m-%d")
+        since = (
+            datetime.strptime(target_date, "%Y-%m-%d") - timedelta(days=lookback_days)
+        ).strftime("%Y-%m-%d")
+        result = {"short": 0, "medium": 0, "long": 0, "expired": 0}
+
+        try:
+            result["expired"] = self._expire_short_memory()
+            result["short"] += self._consolidate_short_memory(target_date)
+            medium_count, promoted_count = self._consolidate_decision_patterns(since, target_date)
+            result["medium"] += medium_count
+            result["long"] += promoted_count
+            result["long"] += self._consolidate_important_lessons(since)
+            result["long"] += self._consolidate_prompt_hints()
+            logger.info(
+                "分层记忆进化完成: short=%s medium=%s long=%s expired=%s",
+                result["short"], result["medium"], result["long"], result["expired"],
+            )
+        except Exception as e:
+            logger.warning(f"分层记忆进化失败: {e}")
+        return result
+
+    def _expire_short_memory(self) -> int:
+        """失效过期短期记忆。"""
+        db = self._get_db()
+        now = datetime.now().isoformat()
+        c = db.conn.cursor()
+        c.execute("""
+            UPDATE memory_items
+            SET active = 0, updated_at = ?
+            WHERE layer = 'short' AND active = 1
+              AND expires_at IS NOT NULL AND expires_at < ?
+        """, (now, now))
+        db.conn.commit()
+        return c.rowcount if c.rowcount and c.rowcount > 0 else 0
+
+    def _consolidate_short_memory(self, target_date: str) -> int:
+        """沉淀当天事件和教训为短期记忆。"""
+        db = self._get_db()
+        count = 0
+        expires_at = (
+            datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=2)
+        ).isoformat()
+
+        for lesson in db.get_lessons(limit=50):
+            if lesson.get("date") != target_date:
+                continue
+            codes = self._loads_json(lesson.get("related_trades"), [])
+            key = codes[0] if codes else lesson.get("market_regime", "") or ""
+            scope = "stock" if codes else ("regime" if lesson.get("market_regime") else "global")
+            content = f"今日复盘教训: {lesson.get('content', '')}"
+            item_id = self.save_memory_item(
+                layer="short",
+                scope=scope,
+                key=key,
+                category=lesson.get("category") or "general",
+                content=content,
+                evidence={"lesson_ids": [lesson.get("id")], "codes": codes},
+                score=60 + min(30, int(lesson.get("importance") or 3) * 6),
+                source="lesson",
+                expires_at=expires_at,
+            )
+            if item_id > 0:
+                count += 1
+
+        for event in db.get_auto_events(date=target_date, limit=20):
+            actions = event.get("actions") or []
+            error = event.get("error") or ""
+            if not actions and not error:
+                continue
+            summary = "；".join(str(x) for x in actions[:3])
+            if error:
+                summary = (summary + "；" if summary else "") + f"错误: {error[:80]}"
+            item_id = self.save_memory_item(
+                layer="short",
+                scope="global",
+                key="",
+                category="execution",
+                content=f"今日自动盯盘事件: {summary[:180]}",
+                evidence={"auto_event_ids": [event.get("id")], "status": event.get("status")},
+                score=55,
+                source="auto_event",
+                expires_at=expires_at,
+            )
+            if item_id > 0:
+                count += 1
+        return count
+
+    def _consolidate_decision_patterns(self, since: str, target_date: str) -> Tuple[int, int]:
+        """从已验证LLM决策聚合中期模式，并将稳定模式提升为长期记忆。"""
+        db = self._get_db()
+        decisions = db.get_llm_decisions(start_date=since, end_date=target_date, limit=500)
+        groups: Dict[Tuple[str, str], List[dict]] = {}
+        for decision in decisions:
+            outcome = str(decision.get("outcome") or "").lower()
+            if outcome not in ("win", "wins", "lose", "loss", "losses"):
+                continue
+            key = (decision.get("code") or "", decision.get("action") or "HOLD")
+            groups.setdefault(key, []).append(decision)
+
+        medium_count = 0
+        long_count = 0
+        for (code, action), rows in groups.items():
+            if not code or len(rows) < 2:
+                continue
+            wins = [r for r in rows if str(r.get("outcome")).lower() in ("win", "wins")]
+            loses = [r for r in rows if r not in wins]
+            total = len(rows)
+            win_rate = len(wins) / total
+            avg_pct = sum(float(r.get("outcome_pct") or 0) for r in rows) / total
+            if win_rate >= 0.6:
+                category = "entry"
+                content = f"近{total}次{code} {action}决策胜率{win_rate:.0%}，平均结果{avg_pct:+.1f}%，同类信号可提高关注。"
+            elif win_rate <= 0.4:
+                category = "risk"
+                content = f"近{total}次{code} {action}决策胜率仅{win_rate:.0%}，平均结果{avg_pct:+.1f}%，同类信号需降权或等待确认。"
+            else:
+                continue
+
+            evidence = {
+                "decision_ids": [r.get("id") for r in rows],
+                "win_count": len(wins),
+                "lose_count": len(loses),
+                "avg_outcome_pct": round(avg_pct, 2),
+                "codes": [code],
+            }
+            score = 50 + min(40, abs(win_rate - 0.5) * 80 + total * 3)
+            if self.save_memory_item(
+                layer="medium", scope="stock", key=code, category=category,
+                content=content, evidence=evidence, score=score,
+                source="decision_pattern",
+            ) > 0:
+                medium_count += 1
+
+            if total >= 3 and (win_rate >= 0.67 or win_rate <= 0.33):
+                if self.save_memory_item(
+                    layer="long", scope="stock", key=code, category=category,
+                    content="长期验证: " + content, evidence=evidence,
+                    score=min(100, score + 10), source="decision_pattern",
+                ) > 0:
+                    long_count += 1
+        return medium_count, long_count
+
+    def _consolidate_important_lessons(self, since: str) -> int:
+        """将高重要度教训提升为长期记忆。"""
+        db = self._get_db()
+        count = 0
+        for lesson in db.get_lessons(limit=200):
+            if (lesson.get("date") or "") < since:
+                continue
+            importance = int(lesson.get("importance") or 3)
+            if importance < 4:
+                continue
+            codes = self._loads_json(lesson.get("related_trades"), [])
+            scope = "stock" if codes else ("regime" if lesson.get("market_regime") else "global")
+            key = codes[0] if codes else lesson.get("market_regime", "") or ""
+            if self.save_memory_item(
+                layer="long",
+                scope=scope,
+                key=key,
+                category=lesson.get("category") or "general",
+                content=f"复盘高重要度教训: {lesson.get('content', '')}",
+                evidence={"lesson_ids": [lesson.get("id")], "codes": codes},
+                score=min(100, 55 + importance * 8),
+                source="important_lesson",
+            ) > 0:
+                count += 1
+        return count
+
+    def _consolidate_prompt_hints(self) -> int:
+        """将当前生效prompt建议同步为长期全局记忆。"""
+        db = self._get_db()
+        count = 0
+        try:
+            rows = db.conn.execute("""
+                SELECT id, hint, source, created_at
+                FROM active_prompt_hints
+                WHERE active = 1
+                ORDER BY id DESC LIMIT 3
+            """).fetchall()
+        except Exception:
+            return 0
+        for row in rows:
+            if self.save_memory_item(
+                layer="long",
+                scope="global",
+                key="",
+                category="prompt",
+                content=f"生效Prompt进化建议: {row['hint']}",
+                evidence={"prompt_hint_ids": [row["id"]], "source": row["source"]},
+                score=72,
+                source="prompt_evolution",
+            ) > 0:
+                count += 1
+        return count
+
+    @staticmethod
+    def _loads_json(value, default):
+        """容错解析JSON字段。"""
+        if value is None:
+            return default
+        if isinstance(value, (list, dict)):
+            return value
+        try:
+            return json.loads(value)
+        except Exception:
+            return default
 
     def recall_lessons(self, category: str = None, limit: int = 10,
                        min_importance: int = 1) -> List[Lesson]:
