@@ -140,6 +140,92 @@ def test_trades_replace_generic_tradeplan_reason():
                 os.unlink(candidate)
 
 
+def test_trades_backfill_missing_sell_pnl_from_prior_buy():
+    db_file = tempfile.NamedTemporaryFile(suffix="_quant.db", delete=False)
+    db_path = db_file.name
+    db_file.close()
+    os.unlink(db_path)
+
+    old_get_db = database_router._get_db
+    database_router._get_db = lambda: Database(db_path=db_path)
+    try:
+        with Database(db_path=db_path) as db:
+            db.insert_trade({
+                "code": "600228",
+                "name": "返利科技",
+                "action": "BUY",
+                "price": 10.79,
+                "shares": 3000,
+                "amount": 32370,
+                "commission": 9.711,
+                "reason": "测试买入",
+                "pnl": 0.0,
+                "pnl_pct": 0.0,
+                "created_at": "2026-06-26T10:00:00",
+            })
+            db.insert_trade({
+                "code": "600228",
+                "name": "返利科技",
+                "action": "SELL",
+                "price": 11.87,
+                "shares": 3000,
+                "amount": 35610,
+                "commission": 10.683,
+                "reason": "测试卖出",
+                "created_at": "2026-06-29T09:30:03",
+            })
+
+        data = database_router.get_trades(limit=10, page=1)
+        sell_trade = data["trades"][0]
+        assert_true(data["success"], "交易接口返回成功")
+        assert_true(sell_trade["action"] == "SELL", "读取到缺失盈亏的卖出交易")
+        assert_true(sell_trade["pnl"] is not None and sell_trade["pnl"] > 3000, "卖出盈亏按买入价回填")
+        assert_true(abs(sell_trade["pnl_pct"] - ((11.87 - 10.79) / 10.79)) < 0.000001, "卖出盈亏比按买入价回填")
+
+        with Database(db_path=db_path) as db:
+            stored = db.get_trades(code="600228", limit=1)[0]
+        assert_true(stored["pnl"] is not None and stored["pnl_pct"] is not None, "回填结果写回SQLite")
+    finally:
+        database_router._get_db = old_get_db
+        for candidate in [db_path, f"{db_path}-wal", f"{db_path}-shm"]:
+            if os.path.exists(candidate):
+                os.unlink(candidate)
+
+
+def test_trades_keep_unknown_sell_pnl_null_without_prior_buy():
+    db_file = tempfile.NamedTemporaryFile(suffix="_quant.db", delete=False)
+    db_path = db_file.name
+    db_file.close()
+    os.unlink(db_path)
+
+    old_get_db = database_router._get_db
+    database_router._get_db = lambda: Database(db_path=db_path)
+    try:
+        with Database(db_path=db_path) as db:
+            db.insert_trade({
+                "code": "000001",
+                "name": "平安银行",
+                "action": "SELL",
+                "price": 12.0,
+                "shares": 100,
+                "amount": 1200,
+                "commission": 5,
+                "reason": "测试卖出",
+                "created_at": "2026-07-01T10:00:00",
+            })
+
+        data = database_router.get_trades(limit=10, page=1)
+        trade = data["trades"][0]
+        assert_true(data["success"], "交易接口返回成功")
+        assert_true(trade["pnl"] is None, "无法匹配买入时保留未知盈亏")
+        assert_true(trade["pnl_pct"] is None, "无法匹配买入时保留未知盈亏比")
+    finally:
+        database_router._get_db = old_get_db
+        for candidate in [db_path, f"{db_path}-wal", f"{db_path}-shm"]:
+            if os.path.exists(candidate):
+                os.unlink(candidate)
+
+
 def test_performance_appends_today_when_review_is_stale():
     data = database_router.get_performance(days=10)
     today = datetime.now().strftime("%Y-%m-%d")
@@ -164,10 +250,27 @@ def test_performance_daily_pnl_matches_adjacent_assets():
     assert_true(normalized[2]["daily_pnl"] == -20.0, "日盈亏按相邻总资产减少额校准")
 
 
+def test_dashboard_frontend_separates_decision_confidence_and_unknown_pnl():
+    js_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "web", "static", "js", "modules", "dashboard.js"
+    )
+    with open(js_path, "r", encoding="utf-8") as f:
+        source = f.read()
+
+    assert_true("${this.actionText(action)}${confidence}" not in source, "持仓卡片不再把持有和置信度拼成一个标签")
+    assert_true("决策置信度" in source, "持仓卡片单独展示决策置信度")
+    assert_true("未知盈亏" in source, "交易记录对缺失盈亏显示未知而不是0")
+    assert_true("Number(t.pnl || 0)" not in source, "前端统计不再把空盈亏当作0")
+
+
 if __name__ == "__main__":
     test_decisions_hide_no_response_and_include_name()
     test_decisions_resolve_name_from_llm_prompt()
     test_trades_replace_generic_tradeplan_reason()
+    test_trades_backfill_missing_sell_pnl_from_prior_buy()
+    test_trades_keep_unknown_sell_pnl_null_without_prior_buy()
     test_performance_appends_today_when_review_is_stale()
     test_performance_daily_pnl_matches_adjacent_assets()
+    test_dashboard_frontend_separates_decision_confidence_and_unknown_pnl()
     print("仪表盘数据展示契约测试通过")

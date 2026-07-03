@@ -233,6 +233,7 @@ body {
 
 .green-text { color: var(--success-color); }
 .red-text { color: var(--danger-color); }
+.muted-text { color: var(--text-muted); }
 
 .pulse-dot {
     width: 10px;
@@ -793,6 +794,44 @@ body {
     margin-bottom: 8px;
 }
 
+.pos-decision-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 10px;
+}
+
+.pos-decision-grid div {
+    min-width: 0;
+    padding: 8px 10px;
+    border-right: 1px solid rgba(255, 255, 255, 0.05);
+    background: rgba(255, 255, 255, 0.018);
+}
+
+.pos-decision-grid div:last-child {
+    border-right: 0;
+}
+
+.pos-decision-grid span {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 11px;
+    margin-bottom: 3px;
+}
+
+.pos-decision-grid b {
+    display: block;
+    font-size: 13px;
+    line-height: 1.3;
+    overflow-wrap: anywhere;
+}
+
+.decision-action-text {
+    font-weight: 700;
+}
+
 .pos-title-block {
     min-width: 0;
 }
@@ -957,6 +996,16 @@ body {
     }
     .pos-card-header {
         flex-direction: column;
+    }
+    .pos-decision-grid {
+        grid-template-columns: 1fr;
+    }
+    .pos-decision-grid div {
+        border-right: 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .pos-decision-grid div:last-child {
+        border-bottom: 0;
     }
     .pos-badges {
         justify-content: flex-start;

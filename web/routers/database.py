@@ -44,6 +44,16 @@ def _normalize_performance_daily_pnl(perf_data: list) -> list:
     return normalized
 
 
+def _nullable_float(value):
+    """保留未知数值为None，避免把缺失盈亏误报为0。"""
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _load_signal_cache():
     """读取本地信号缓存，用于把决策和股票名称补齐到公开接口。"""
     project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -132,6 +142,10 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
         with _get_db() as db:
             offset = (page - 1) * limit
             cursor = db.conn.cursor()
+            try:
+                db.backfill_missing_trade_pnl()
+            except Exception:
+                pass
             cursor.execute(
                 "SELECT id, created_at, code, name, action, price, shares, commission, pnl, pnl_pct, reason "
                 "FROM trades ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
@@ -155,8 +169,8 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                     "price": r[5],
                     "shares": r[6],
                     "fee": r[7] or 0.0,
-                    "pnl": r[8] or 0.0,
-                    "pnl_pct": r[9] or 0.0,
+                    "pnl": _nullable_float(r[8]),
+                    "pnl_pct": _nullable_float(r[9]),
                     "reason": _resolve_trade_reason(cursor, r[2], r[4], r[10], date_str)
                 })
             

@@ -4,6 +4,41 @@ from web.public_safety import is_internal_status_exposed, is_production, public_
 
 router = APIRouter()
 
+
+def _persist_realtime_valuation(account, prices: dict):
+    """把网页实时估值同步回SQLite，保持查库口径与网页口径一致。"""
+    if not prices or not getattr(account, "positions", None):
+        return
+
+    try:
+        from data.database import Database
+
+        positions = {}
+        for code, pos in account.positions.items():
+            item = dict(pos)
+            price = prices.get(code)
+            if price and price > 0:
+                item["current_price"] = price
+                pos["current_price"] = price
+            positions[code] = item
+
+        market_value = sum(
+            (pos.get("current_price") or pos.get("buy_price") or 0) * (pos.get("shares") or 0)
+            for pos in positions.values()
+        )
+        with Database(db_path=getattr(account, "db_path", None)) as db:
+            for pos in positions.values():
+                db.upsert_position(pos)
+            db.save_account_state({
+                "initial_capital": getattr(account, "initial_capital", 0),
+                "cash": getattr(account, "cash", 0),
+                "total_assets": getattr(account, "cash", 0) + market_value,
+                "positions": positions,
+            })
+    except Exception:
+        pass
+
+
 @router.get("/status")
 def get_system_status():
     """获取系统运行健康状态、Watchdog及仓位账户信息"""
@@ -41,6 +76,7 @@ def get_detailed_positions():
                 prices = {}
 
         total_assets = account.total_assets(prices or None)
+        _persist_realtime_valuation(account, prices)
         pos_list = []
         for code, pos in account.positions.items():
             buy_price = pos.get("buy_price", 0.0)

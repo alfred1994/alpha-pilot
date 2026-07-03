@@ -32,6 +32,20 @@ export class DashboardTab {
         return `${number >= 0 ? '+' : ''}${number.toFixed(digits)}%`;
     }
 
+    isKnownNumber(value) {
+        return value !== null && value !== undefined && value !== '' && Number.isFinite(Number(value));
+    }
+
+    knownNumber(value, fallback = 0) {
+        return this.isKnownNumber(value) ? Number(value) : fallback;
+    }
+
+    tradePnlText(trade) {
+        if (trade.action !== 'SELL') return '-';
+        if (!this.isKnownNumber(trade.pnl) || !this.isKnownNumber(trade.pnl_pct)) return '未知盈亏';
+        return `${this.signedMoney(trade.pnl)} (${this.pct(trade.pnl_pct, 2)})`;
+    }
+
     text(value, fallback = '-') {
         if (value === null || value === undefined || value === '') return fallback;
         return String(value);
@@ -175,8 +189,9 @@ export class DashboardTab {
         const dailyPnl = Number(latest.daily_pnl || 0);
         const positionValue = positions.reduce((sum, pos) => sum + Number(pos.market_value || 0), 0);
         const sellTrades = tradesData.trades.filter(t => t.action === 'SELL');
-        const winningTrades = sellTrades.filter(t => Number(t.pnl || 0) > 0);
-        const winRate = sellTrades.length ? winningTrades.length / sellTrades.length : null;
+        const settledSellTrades = sellTrades.filter(t => this.isKnownNumber(t.pnl));
+        const winningTrades = settledSellTrades.filter(t => Number(t.pnl) > 0);
+        const winRate = settledSellTrades.length ? winningTrades.length / settledSellTrades.length : null;
 
         this.setText('total-assets', this.money(account.total_assets));
         this.setText('available-cash', this.money(account.cash));
@@ -303,8 +318,10 @@ export class DashboardTab {
             const pnlClass = this.pnlClass(pnl);
             const latestDecision = pos.latest_decision || {};
             const action = latestDecision.action || 'HOLD';
-            const actionClass = action === 'BUY' ? 'badge-success' : (action === 'SELL' ? 'badge-danger' : 'badge-neutral');
-            const confidence = latestDecision.confidence !== undefined ? ` (${(Number(latestDecision.confidence) * 100).toFixed(0)}%)` : '';
+            const actionClass = action === 'BUY' ? 'green-text' : (action === 'SELL' ? 'red-text' : 'muted-text');
+            const confidence = this.isKnownNumber(latestDecision.confidence)
+                ? `${(Number(latestDecision.confidence) * 100).toFixed(0)}%`
+                : '-';
             const decisionTitle = this.escape(latestDecision.reasoning || '-');
 
             const item = document.createElement('div');
@@ -315,9 +332,19 @@ export class DashboardTab {
                         <span class="pos-name">${this.escape(pos.name || pos.code)}</span>
                         <span class="pos-code">${this.escape(pos.code)}</span>
                     </div>
-                    <div class="pos-badges">
-                        <span class="badge weight-badge">权重 ${(Number(pos.weight || 0) * 100).toFixed(1)}%</span>
-                        <span class="badge ${actionClass}" title="最新决策原因: ${decisionTitle}">${this.actionText(action)}${confidence}</span>
+                </div>
+                <div class="pos-decision-grid" title="最新决策原因: ${decisionTitle}">
+                    <div>
+                        <span>最新决策</span>
+                        <b class="${actionClass} decision-action-text">${this.actionText(action)}</b>
+                    </div>
+                    <div>
+                        <span>决策置信度</span>
+                        <b class="font-outfit">${confidence}</b>
+                    </div>
+                    <div>
+                        <span>仓位权重</span>
+                        <b class="font-outfit">${(Number(pos.weight || 0) * 100).toFixed(1)}%</b>
                     </div>
                 </div>
                 <div class="pos-card-body">
@@ -758,7 +785,8 @@ export class DashboardTab {
         trades.forEach(t => {
             const date = (t.date || '').split(' ')[0];
             if (!date) return;
-            dailyPnl[date] = (dailyPnl[date] || 0) + Number(t.pnl || 0);
+            if (!this.isKnownNumber(t.pnl)) return;
+            dailyPnl[date] = (dailyPnl[date] || 0) + Number(t.pnl);
         });
 
         // 生成最近 35 天（5周）的热力图
@@ -797,9 +825,10 @@ export class DashboardTab {
         trades.slice(0, 8).forEach(t => {
             const tr = document.createElement('tr');
             const actionClass = t.action === 'BUY' ? 'green-text' : 'red-text';
-            const pnl = Number(t.pnl || 0);
-            const pnlClass = this.pnlClass(pnl);
-            const pnlText = t.action === 'SELL' ? `${this.signedMoney(pnl)} (${this.pct(t.pnl_pct, 2)})` : '-';
+            const hasPnl = this.isKnownNumber(t.pnl);
+            const pnl = this.knownNumber(t.pnl);
+            const pnlClass = hasPnl ? this.pnlClass(pnl) : 'muted-text';
+            const pnlText = this.tradePnlText(t);
             const reason = this.escape(t.reason || '-');
 
             tr.innerHTML = `

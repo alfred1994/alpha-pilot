@@ -484,6 +484,67 @@ class Database:
         c.execute(f"UPDATE trades SET {sets} WHERE id=?", values)
         self.conn.commit()
 
+    def backfill_missing_trade_pnl(self, code: str = None) -> Dict[str, int]:
+        """按同股票前序买入价回填缺失的卖出盈亏，避免历史空值被展示成0。"""
+        conditions = ["action = 'SELL'", "(pnl IS NULL OR pnl_pct IS NULL)"]
+        params = []
+        if code:
+            conditions.append("code = ?")
+            params.append(code)
+        where = " AND ".join(conditions)
+
+        c = self.conn.cursor()
+        c.execute(f"""
+            SELECT id, code, price, shares, amount, commission, created_at
+            FROM trades
+            WHERE {where}
+            ORDER BY created_at ASC, id ASC
+        """, params)
+        sell_rows = c.fetchall()
+
+        updated = 0
+        skipped = 0
+        for sell in sell_rows:
+            sell_code = sell["code"]
+            sell_time = sell["created_at"] or ""
+            c.execute("""
+                SELECT price
+                FROM trades
+                WHERE code = ? AND action = 'BUY' AND created_at < ?
+                  AND price IS NOT NULL AND price > 0
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+            """, (sell_code, sell_time))
+            buy = c.fetchone()
+            if not buy:
+                skipped += 1
+                continue
+
+            buy_price = float(buy["price"] or 0)
+            sell_price = float(sell["price"] or 0)
+            shares = int(sell["shares"] or 0)
+            if buy_price <= 0 or sell_price <= 0 or shares <= 0:
+                skipped += 1
+                continue
+
+            amount = float(sell["amount"] or (sell_price * shares))
+            commission = sell["commission"]
+            if commission is None:
+                commission = max(amount * config.COMMISSION_RATE, 5)
+            stamp_tax = amount * config.STAMP_TAX_RATE
+            pnl = (sell_price - buy_price) * shares - float(commission or 0) - stamp_tax
+            pnl_pct = (sell_price - buy_price) / buy_price
+
+            c.execute(
+                "UPDATE trades SET pnl = ?, pnl_pct = ? WHERE id = ?",
+                (pnl, pnl_pct, sell["id"]),
+            )
+            updated += 1
+
+        if updated:
+            self.conn.commit()
+        return {"updated": updated, "skipped": skipped}
+
     def delete_trade(self, trade_id: int):
         """删除交易记录"""
         c = self.conn.cursor()
