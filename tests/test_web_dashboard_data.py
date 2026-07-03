@@ -150,9 +150,24 @@ def test_performance_appends_today_when_review_is_stale():
     assert_true("daily_pnl" in data["performance"][-1], "今日记录包含daily_pnl")
 
 
+def test_performance_daily_pnl_matches_adjacent_assets():
+    rows = [
+        {"date": "2026-07-01", "total_assets": 1000.0, "daily_pnl": -999.0},
+        {"date": "2026-07-02", "total_assets": 1030.0, "daily_pnl": -999.0},
+        {"date": "2026-07-03", "total_assets": 1010.0, "daily_pnl": 999.0},
+    ]
+
+    normalized = database_router._normalize_performance_daily_pnl(rows)
+
+    assert_true(normalized[0]["daily_pnl"] == -999.0, "首条业绩记录保留原始日盈亏")
+    assert_true(normalized[1]["daily_pnl"] == 30.0, "日盈亏按相邻总资产增加额校准")
+    assert_true(normalized[2]["daily_pnl"] == -20.0, "日盈亏按相邻总资产减少额校准")
+
+
 if __name__ == "__main__":
     test_decisions_hide_no_response_and_include_name()
     test_decisions_resolve_name_from_llm_prompt()
     test_trades_replace_generic_tradeplan_reason()
     test_performance_appends_today_when_review_is_stale()
+    test_performance_daily_pnl_matches_adjacent_assets()
     print("仪表盘数据展示契约测试通过")

@@ -30,6 +30,20 @@ def _account_total_assets_with_realtime(account):
     return account.total_assets(prices or None)
 
 
+def _normalize_performance_daily_pnl(perf_data: list) -> list:
+    """按相邻总资产校准日盈亏，避免旧复盘文件的持仓口径污染图表。"""
+    normalized = [dict(item) for item in perf_data]
+    for index in range(1, len(normalized)):
+        try:
+            previous_assets = float(normalized[index - 1].get("total_assets") or 0)
+            current_assets = float(normalized[index].get("total_assets") or 0)
+        except (TypeError, ValueError):
+            continue
+        if previous_assets > 0:
+            normalized[index]["daily_pnl"] = current_assets - previous_assets
+    return normalized
+
+
 def _load_signal_cache():
     """读取本地信号缓存，用于把决策和股票名称补齐到公开接口。"""
     project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -294,6 +308,6 @@ def get_performance(days: int = Query(10, ge=2, le=90)):
                 "benchmark_pnl_pct": 0.0
             })
             
-        return {"success": True, "performance": perf_data}
+        return {"success": True, "performance": _normalize_performance_daily_pnl(perf_data)}
     except Exception as e:
         return {"success": False, "error": public_error_message() if is_production() else str(e)}
