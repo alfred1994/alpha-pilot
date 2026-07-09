@@ -244,42 +244,33 @@ def fast_scan(
         else:
             # 没有缓存，快速选股(带超时)
             logger.info("[快链路] 无候选池缓存，快速选股...")
-            # 优先华泰选股，失败则降级到多维选股
-            from strategy.stock_picker import pick_stocks_by_htsc, pick_stocks
+            # 低位潜力股选股 (多维数据源：龙虎榜/北向资金/业绩预增/机构调研/回撤反弹)
+            from strategy.stock_picker import pick_stocks
+            from strategy.stock_picker import get_sentiment_boost
+            sentiment_boost = get_sentiment_boost()
+            if sentiment_boost:
+                logger.info(f"[快链路] 舆情加成: {sentiment_boost}")
+
+            # 低位潜力股模式：专注低位股，避免追高
             candidates = with_timeout(
-                lambda: pick_stocks_by_htsc(max_candidates=10),
-                timeout=30,
+                lambda: pick_stocks(
+                    top_n=10,
+                    use_limit_up=False,       # 关闭涨停板（无法买入）
+                    use_dragon_tiger=True,    # 启用龙虎榜
+                    use_north_flow=True,      # 启用北向资金
+                    use_performance=True,     # 启用业绩预增
+                    use_survey=True,          # 启用机构调研
+                    use_volume=False,         # 关闭异动放量
+                    use_financing=False,      # 关闭融资融券
+                    use_unlock_alert=False,   # 关闭解禁预警
+                    use_low_position=True,    # 启用低位潜力股
+                    low_position_mode=True,   # 低位模式
+                    sentiment_boost=sentiment_boost,  # 舆情加成
+                ),
+                timeout=60,
                 fallback=[],
-                desc="华泰选股",
+                desc="多维选股",
             )
-            if not candidates:
-                logger.warning("[快链路] 华泰选股失败/超时，降级到低位潜力股选股...")
-                # 获取舆情加成
-                from strategy.stock_picker import get_sentiment_boost
-                sentiment_boost = get_sentiment_boost()
-                if sentiment_boost:
-                    logger.info(f"[快链路] 舆情加成: {sentiment_boost}")
-                
-                # 低位潜力股模式：专注低位股，避免追高
-                candidates = with_timeout(
-                    lambda: pick_stocks(
-                        top_n=10,
-                        use_limit_up=False,       # 关闭涨停板（无法买入）
-                        use_dragon_tiger=True,    # 启用龙虎榜
-                        use_north_flow=True,      # 启用北向资金
-                        use_performance=True,     # 启用业绩预增
-                        use_survey=True,          # 启用机构调研
-                        use_volume=False,         # 关闭异动放量
-                        use_financing=False,      # 关闭融资融券
-                        use_unlock_alert=False,   # 关闭解禁预警
-                        use_low_position=True,    # 启用低位潜力股
-                        low_position_mode=True,   # 低位模式
-                        sentiment_boost=sentiment_boost,  # 舆情加成
-                    ),
-                    timeout=30,
-                    fallback=[],
-                    desc="多维选股",
-                )
             if not candidates:
                 logger.warning("[快链路] 选股失败/超时，无候选")
                 plan.errors.append("选股失败，无候选股票")
