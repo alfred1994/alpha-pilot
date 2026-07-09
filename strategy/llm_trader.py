@@ -37,7 +37,7 @@ DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.co
 DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-v4-flash")
 
 
-def _call_deepseek(prompt: str, max_tokens: int = 2000, retries: int = 2,
+def _call_deepseek(prompt: str, max_tokens: int = 2000, retries: int = 3,
                    http_timeout: int = DEFAULT_HTTP_TIMEOUT) -> Optional[str]:
     """调用 DeepSeek LLM（子进程硬超时 + 自动重试）"""
     if not DEEPSEEK_API_KEY:
@@ -76,12 +76,16 @@ def _call_deepseek(prompt: str, max_tokens: int = 2000, retries: int = 2,
             if not content.strip():
                 reasoning = msg.get("reasoning_content", "") or ""
                 if reasoning.strip():
-                    logger.info("DeepSeek返回空content，使用reasoning_content兜底")
-                    return reasoning.strip()
+                    logger.warning(
+                        f"DeepSeek第{attempt+1}次返回空content，"
+                        f"reasoning={len(reasoning)}字符，重试中..."
+                    )
+                    # 不直接用reasoning兜底，继续重试争取正常JSON
+                    continue
             else:
                 return content.strip()
 
-        logger.warning(f"DeepSeek第{attempt}次调用失败/超时")
+        logger.warning(f"DeepSeek第{attempt+1}次调用失败/超时")
 
     logger.error("DeepSeek调用失败，已用完重试次数")
     return None
@@ -135,6 +139,31 @@ def _call_llm(prompt: str, max_tokens: int = 2000, retries: int = 2,
             logger.warning(f"LLM第{attempt+1}次调用失败/超时，{'重试中...' if attempt < retries else '已用完重试次数'}")
 
     return None
+
+
+def _strip_prompt_echo(text: str) -> str:
+    """
+    从LLM推理文本中剥离prompt模板的复述部分。
+    LLM经常会复述指令如"任务是分析...决策必须是BUY、SELL或HOLD"，
+    这些文本包含所有三个action关键词，会误导关键词提取。
+    """
+    # 移除常见的prompt模板复述模式
+    patterns = [
+        # "决策必须是BUY、SELL或HOLD" 等指令复述
+        r'决策必须是[^。\n]{5,50}',
+        r'请返回JSON[^。\n]{5,100}',
+        r'只返回JSON[^。\n]*',
+        r'返回\s*JSON\s*格式[^。\n]{0,50}',
+        # "做出交易决策：BUY、SELL或HOLD"
+        r'做出交易决策[：:]\s*BUY[^。\n]{0,30}',
+        # 通用的action选项列举
+        r'action[：:]\s*["\']?BUY[/、,]SELL[/、,]HOLD',
+        r'["\']?BUY[/、,]SELL[/、,]HOLD["\']?',
+    ]
+    result = text
+    for p in patterns:
+        result = re.sub(p, '', result, flags=re.IGNORECASE)
+    return result
 
 
 def clean_reasoning(text: str) -> str:
@@ -228,12 +257,18 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
 
     # 4. 最后兜底：从自然语言推理文本中推断决策
     try:
-        text_lower = raw.lower()
-        # 优先检查明确的卖出信号
-        sell_keywords = ["建议卖出", "应卖出", "建议清仓", "卖出信号", "sell"]
-        hold_keywords = ["建议持有", "建议观望", "不宜买入", "不建议", "置信度不足",
-                         "风险较高", "谨慎", "hold", "暂时不买", "不建议买入"]
-        buy_keywords = ["建议买入", "可以买入", "买入信号", "看多", "buy"]
+        # 过滤掉prompt模板中的指令文本，避免"BUY、SELL或HOLD"误导关键词提取
+        cleaned_for_match = _strip_prompt_echo(raw)
+        text_lower = cleaned_for_match.lower()
+
+        # 优先检查明确的卖出信号（中文为主，避免单独"sell"误匹配prompt模板）
+        sell_keywords = ["建议卖出", "应卖出", "建议清仓", "卖出信号", "决定卖出",
+                         "应当卖出", "适合卖出", "应该sell", "决定sell", "action.*sell"]
+        hold_keywords = ["建议持有", "建议观望", "不宜买入", "不建议买入", "置信度不足",
+                         "风险较高", "谨慎", "暂时不买", "不建议买入", "应当hold",
+                         "决定hold", "选择hold"]
+        buy_keywords = ["建议买入", "可以买入", "买入信号", "看多", "决定买入",
+                        "应当买入", "适合买入", "应该buy", "决定buy", "action.*buy"]
 
         # 提取更干净、更长的推理摘要
         clean_text = clean_reasoning(raw)
@@ -243,15 +278,15 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
             reason_summary += "..."
 
         for kw in sell_keywords:
-            if kw in text_lower:
+            if re.search(kw, text_lower) if '.*' in kw else kw in text_lower:
                 logger.info(f"从推理文本推断: SELL (关键词: {kw})")
                 return "SELL", 0.3, f"从文本推断: {reason_summary}"
         for kw in hold_keywords:
-            if kw in text_lower:
+            if re.search(kw, text_lower) if '.*' in kw else kw in text_lower:
                 logger.info(f"从推理文本推断: HOLD (关键词: {kw})")
                 return "HOLD", 0.3, f"从文本推断: {reason_summary}"
         for kw in buy_keywords:
-            if kw in text_lower:
+            if re.search(kw, text_lower) if '.*' in kw else kw in text_lower:
                 logger.info(f"从推理文本推断: BUY (关键词: {kw})")
                 return "BUY", 0.3, f"从文本推断: {reason_summary}"
 

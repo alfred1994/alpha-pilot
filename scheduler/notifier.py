@@ -229,7 +229,7 @@ def send_stock_picks(scan_result, title: str = "📋 今日选股") -> bool:
     now = _now_bj().strftime("%Y-%m-%d %H:%M")
     lines = [f"<b>{title}</b> ({now})", ""]
 
-    # 从trade_plan获取买入计划
+    # 从trade_plan获取订单，区分买入和卖出
     plan_data = getattr(scan_result, "trade_plan", {}) or {}
     orders = plan_data.get("orders", [])
     candidates = getattr(scan_result, "candidates", []) or []
@@ -240,10 +240,14 @@ def send_stock_picks(scan_result, title: str = "📋 今日选股") -> bool:
     lines.append(f"📊 市场环境: {regime} (置信度{regime_conf:.0%})")
     lines.append("")
 
+    # 按action分组：BUY vs SELL
+    buy_orders = [o for o in orders if (o.get("action") if isinstance(o, dict) else getattr(o, "action", "")) == "BUY"]
+    sell_orders = [o for o in orders if (o.get("action") if isinstance(o, dict) else getattr(o, "action", "")) == "SELL"]
+
     # 买入计划
-    if orders:
-        lines.append(f"🟢 <b>买入计划 ({len(orders)}只)</b>")
-        for o in orders:
+    if buy_orders:
+        lines.append(f"🟢 <b>买入计划 ({len(buy_orders)}只)</b>")
+        for o in buy_orders:
             code = o.get("code", "") if isinstance(o, dict) else getattr(o, "code", "")
             name = o.get("name", "") if isinstance(o, dict) else getattr(o, "name", "")
             score = o.get("score", 0) if isinstance(o, dict) else getattr(o, "score", 0)
@@ -260,6 +264,17 @@ def send_stock_picks(scan_result, title: str = "📋 今日选股") -> bool:
             lines.append("")
     else:
         lines.append("⚪ 今日无买入计划")
+        lines.append("")
+
+    # 卖出信号（仅展示，实际卖出由止损巡检处理）
+    if sell_orders:
+        lines.append(f"🔴 <b>卖出信号 ({len(sell_orders)}只)</b>")
+        for o in sell_orders:
+            code = o.get("code", "") if isinstance(o, dict) else getattr(o, "code", "")
+            name = o.get("name", "") if isinstance(o, dict) else getattr(o, "name", "")
+            reason = o.get("reason", "") if isinstance(o, dict) else getattr(o, "reason", "")
+            reason_disp = reason[:100] + "..." if len(reason) > 100 else reason
+            lines.append(f"  🔴 {code} {name} — {reason_disp}")
         lines.append("")
 
     # 全部候选（含HOLD的）
