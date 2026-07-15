@@ -22,6 +22,7 @@ import json
 import os
 import time
 import logging
+import hashlib
 from datetime import datetime
 from scheduler.market_calendar import _now_bj
 from dataclasses import dataclass, field
@@ -738,11 +739,18 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
 
 
 def _save_trade_plan(plan: TradePlan):
-    """保存TradePlan到文件"""
+    """保存带稳定计划标识的 TradePlan 到文件。"""
     path = SIGNAL_CACHE_FILE
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(plan.to_dict(), f, ensure_ascii=False, indent=2)
+    payload = plan.to_dict()
+    plan_id, _ = _trade_plan_identity(payload)
+    payload["plan_id"] = plan_id
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(temp_path, path)
     logger.info(f"TradePlan已保存: {path}")
 
 
@@ -786,6 +794,39 @@ def _audit_order(result: PipelineResult, order: dict, status: str,
     })
 
 
+def _trade_plan_identity(plan_data: dict) -> tuple[str, str]:
+    """校验计划结构并生成稳定标识，重试同一计划会得到相同的 id。"""
+    if not isinstance(plan_data, dict):
+        raise ValueError("TradePlan必须是对象")
+    plan_date = plan_data.get("date")
+    try:
+        datetime.strptime(plan_date, "%Y-%m-%d")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("TradePlan缺少有效日期") from exc
+    deadline = plan_data.get("deadline")
+    if deadline:
+        try:
+            datetime.strptime(deadline, "%H:%M")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("TradePlan截止时间格式必须为HH:MM") from exc
+    orders = plan_data.get("orders")
+    if not isinstance(orders, list):
+        raise ValueError("TradePlan订单必须是列表")
+    for index, order in enumerate(orders):
+        if not isinstance(order, dict):
+            raise ValueError(f"TradePlan订单{index}必须是对象")
+        if not isinstance(order.get("code"), str) or not order["code"].strip():
+            raise ValueError(f"TradePlan订单{index}缺少证券代码")
+        if order.get("action") not in {"BUY", "SELL", "HOLD"}:
+            raise ValueError(f"TradePlan订单{index}动作非法")
+    canonical = {key: value for key, value in plan_data.items() if key != "plan_id"}
+    payload_hash = hashlib.sha256(
+        json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    plan_id = str(plan_data.get("plan_id") or f"{plan_date}-{payload_hash[:24]}")
+    return plan_id, payload_hash
+
+
 def execute_trade_plan(
     plan_data: dict,
     *,
@@ -795,6 +836,7 @@ def execute_trade_plan(
     drawdown_controller=None,
     system_risk_controller=None,
     update_memory: bool = True,
+    allow_historical_plan: bool = True,
 ) -> PipelineResult:
     """
     执行指定 TradePlan
@@ -807,6 +849,7 @@ def execute_trade_plan(
         drawdown_controller: 回撤控制器，None时创建默认实例
         system_risk_controller: 系统风控控制器，None时创建默认实例
         update_memory: 是否执行决策结果回填
+        allow_historical_plan: 是否允许历史计划重放；自动执行时必须为False
 
     Returns:
         PipelineResult
@@ -818,7 +861,24 @@ def execute_trade_plan(
         result.errors.append("无TradePlan，无法执行")
         return result
 
+    try:
+        plan_id, payload_hash = _trade_plan_identity(plan_data)
+    except ValueError as e:
+        result.errors.append(str(e))
+        return result
+
+    if not allow_historical_plan:
+        now = _now_bj()
+        if plan_data.get("date") != now.strftime("%Y-%m-%d"):
+            result.errors.append("TradePlan不是当前交易日计划")
+            return result
+        deadline = plan_data.get("deadline")
+        if deadline and now.strftime("%H:%M") > deadline:
+            result.errors.append("TradePlan已超过执行截止时间")
+            return result
+
     result.market_status = market_status or get_market_status()
+    result.trade_plan = {"plan_id": plan_id, "date": plan_data.get("date")}
 
     # 加载交易通道（默认模拟盘）
     if broker is None:
@@ -826,6 +886,29 @@ def execute_trade_plan(
         broker = get_broker_adapter()
     account = broker.account if hasattr(broker, "account") else broker
     realtime_func = realtime_func or _default_realtime_func()
+
+    # 领取计划执行权。数据库中的唯一主键使重启、重试和并发调用不会重复下单。
+    try:
+        from data.database import Database
+        with Database(db_path=getattr(account, "db_path", None)) as db:
+            execution_claim = db.claim_trade_plan_execution(
+                plan_id, plan_data["date"], payload_hash,
+            )
+    except Exception as e:
+        result.errors.append(f"TradePlan执行权领取失败: {e}")
+        return result
+    if not execution_claim.get("claimed"):
+        result.errors.append(
+            f"TradePlan已被执行或正在执行: {plan_id} ({execution_claim.get('status', 'unknown')})"
+        )
+        return result
+
+    def complete_plan_execution():
+        try:
+            with Database(db_path=getattr(account, "db_path", None)) as db:
+                db.complete_trade_plan_execution(plan_id, "; ".join(result.errors))
+        except Exception as e:
+            logger.error(f"更新TradePlan执行状态失败 {plan_id}: {e}")
 
     # 风控检查
     from risk.position import PositionManager
@@ -851,6 +934,7 @@ def execute_trade_plan(
     if not trading_check["allowed"]:
         result.risk_triggered.append(trading_check["reason"])
         result.errors.append(f"风控熔断: {trading_check['reason']}")
+        complete_plan_execution()
         return result
 
     # 检查系统级风控
@@ -858,6 +942,7 @@ def execute_trade_plan(
     if sr_health["system_halted"]:
         result.risk_triggered.append(f"系统停机: {sr_health['issues']}")
         result.errors.append(f"系统停机，禁止交易")
+        complete_plan_execution()
         return result
 
     # 检查是否允许开新仓（单日亏损熔断）
@@ -1089,6 +1174,7 @@ def execute_trade_plan(
         except Exception as e:
             logger.warning(f"决策结果回填失败(非致命): {e}")
 
+    complete_plan_execution()
     return result
 
 
@@ -1106,7 +1192,7 @@ def execute_trades() -> PipelineResult:
         result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
         result.errors.append("无今日TradePlan，请先运行扫描")
         return result
-    return execute_trade_plan(plan_data)
+    return execute_trade_plan(plan_data, allow_historical_plan=False)
 
 
 # ═══════════════════════════════════════════════════════════════════

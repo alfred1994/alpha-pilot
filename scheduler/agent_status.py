@@ -43,11 +43,12 @@ def build_agent_status_snapshot():
         
     # 4. 获取账户与当前持仓
     positions = []
-    total_assets = 1000000.0
-    cash = 1000000.0
-    initial_capital = 1000000.0
+    total_assets = 0.0
+    cash = 0.0
+    initial_capital = 0.0
     total_pnl = 0.0
     total_pnl_pct = 0.0
+    account_available = False
     try:
         from execution.paper_account import PaperAccount
         account = PaperAccount()
@@ -69,6 +70,7 @@ def build_agent_status_snapshot():
         initial_capital = account.initial_capital
         total_pnl = total_assets - initial_capital
         total_pnl_pct = total_pnl / initial_capital if initial_capital > 0 else 0.0
+        account_available = True
     except Exception:
         pass
         
@@ -183,6 +185,8 @@ def build_agent_status_snapshot():
         risk_warnings.append("系统未决崩溃(Crash)报警！")
     if control_paused:
         risk_warnings.append(f"交易挂起暂停: {control_reason}")
+    if not account_available:
+        risk_warnings.append("模拟账户状态不可用")
 
     return {
         "timestamp": datetime.now().isoformat(),
@@ -199,6 +203,7 @@ def build_agent_status_snapshot():
             "reason": control_reason
         },
         "account": {
+            "available": account_available,
             "initial_capital": initial_capital,
             "total_assets": total_assets,
             "cash": cash,

@@ -657,6 +657,19 @@ def cmd_backtest(args):
     return result
 
 
+def cmd_list_strategies():
+    """列出可用于回测的技术策略。"""
+    from strategy.strategies import list_strategies
+
+    print("可用技术策略:")
+    for item in list_strategies():
+        regimes = "/".join(item.get("regimes", []))
+        print(
+            f"- {item['name']}: {item['display']} v{item['version']} "
+            f"| {item.get('category', '未分类')} | 适用: {regimes} | 风险: {item.get('risk', 'unknown')}"
+        )
+
+
 def cmd_optimize(args):
     """策略优化模式"""
     from strategy.strategies import get_strategy
@@ -778,6 +791,7 @@ def main():
     group.add_argument("--closure-check", action="store_true", help="正式模拟盘日内闭环缺口诊断")
     group.add_argument("--closure-repair", action="store_true", help="正式模拟盘闭环缺口自愈")
     group.add_argument("--realtime", action="store_true", help="事件驱动交易员（实时行情+异步）")
+    group.add_argument("--list-strategies", action="store_true", help="列出可用于回测的技术策略")
     group.add_argument("--web", action="store_true", help="启动 Web 可视化仪表盘大屏")
     group.add_argument("--resolve-crash", action="store_true", help="标记最近系统崩溃已解决并复原")
 
@@ -857,6 +871,9 @@ def main():
         return
     elif args.backtest:
         result = cmd_backtest(args)
+    elif args.list_strategies:
+        cmd_list_strategies()
+        return
     elif args.optimize:
         result = cmd_optimize(args)
     elif args.stop_check:

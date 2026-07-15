@@ -107,6 +107,20 @@ def main():
             "SQLite账户状态同步持仓",
         )
 
+        duplicate = execute_trade_plan(
+            plan,
+            broker=broker,
+            realtime_func=fake_realtime,
+            market_status="盘中",
+            drawdown_controller=DrawdownController(state_file=drawdown_path),
+            system_risk_controller=SystemRiskController(state_file=system_risk_path),
+            update_memory=False,
+        )
+        assert_true(not duplicate.executed_orders, "重复TradePlan不会再次生成成交")
+        assert_true(any("已被执行" in error for error in duplicate.errors), "重复TradePlan返回幂等阻断信息")
+        with Database(db_path=db_path) as db:
+            assert_true(len(db.get_trades(code="600519", limit=5)) == 1, "重复TradePlan不产生第二条成交记录")
+
         blocked_plan = {
             "date": "2026-06-09",
             "regime": "sideways",

@@ -5,40 +5,6 @@ from web.public_safety import is_internal_status_exposed, is_production, public_
 router = APIRouter()
 
 
-def _persist_realtime_valuation(account, prices: dict):
-    """把网页实时估值同步回SQLite，保持查库口径与网页口径一致。"""
-    if not prices or not getattr(account, "positions", None):
-        return
-
-    try:
-        from data.database import Database
-
-        positions = {}
-        for code, pos in account.positions.items():
-            item = dict(pos)
-            price = prices.get(code)
-            if price and price > 0:
-                item["current_price"] = price
-                pos["current_price"] = price
-            positions[code] = item
-
-        market_value = sum(
-            (pos.get("current_price") or pos.get("buy_price") or 0) * (pos.get("shares") or 0)
-            for pos in positions.values()
-        )
-        with Database(db_path=getattr(account, "db_path", None)) as db:
-            for pos in positions.values():
-                db.upsert_position(pos)
-            db.save_account_state({
-                "initial_capital": getattr(account, "initial_capital", 0),
-                "cash": getattr(account, "cash", 0),
-                "total_assets": getattr(account, "cash", 0) + market_value,
-                "positions": positions,
-            })
-    except Exception:
-        pass
-
-
 @router.get("/status")
 def get_system_status():
     """获取系统运行健康状态、Watchdog及仓位账户信息"""
@@ -75,8 +41,31 @@ def get_detailed_positions():
             except Exception:
                 prices = {}
 
+        # 看板的实时行情只参与本次响应计算，不得在 GET 请求中修改账户或数据库。
         total_assets = account.total_assets(prices or None)
-        _persist_realtime_valuation(account, prices)
+        latest_decisions = {}
+        if account.positions:
+            try:
+                from data.database import Database
+                with Database(db_path=account.db_path) as db:
+                    cursor = db.conn.cursor()
+                    placeholders = ",".join("?" for _ in account.positions)
+                    cursor.execute(
+                        f"SELECT code, action, date, reasoning, confidence FROM llm_decisions "
+                        f"WHERE code IN ({placeholders}) ORDER BY date DESC, id DESC",
+                        list(account.positions),
+                    )
+                    for decision in cursor.fetchall():
+                        code = decision[0]
+                        if code not in latest_decisions:
+                            latest_decisions[code] = {
+                                "action": decision[1],
+                                "date": decision[2],
+                                "reasoning": sanitize_public_text(decision[3]),
+                                "confidence": decision[4],
+                            }
+            except Exception:
+                latest_decisions = {}
         pos_list = []
         for code, pos in account.positions.items():
             buy_price = pos.get("buy_price", 0.0)
@@ -99,22 +88,6 @@ def get_detailed_positions():
                 atr=atr if atr > 0 else None
             )
             
-            # 获取最近一次 LLM 决策
-            latest_decision = None
-            try:
-                from data.database import Database
-                with Database() as db:
-                    decs = db.get_llm_decisions(code=code, limit=1)
-                    if decs:
-                        latest_decision = {
-                            "action": decs[0].get("action"),
-                            "date": decs[0].get("date"),
-                            "reasoning": sanitize_public_text(decs[0].get("reasoning")),
-                            "confidence": decs[0].get("confidence")
-                        }
-            except Exception:
-                pass
-
             pos_list.append({
                 "code": code,
                 "name": quote_names.get(code) or pos.get("name") or code,
@@ -129,7 +102,7 @@ def get_detailed_positions():
                 "stop_loss_price": levels.get("stop_loss"),
                 "take_profit_price": levels.get("take_profit"),
                 "trailing_stop_price": levels.get("trailing_stop"),
-                "latest_decision": latest_decision
+                "latest_decision": latest_decisions.get(code)
             })
             
         return {"success": True, "positions": pos_list}

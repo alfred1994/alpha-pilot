@@ -140,7 +140,7 @@ def test_trades_replace_generic_tradeplan_reason():
                 os.unlink(candidate)
 
 
-def test_trades_backfill_missing_sell_pnl_from_prior_buy():
+def test_trades_query_does_not_backfill_missing_sell_pnl():
     db_file = tempfile.NamedTemporaryFile(suffix="_quant.db", delete=False)
     db_path = db_file.name
     db_file.close()
@@ -179,12 +179,12 @@ def test_trades_backfill_missing_sell_pnl_from_prior_buy():
         sell_trade = data["trades"][0]
         assert_true(data["success"], "交易接口返回成功")
         assert_true(sell_trade["action"] == "SELL", "读取到缺失盈亏的卖出交易")
-        assert_true(sell_trade["pnl"] is not None and sell_trade["pnl"] > 3000, "卖出盈亏按买入价回填")
-        assert_true(abs(sell_trade["pnl_pct"] - ((11.87 - 10.79) / 10.79)) < 0.000001, "卖出盈亏比按买入价回填")
+        assert_true(sell_trade["pnl"] is None, "查询不擅自推断或回填卖出盈亏")
+        assert_true(sell_trade["pnl_pct"] is None, "查询不擅自回填卖出盈亏比")
 
         with Database(db_path=db_path) as db:
             stored = db.get_trades(code="600228", limit=1)[0]
-        assert_true(stored["pnl"] is not None and stored["pnl_pct"] is not None, "回填结果写回SQLite")
+        assert_true(stored["pnl"] is None and stored["pnl_pct"] is None, "GET请求不修改SQLite交易记录")
     finally:
         database_router._get_db = old_get_db
         for candidate in [db_path, f"{db_path}-wal", f"{db_path}-shm"]:
@@ -268,7 +268,7 @@ if __name__ == "__main__":
     test_decisions_hide_no_response_and_include_name()
     test_decisions_resolve_name_from_llm_prompt()
     test_trades_replace_generic_tradeplan_reason()
-    test_trades_backfill_missing_sell_pnl_from_prior_buy()
+    test_trades_query_does_not_backfill_missing_sell_pnl()
     test_trades_keep_unknown_sell_pnl_null_without_prior_buy()
     test_performance_appends_today_when_review_is_stale()
     test_performance_daily_pnl_matches_adjacent_assets()

@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
 from signals import Direction, logger
+from config import COMMISSION_RATE, MIN_TRADE_UNIT, STAMP_TAX_RATE
 
 
 @dataclass
@@ -20,7 +21,8 @@ class Position:
     highest_price: float = 0.0
 
     def __post_init__(self):
-        self.cost = self.buy_price * self.shares
+        if self.cost <= 0:
+            self.cost = self.buy_price * self.shares
         self.highest_price = self.buy_price
 
 
@@ -35,6 +37,9 @@ class TradeRecord:
     date: str
     amount: float      # 交易金额
     reason: str = ""
+    commission: float = 0.0
+    stamp_tax: float = 0.0
+    net_amount: float = 0.0
 
 
 class PositionManager:
@@ -55,6 +60,9 @@ class PositionManager:
         max_single_pct: float = 0.20,
         stop_loss: float = -0.05,
         take_profit: float = 0.10,
+        commission_rate: float = COMMISSION_RATE,
+        stamp_tax_rate: float = STAMP_TAX_RATE,
+        allow_same_day_sell: bool = False,
     ):
         self.initial_capital = initial_capital
         self.cash = initial_capital
@@ -62,6 +70,9 @@ class PositionManager:
         self.max_single_pct = max_single_pct
         self.stop_loss = stop_loss
         self.take_profit = take_profit
+        self.commission_rate = commission_rate
+        self.stamp_tax_rate = stamp_tax_rate
+        self.allow_same_day_sell = allow_same_day_sell
 
         self.positions: Dict[str, Position] = {}
         self.trades: List[TradeRecord] = []
@@ -123,25 +134,35 @@ class PositionManager:
         if amount is None:
             amount = self.max_buy_amount()
 
-        # 不超过可用现金
+        # 不超过可用现金，预留佣金；最低佣金也必须被覆盖。
         amount = min(amount, self.cash)
         if amount <= 0:
             logger.warning("可用资金不足")
             return None
 
-        # A股最小交易单位100股
-        shares = int(amount / price / 100) * 100
+        # A股最小交易单位100股。先按交易金额取整，再以下方循环校验含最低佣金成本。
+        shares = int(amount / price / MIN_TRADE_UNIT) * MIN_TRADE_UNIT
         if shares <= 0:
             logger.warning(f"资金不足以买入1手 {name}")
             return None
 
         actual_amount = shares * price
-        self.cash -= actual_amount
+        commission = max(actual_amount * self.commission_rate, 5)
+        while shares > 0 and actual_amount + commission > self.cash:
+            shares -= MIN_TRADE_UNIT
+            actual_amount = shares * price
+            commission = max(actual_amount * self.commission_rate, 5) if shares > 0 else 0
+        if shares <= 0:
+            logger.warning("可用资金不足以覆盖成交金额和最低佣金")
+            return None
+        total_cost = actual_amount + commission
+        self.cash -= total_cost
 
         pos = Position(
             code=code, name=name,
             buy_price=price, shares=shares,
             buy_date=date,
+            cost=total_cost,
         )
         self.positions[code] = pos
 
@@ -151,6 +172,8 @@ class PositionManager:
             shares=shares, date=date,
             amount=actual_amount,
             reason="信号买入",
+            commission=commission,
+            net_amount=-total_cost,
         )
         self.trades.append(trade)
         logger.info(f"买入 {name}({code}) {shares}股 @ {price}，金额 {actual_amount:.0f}")
@@ -161,15 +184,26 @@ class PositionManager:
         if code not in self.positions:
             return None
 
+        pos = self.positions[code]
+        if not self.allow_same_day_sell and date <= pos.buy_date:
+            logger.info(f"T+1限制: {code} 买入当日不可卖出")
+            return None
+
         pos = self.positions.pop(code)
         amount = pos.shares * price
-        self.cash += amount
+        commission = max(amount * self.commission_rate, 5)
+        stamp_tax = amount * self.stamp_tax_rate
+        net_amount = amount - commission - stamp_tax
+        self.cash += net_amount
 
         trade = TradeRecord(
             code=code, name=pos.name,
             action="卖出", price=price,
             shares=pos.shares, date=date,
             amount=amount, reason=reason,
+            commission=commission,
+            stamp_tax=stamp_tax,
+            net_amount=net_amount,
         )
         self.trades.append(trade)
         profit_pct = (price - pos.buy_price) / pos.buy_price * 100
