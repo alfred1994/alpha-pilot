@@ -6,5 +6,5 @@ baostock>=0.8.9
 longport>=3.0
 cloakbrowser>=0.2
 fastapi>=0.100.0
-uvicorn>=0.22.0
+uvicorn>=0.51.0
 httpx>=0.27.0
