@@ -141,6 +141,7 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "paused": bool(control.get("paused")),
         },
         "account": {
+            "available": bool(account.get("available", True)),
             "initial_capital": account.get("initial_capital", 0.0),
             "total_assets": account.get("total_assets", 0.0),
             "cash": account.get("cash", 0.0),

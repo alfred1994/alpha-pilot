@@ -7,6 +7,8 @@ import json
 import os
 import logging
 import threading
+import math
+import tempfile
 from datetime import datetime
 from typing import Dict, List, Optional
 from config import (
@@ -117,7 +119,7 @@ class PaperAccount:
         logger.info(f"新建模拟盘账户: 初始资金={INITIAL_CAPITAL:,.0f}")
 
     def _save_to_sqlite(self):
-        """仅执行账户状态和持仓表向 SQLite 的写入同步"""
+        """原子同步账户状态和持仓表到 SQLite。"""
         data = {
             "initial_capital": self.initial_capital,
             "cash": self.cash,
@@ -128,28 +130,14 @@ class PaperAccount:
         }
         from data.database import Database
         with Database(db_path=self.db_path) as db:
-            db.save_account_state({
+            db.save_account_snapshot({
                 **data,
                 "total_assets": self.total_assets()
             })
-            db.conn.cursor().execute("DELETE FROM positions")
-            for code, pos in self.positions.items():
-                db.upsert_position({
-                    "code": code,
-                    "name": pos.get("name", ""),
-                    "shares": pos.get("shares", 0),
-                    "buy_price": pos.get("buy_price", 0),
-                    "buy_date": pos.get("buy_date", ""),
-                    "cost": pos.get("cost", 0),
-                    "highest_price": pos.get("highest_price", 0),
-                    "current_price": pos.get("current_price") or pos.get("buy_price", 0),
-                })
-            db.conn.commit()
 
-    def _save(self):
-        """保存账户状态到 SQLite（第一主存储），同时以原子替代安全备份一份至 JSON 文件"""
-        self.updated_at = datetime.now().isoformat()
-        data = {
+    def _snapshot_data(self) -> dict:
+        """构建可持久化的账户快照，SQLite 是唯一事实来源，JSON 仅作备份。"""
+        return {
             "initial_capital": self.initial_capital,
             "cash": self.cash,
             "positions": self.positions,
@@ -157,22 +145,87 @@ class PaperAccount:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
+
+    def _write_json_snapshot(self, data: dict):
+        """以同目录临时文件和 os.replace 写入 JSON 备份。"""
+        directory = os.path.dirname(self.filepath) or "."
+        fd, temp_filepath = tempfile.mkstemp(prefix=".paper_account_", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_filepath, self.filepath)
+        except Exception:
+            try:
+                os.unlink(temp_filepath)
+            except FileNotFoundError:
+                pass
+            raise
+
+    def _save(self):
+        """保存非交易账户状态；账户和持仓投影使用同一 SQLite 事务。"""
+        self.updated_at = datetime.now().isoformat()
         with self._lock:
             try:
                 self._save_to_sqlite()
             except Exception as e:
                 logger.error(f"保存账户状态到SQLite失败: {e}")
-            
+                raise
             try:
-                temp_filepath = self.filepath + ".tmp"
-                with open(temp_filepath, "w", encoding="utf-8") as f:
-                    json.dump(data, f, ensure_ascii=False, indent=2)
-                if os.path.exists(temp_filepath):
-                    if os.path.exists(self.filepath):
-                        os.remove(self.filepath)
-                    os.rename(temp_filepath, self.filepath)
+                self._write_json_snapshot(self._snapshot_data())
             except Exception as e:
                 logger.error(f"账户状态快照备份到JSON失败: {e}")
+
+    @staticmethod
+    def _is_positive_finite(value) -> bool:
+        """统一拒绝零、负数、NaN 和无穷数，防止账本出现不可恢复状态。"""
+        try:
+            return not isinstance(value, bool) and math.isfinite(float(value)) and float(value) > 0
+        except (TypeError, ValueError):
+            return False
+
+    def _validate_trade_input(self, code: str, price, shares=None, amount=None, *, is_sell: bool = False) -> bool:
+        """验证账户边界输入，买入必须整手；卖出允许一次性清空零股。"""
+        if not isinstance(code, str) or not code.strip():
+            logger.warning("交易代码不能为空")
+            return False
+        if not self._is_positive_finite(price):
+            logger.warning(f"拒绝非法交易价格: {price!r}")
+            return False
+        if shares is not None:
+            try:
+                normalized_shares = int(shares)
+            except (TypeError, ValueError, OverflowError):
+                normalized_shares = 0
+            if isinstance(shares, bool) or normalized_shares != shares or normalized_shares <= 0:
+                logger.warning(f"拒绝非法交易股数: {shares!r}")
+                return False
+            shares = normalized_shares
+            can_clear_odd_lot = is_sell and code in self.positions and shares == self.positions[code].get("shares")
+            if shares % MIN_TRADE_UNIT != 0 and not can_clear_odd_lot:
+                logger.warning(f"拒绝非整手交易股数: {shares}")
+                return False
+        if amount is not None and not self._is_positive_finite(amount):
+            logger.warning(f"拒绝非法交易金额: {amount!r}")
+            return False
+        return True
+
+    def _persist_trade(self, trade: dict):
+        """将一次成交作为单一事务提交，再刷新 JSON 备份。"""
+        self.updated_at = datetime.now().isoformat()
+        state = {
+            **self._snapshot_data(),
+            "total_assets": self.total_assets(),
+        }
+        from data.database import Database
+        with Database(db_path=self.db_path) as db:
+            db.record_account_transaction(state, trade)
+        try:
+            self._write_json_snapshot(self._snapshot_data())
+        except Exception as e:
+            # JSON 只是备份，SQLite 已经提交，不回滚已完成的成交。
+            logger.error(f"账户状态快照备份到JSON失败: {e}")
 
     # ── 查询 ──────────────────────────────────────────────────────
 
@@ -250,6 +303,8 @@ class PaperAccount:
             交易记录 dict 或 None
         """
         with self._lock:
+            if not self._validate_trade_input(code, price, shares=shares, amount=amount):
+                return None
             if self.has_position(code):
                 logger.warning(f"已持有 {name}({code}), 不重复买入")
                 return None
@@ -283,6 +338,10 @@ class PaperAccount:
                 commission = max(cost * COMMISSION_RATE, 5)
                 total_cost = cost + commission
 
+            if total_cost > self.cash:
+                logger.warning("可用资金不足以覆盖成交金额和最低佣金")
+                return None
+
             self.cash -= total_cost
             self.positions[code] = {
                 "code": code,
@@ -311,28 +370,14 @@ class PaperAccount:
                 "cash_after": self.cash,
             }
             self.trades.append(trade)
-
-            self._save()
-
-            # 【双写】JSON保存成功后，同步写入SQLite trades表
-            # SQLite写入失败不影响已保存的JSON数据
             try:
-                from data.database import Database
-                with Database(db_path=self.db_path) as db:
-                    db.save_trade_record(trade)
-                    # 同步持仓到positions表
-                    db.upsert_position({
-                        "code": code,
-                        "name": name,
-                        "shares": shares,
-                        "buy_price": price,
-                        "buy_date": datetime.now().strftime("%Y-%m-%d"),
-                        "cost": cost,
-                        "highest_price": price,
-                        "current_price": price,
-                    })
+                self._persist_trade(trade)
             except Exception as e:
-                logger.warning(f"SQLite双写失败(不影响JSON): {e}")
+                self.cash += total_cost
+                self.positions.pop(code, None)
+                self.trades.pop()
+                logger.error(f"买入持久化失败，已回滚内存状态: {e}")
+                return None
 
             logger.info(f"买入 {name}({code}) {shares}股 @ {price} 金额={cost:.0f} 佣金={commission:.1f}")
             return trade
@@ -361,11 +406,16 @@ class PaperAccount:
                 logger.warning(f"未持有 {code}, 无法卖出")
                 return None
 
+            if not self._validate_trade_input(code, price, shares=shares, is_sell=True):
+                return None
+
             pos = self.positions[code]
             if shares is None:
                 shares = pos["shares"]
 
-            shares = min(shares, pos["shares"])
+            if shares > pos["shares"]:
+                logger.warning(f"卖出股数超过可卖数量: {shares}>{pos['shares']}")
+                return None
 
             # 【TaskB】卖出前保存持仓快照，供SQLite同步使用
             pos_snapshot = dict(pos)
@@ -407,34 +457,14 @@ class PaperAccount:
                 "cash_after": self.cash,
             }
             self.trades.append(trade)
-
-            self._save()
-
-            # 【双写】JSON保存成功后，同步写入SQLite trades表
-            # SQLite写入失败不影响已保存的JSON数据
             try:
-                from data.database import Database
-                with Database(db_path=self.db_path) as db:
-                    db.save_trade_record(trade)
-                    # 同步持仓变更到positions表
-                    if is_full_sell:
-                        # 全仓卖出，删除持仓记录
-                        db.delete_position(code)
-                    else:
-                        # 部分卖出，更新持仓股数
-                        remaining = pos_snapshot["shares"] - shares
-                        db.upsert_position({
-                            "code": code,
-                            "name": pos_snapshot["name"],
-                            "shares": remaining,
-                            "buy_price": pos_snapshot["buy_price"],
-                            "buy_date": pos_snapshot.get("buy_date", ""),
-                            "cost": pos_snapshot["buy_price"] * remaining,
-                            "highest_price": pos_snapshot.get("highest_price", pos_snapshot["buy_price"]),
-                            "current_price": price,
-                        })
+                self._persist_trade(trade)
             except Exception as e:
-                logger.warning(f"SQLite双写失败(不影响JSON): {e}")
+                self.cash -= net_amount
+                self.positions[code] = pos_snapshot
+                self.trades.pop()
+                logger.error(f"卖出持久化失败，已回滚内存状态: {e}")
+                return None
 
             logger.info(
                 f"卖出 {pos_snapshot['name']}({code}) {shares}股 @ {price} "

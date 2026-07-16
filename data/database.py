@@ -47,6 +47,8 @@ class Database:
         self._conn = sqlite3.connect(self.db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._init_tables()
         return self
 
@@ -266,6 +268,20 @@ class Database:
             )
         """)
 
+        # TradePlan 执行状态。计划被领取后不会被自动重复执行，避免重试或多进程
+        # 同时运行时重复产生模拟成交。
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS trade_plan_executions (
+                plan_id       TEXT PRIMARY KEY,
+                plan_date     TEXT NOT NULL,
+                payload_hash  TEXT NOT NULL,
+                status        TEXT NOT NULL,
+                claimed_at    TEXT NOT NULL,
+                completed_at  TEXT,
+                error         TEXT
+            )
+        """)
+
         # ── 索引 ──
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_code ON k_daily(code)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_date ON k_daily(date)")
@@ -280,6 +296,7 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_memory_items_updated ON memory_items(updated_at)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_date ON auto_events(date)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_type ON auto_events(event_type)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_trade_plan_executions_date ON trade_plan_executions(plan_date)")
 
         # ── 复盘快照（统一存储） ──
         c.execute("""
@@ -1135,6 +1152,136 @@ class Database:
         ))
         self.conn.commit()
         logger.debug("模拟账户状态写入SQLite")
+
+    def _write_account_state(self, cursor, state: Dict):
+        """在调用方控制的事务内写入账户快照。"""
+        positions = state.get("positions", {}) or {}
+        total_assets = state.get("total_assets")
+        if total_assets is None:
+            market_value = sum(
+                (pos.get("current_price") or pos.get("buy_price") or 0) * pos.get("shares", 0)
+                for pos in positions.values()
+                if isinstance(pos, dict)
+            )
+            total_assets = state.get("cash", 0) + market_value
+        cursor.execute("""
+            INSERT OR REPLACE INTO account_state
+            (id, initial_capital, cash, total_assets, position_count, positions, updated_at)
+            VALUES (1, ?, ?, ?, ?, ?, ?)
+        """, (
+            state.get("initial_capital", 0),
+            state.get("cash", 0),
+            total_assets,
+            len(positions),
+            json.dumps(positions, ensure_ascii=False),
+            state.get("updated_at", datetime.now().isoformat()),
+        ))
+
+    @staticmethod
+    def _replace_positions(cursor, positions: Dict[str, Dict]):
+        """以账户快照重建持仓投影，保持账户和持仓表同一事务提交。"""
+        cursor.execute("DELETE FROM positions")
+        for code, pos in positions.items():
+            cursor.execute("""
+                INSERT INTO positions
+                (code, name, shares, buy_price, buy_date, cost,
+                 highest_price, current_price, market_regime_at_buy)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                code,
+                pos.get("name", ""),
+                pos.get("shares", 0),
+                pos.get("buy_price", 0),
+                pos.get("buy_date", ""),
+                pos.get("cost", 0),
+                pos.get("highest_price", 0),
+                pos.get("current_price") or pos.get("buy_price", 0),
+                pos.get("market_regime_at_buy", ""),
+            ))
+
+    @staticmethod
+    def _insert_trade(cursor, trade: Dict) -> int:
+        """在调用方控制的事务内写入成交记录。"""
+        cursor.execute("""
+            INSERT INTO trades
+            (code, name, action, price, shares, amount, commission,
+             reason, signal_score, signal_detail, market_regime, dimensions, pnl, pnl_pct, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            trade.get("code", ""),
+            trade.get("name", ""),
+            trade.get("action", ""),
+            trade.get("price", 0),
+            trade.get("shares", 0),
+            trade.get("amount", 0),
+            trade.get("commission", 0),
+            trade.get("reason", ""),
+            trade.get("signal_score"),
+            trade.get("signal_detail"),
+            trade.get("market_regime"),
+            trade.get("dimensions"),
+            trade.get("pnl"),
+            trade.get("pnl_pct"),
+            trade.get("timestamp", trade.get("created_at", datetime.now().isoformat())),
+        ))
+        return cursor.lastrowid
+
+    def save_account_snapshot(self, state: Dict):
+        """原子同步账户快照和持仓投影，不产生交易记录。"""
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            self._write_account_state(cursor, state)
+            self._replace_positions(cursor, state.get("positions", {}) or {})
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
+            self.conn.commit()
+
+    def record_account_transaction(self, state: Dict, trade: Dict) -> int:
+        """原子写入账户、持仓和成交，三者不会出现半成功状态。"""
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            self._write_account_state(cursor, state)
+            self._replace_positions(cursor, state.get("positions", {}) or {})
+            trade_id = self._insert_trade(cursor, trade)
+        except Exception:
+            self.conn.rollback()
+            raise
+        else:
+            self.conn.commit()
+            return trade_id
+
+    def claim_trade_plan_execution(self, plan_id: str, plan_date: str, payload_hash: str) -> Dict[str, Any]:
+        """领取一次交易计划执行权；已领取的同一计划绝不重复下单。"""
+        cursor = self.conn.cursor()
+        now = datetime.now().isoformat()
+        try:
+            cursor.execute("""
+                INSERT INTO trade_plan_executions
+                (plan_id, plan_date, payload_hash, status, claimed_at)
+                VALUES (?, ?, ?, 'executing', ?)
+            """, (plan_id, plan_date, payload_hash, now))
+            self.conn.commit()
+            return {"claimed": True, "status": "executing"}
+        except sqlite3.IntegrityError:
+            cursor.execute(
+                "SELECT status, claimed_at, completed_at, error FROM trade_plan_executions WHERE plan_id=?",
+                (plan_id,),
+            )
+            row = cursor.fetchone()
+            return {"claimed": False, **(dict(row) if row else {"status": "unknown"})}
+
+    def complete_trade_plan_execution(self, plan_id: str, error: str = ""):
+        """标记计划执行结束；部分失败的计划也不允许自动重复执行。"""
+        self.conn.execute("""
+            UPDATE trade_plan_executions
+            SET status='completed', completed_at=?, error=?
+            WHERE plan_id=? AND status='executing'
+        """, (datetime.now().isoformat(), error or None, plan_id))
+        self.conn.commit()
 
     def get_account_state(self) -> Optional[Dict]:
         """

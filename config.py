@@ -18,7 +18,7 @@ INITIAL_CAPITAL = 1_000_000      # 初始资金 100万
 MAX_POSITIONS = 5                # 最大持仓数
 MAX_SINGLE_PCT = 0.20            # 单只股票持仓上限 20%
 COMMISSION_RATE = 0.0003         # 佣金费率 万三
-STAMP_TAX_RATE = 0.001           # 印花税 千一（卖出）
+STAMP_TAX_RATE = 0.0005          # 印花税 万五（卖出）
 MIN_TRADE_UNIT = 100             # A股最小交易单位 100股
 
 # ══════════════════════════════════════════════════════════════════

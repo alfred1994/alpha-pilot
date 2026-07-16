@@ -3,12 +3,13 @@
 import os
 import sys
 import tempfile
-from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
 from execution.paper_account import PaperAccount
+import execution.paper_account as paper_account_module
+import data.realtime as realtime_module
 from review.daily_review import DailyReviewer
 from web.routers import status as status_router
 
@@ -136,7 +137,7 @@ def test_daily_pnl_fallback_includes_realized_trade_pnl_and_buy_fee():
             os.rmdir(review_dir)
 
 
-def test_positions_api_persists_realtime_valuation_to_sqlite():
+def test_positions_api_is_read_only_for_realtime_valuation():
     db_path = _temp_path("_quant.db")
     try:
         with Database(db_path=db_path) as db:
@@ -167,32 +168,48 @@ def test_positions_api_persists_realtime_valuation_to_sqlite():
                 },
             })
 
-        fake_account = SimpleNamespace(
-            db_path=db_path,
-            initial_capital=1_000_000,
-            cash=1_109_559.7338,
-            positions={
-                "601058": {
-                    "code": "601058",
-                    "name": "赛轮轮胎",
-                    "shares": 5300,
-                    "buy_price": 11.39,
-                    "buy_date": "2026-07-01",
-                    "cost": 60367,
-                    "highest_price": 12.38,
-                    "current_price": 0,
+        class FakeAccount:
+            def __init__(self):
+                self.db_path = db_path
+                self.initial_capital = 1_000_000
+                self.cash = 1_109_559.7338
+                self.positions = {
+                    "601058": {
+                        "code": "601058",
+                        "name": "赛轮轮胎",
+                        "shares": 5300,
+                        "buy_price": 11.39,
+                        "buy_date": "2026-07-01",
+                        "cost": 60367,
+                        "highest_price": 12.38,
+                        "current_price": 0,
+                    }
                 }
-            },
-        )
 
-        status_router._persist_realtime_valuation(fake_account, {"601058": 12.28})
+            def total_assets(self, prices=None):
+                price = (prices or {}).get("601058", self.positions["601058"]["current_price"])
+                return self.cash + price * self.positions["601058"]["shares"]
+
+        original_account = paper_account_module.PaperAccount
+        original_realtime = realtime_module.get_realtime
+        paper_account_module.PaperAccount = FakeAccount
+        realtime_module.get_realtime = lambda codes: [
+            type("Quote", (), {"code": "601058", "price": 12.28, "name": "赛轮轮胎"})()
+        ]
+        try:
+            result = status_router.get_detailed_positions()
+        finally:
+            paper_account_module.PaperAccount = original_account
+            realtime_module.get_realtime = original_realtime
 
         with Database(db_path=db_path) as db:
             pos = db.get_position("601058")
             state = db.get_account_state()
 
-        assert_true(pos["current_price"] == 12.28, "实时估值写回持仓current_price")
-        assert_true(abs(state["total_assets"] - 1_174_643.7338) < 0.0001, "实时估值写回账户总资产")
+        assert_true(result["success"], "持仓接口返回成功")
+        assert_true(result["positions"][0]["current_price"] == 12.28, "响应使用实时估值")
+        assert_true(pos["current_price"] == 0, "GET请求不回写持仓实时价格")
+        assert_true(abs(state["total_assets"] - 1_169_926.7338) < 0.0001, "GET请求不回写账户总资产")
     finally:
         _cleanup([db_path])
 
@@ -201,5 +218,5 @@ if __name__ == "__main__":
     test_account_uses_current_price_by_default()
     test_daily_pnl_prefers_previous_asset_snapshot()
     test_daily_pnl_fallback_includes_realized_trade_pnl_and_buy_fee()
-    test_positions_api_persists_realtime_valuation_to_sqlite()
+    test_positions_api_is_read_only_for_realtime_valuation()
     print("账户估值和每日盈亏一致性测试通过")

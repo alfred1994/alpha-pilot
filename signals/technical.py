@@ -1089,6 +1089,9 @@ def all_technical_signals(df: pd.DataFrame) -> list:
     运行所有高级技术信号，返回 SignalResult 列表
     """
     return [
+        ma_cross_signal(df),
+        macd_signal(df),
+        volume_price_signal(df),
         ichimoku_signal(df),
         volume_profile_signal(df),
         market_structure_signal(df),

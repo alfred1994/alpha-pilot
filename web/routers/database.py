@@ -142,10 +142,6 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
         with _get_db() as db:
             offset = (page - 1) * limit
             cursor = db.conn.cursor()
-            try:
-                db.backfill_missing_trade_pnl()
-            except Exception:
-                pass
             cursor.execute(
                 "SELECT id, created_at, code, name, action, price, shares, commission, pnl, pnl_pct, reason "
                 "FROM trades ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",

@@ -12,6 +12,7 @@ from typing import Callable, Dict, List, Optional
 from portfolio.position import PositionManager, TradeRecord
 from signals.composite import CompositeSignal
 from signals import Direction
+from config import COMMISSION_RATE, STAMP_TAX_RATE
 
 logger = logging.getLogger("portfolio.backtest")
 
@@ -75,8 +76,8 @@ class BacktestEngine:
         max_single_pct: float = 0.20,
         stop_loss: float = -0.05,
         take_profit: float = 0.10,
-        commission_rate: float = 0.001,  # 手续费率 0.1%
-        stamp_tax_rate: float = 0.001,   # 印花税 0.1%（卖出时）
+        commission_rate: float = COMMISSION_RATE,
+        stamp_tax_rate: float = STAMP_TAX_RATE,
     ):
         self.initial_capital = initial_capital
         self.max_stocks = max_stocks
@@ -116,6 +117,8 @@ class BacktestEngine:
             max_single_pct=self.max_single_pct,
             stop_loss=self.stop_loss,
             take_profit=self.take_profit,
+            commission_rate=self.commission_rate,
+            stamp_tax_rate=self.stamp_tax_rate,
         )
 
         # 预处理行情数据
@@ -156,9 +159,10 @@ class BacktestEngine:
             pm.check_stop_loss_take_profit(current_prices, date)
 
             # 定期调仓
-            if day_count % signal_interval == 0:
+            if day_count > 0 and day_count % signal_interval == 0:
                 try:
-                    signals = signals_func(date)
+                    # 只使用上一交易日已经收盘的数据生成信号，再用当前交易日价格成交。
+                    signals = signals_func(trade_dates[day_count - 1])
                     pm.rebalance(signals, current_prices, date)
                 except Exception as e:
                     pass  # 信号生成失败时跳过
@@ -185,17 +189,13 @@ class BacktestEngine:
             ))
             day_count += 1
 
-        # 回测结束，强制平仓
+        # 回测结束按最后可得价格估值。不能为了展示现金而绕过 T+1 交收限制。
         final_prices = {}
         last_date = trade_dates[-1]
         for code, dates in price_map.items():
             if last_date in dates:
                 final_prices[code] = dates[last_date]
-        for code in list(pm.positions.keys()):
-            price = final_prices.get(code, pm.positions[code].buy_price)
-            pm.sell(code, price, last_date, reason="回测结束平仓")
-
-        final_assets = pm.cash
+        final_assets = pm.total_assets(final_prices)
 
         return self._calculate_metrics(
             snapshots=snapshots,
@@ -361,8 +361,8 @@ class SimpleBacktestEngine:
         atr_multiplier: float = 2.0,
         use_atr: bool = True,
         signal_interval: int = 5,
-        commission_rate: float = 0.0003,   # 佣金万三
-        stamp_tax_rate: float = 0.001,     # 印花税千一
+        commission_rate: float = COMMISSION_RATE,
+        stamp_tax_rate: float = STAMP_TAX_RATE,
         strategy=None,                      # 策略实例（用于 strategy 模式）
     ):
         self.initial_capital = initial_capital
@@ -438,9 +438,9 @@ class SimpleBacktestEngine:
         except Exception as e:
             logger.warning(f"  基准数据获取失败: {e}")
 
-        # ── 3. 构建交易日历（取所有股票的交集日期） ──
+        # ── 3. 构建交易日历（取所有证券日期的并集） ──
         date_sets = [set(df["date"].astype(str).tolist()) for df in stock_data.values()]
-        all_dates = sorted(set.intersection(*date_sets))
+        all_dates = sorted(set.union(*date_sets))
         trade_dates = [d for d in all_dates if start_date <= d <= end_date]
 
         if not trade_dates:
@@ -474,6 +474,8 @@ class SimpleBacktestEngine:
             max_single_pct=0.20,
             stop_loss=self.stop_loss,
             take_profit=self.take_profit,
+            commission_rate=self.commission_rate,
+            stamp_tax_rate=self.stamp_tax_rate,
         )
         slm = StopLossManager(
             stop_loss=self.stop_loss,
@@ -529,23 +531,18 @@ class SimpleBacktestEngine:
                     atr=atr_val if atr_val > 0 else None,
                 )
                 if signal:
-                    # 手续费: 佣金 + 印花税
-                    sell_amount = pos.shares * price
-                    commission = sell_amount * self.commission_rate
-                    stamp_tax = sell_amount * self.stamp_tax_rate
-                    net_amount = sell_amount - commission - stamp_tax
-
                     pm.sell(code, price, date, reason=signal.reason)
                     logger.debug(f"  {date} 卖出 {code} @ {price:.2f} {signal.reason}")
 
             # ── 5c. 定期选股+决策 ──
-            if day_count % self.signal_interval == 0:
+            if day_count > 0 and day_count % self.signal_interval == 0:
                 self._run_decision(
                     pm=pm,
                     stock_codes=list(stock_data.keys()),
                     current_prices=current_prices,
                     df_cache=df_cache,
-                    date=date,
+                    date=trade_dates[day_count - 1],
+                    execution_date=date,
                     decision_mode=decision_mode,
                 )
 
@@ -571,13 +568,9 @@ class SimpleBacktestEngine:
             ))
             day_count += 1
 
-        # ── 6. 回测结束，强制平仓 ──
+        # ── 6. 回测结束按最新可得价格估值，不绕过 T+1 规则强制平仓 ──
         last_date = trade_dates[-1]
-        for code in list(pm.positions.keys()):
-            price = current_prices.get(code, pm.positions[code].buy_price)
-            pm.sell(code, price, last_date, reason="回测结束平仓")
-
-        final_assets = pm.cash
+        final_assets = pm.total_assets(current_prices)
 
         # ── 7. 计算回测指标 ──
         result = self._calculate_metrics(
@@ -606,6 +599,7 @@ class SimpleBacktestEngine:
         current_prices: Dict[str, float],
         df_cache: Dict[str, pd.DataFrame],
         date: str,
+        execution_date: str,
         decision_mode: str,
     ):
         """
@@ -627,6 +621,7 @@ class SimpleBacktestEngine:
                 current_prices=current_prices,
                 df_cache=df_cache,
                 date=date,
+                execution_date=execution_date,
             )
             return
 
@@ -657,7 +652,7 @@ class SimpleBacktestEngine:
                 if decision.action == "BUY" and code not in pm.positions:
                     buy_candidates.append((code, decision))
                 elif decision.action == "SELL" and code in pm.positions:
-                    pm.sell(code, price, date, reason=f"决策卖出(score={decision.composite_score:.0f})")
+                    pm.sell(code, price, execution_date, reason=f"决策卖出(score={decision.composite_score:.0f})")
             except Exception as e:
                 logger.debug(f"  决策失败 {code}: {e}")
 
@@ -670,13 +665,11 @@ class SimpleBacktestEngine:
             if price is None:
                 continue
 
-            # 买入（扣除佣金）
-            trade = pm.buy(code, decision.name, price, date)
+            # PositionManager 统一计算佣金并从可用现金扣除。
+            trade = pm.buy(code, decision.name, price, execution_date)
             if trade:
-                commission = trade.amount * self.commission_rate
-                pm.cash -= commission  # 佣金从现金扣除
                 logger.debug(
-                    f"  {date} 买入 {code} @ {price:.2f} "
+                    f"  {execution_date} 买入 {code} @ {price:.2f} "
                     f"score={decision.composite_score:.0f} conf={decision.confidence:.0%}"
                 )
 
@@ -687,6 +680,7 @@ class SimpleBacktestEngine:
         current_prices: Dict[str, float],
         df_cache: Dict[str, pd.DataFrame],
         date: str,
+        execution_date: str,
     ):
         """
         运行策略模式决策
@@ -720,33 +714,50 @@ class SimpleBacktestEngine:
                 continue
 
             try:
-                signal = self.strategy.generate_signals(code, df)
+                market_regime = self._infer_technical_regime(df)
+                signal = self.strategy.generate_signals(code, df, market_regime=market_regime)
 
                 if signal.action == "BUY" and code not in pm.positions:
-                    buy_candidates.append((code, signal))
+                    buy_candidates.append((code, signal, market_regime))
                 elif signal.action == "SELL" and code in pm.positions:
-                    pm.sell(code, price, date, reason=f"策略卖出(score={signal.score:.0f})")
+                    pm.sell(code, price, execution_date, reason=f"策略卖出(score={signal.score:.0f})")
             except Exception as e:
                 logger.debug(f"  策略信号生成失败 {code}: {e}")
 
         # 按信号分数降序，买入前N只
         buy_candidates.sort(key=lambda x: x[1].score, reverse=True)
-        for code, signal in buy_candidates:
+        for code, signal, market_regime in buy_candidates:
             if not pm.can_buy():
                 break
             price = current_prices.get(code)
             if price is None:
                 continue
 
-            # 买入（扣除佣金）
-            trade = pm.buy(code, code, price, date)
+            # PositionManager 统一计算佣金并从可用现金扣除。
+            trade = pm.buy(code, code, price, execution_date)
             if trade:
-                commission = trade.amount * self.commission_rate
-                pm.cash -= commission  # 佣金从现金扣除
                 logger.debug(
-                    f"  {date} 买入 {code} @ {price:.2f} "
-                    f"score={signal.score:.0f} reason={signal.reason}"
+                    f"  {execution_date} 买入 {code} @ {price:.2f} "
+                    f"score={signal.score:.0f} regime={market_regime} reason={signal.reason}"
                 )
+
+    @staticmethod
+    def _infer_technical_regime(df: pd.DataFrame) -> str:
+        """只基于截至当前K线的价格结构推断策略回测环境，不调用外部数据。"""
+        if df is None or len(df) < 60 or "close" not in df.columns:
+            return "sideways"
+        close = pd.to_numeric(df["close"], errors="coerce").ffill()
+        ma_short = close.rolling(20).mean().iloc[-1]
+        ma_long = close.rolling(60).mean().iloc[-1]
+        current = close.iloc[-1]
+        return_20d = current / close.iloc[-21] - 1 if close.iloc[-21] > 0 else 0.0
+        if current > ma_short > ma_long and return_20d >= 0.03:
+            return "bull"
+        if current < ma_short < ma_long and return_20d <= -0.03:
+            return "bear"
+        if current > ma_short and return_20d > 0:
+            return "rebound"
+        return "sideways"
 
     def _weighted_decision(self, code: str, df: pd.DataFrame):
         """加权打分决策（回测模式，仅用历史数据，不调实时API）"""
