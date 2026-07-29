@@ -316,6 +316,26 @@ class Database:
             )
         """)
 
+        # ── 日终 AI 策略指令 ──
+        # 每个交易日的复盘可以为下一交易日生成一个可执行版本。该表与历史
+        # adaptive_state 分离，避免机械阈值调整覆盖 AI 已确认的策略意图。
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS strategy_directives (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                version         TEXT NOT NULL UNIQUE,
+                review_date     TEXT NOT NULL,
+                effective_date  TEXT NOT NULL,
+                regime          TEXT,
+                directive       TEXT NOT NULL,
+                review_text     TEXT,
+                created_at      TEXT NOT NULL
+            )
+        """)
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_strategy_directives_effective
+            ON strategy_directives (effective_date, id)
+        """)
+
         self.conn.commit()
         logger.debug(f"数据库初始化完成: {self.db_path}")
 
@@ -1400,6 +1420,69 @@ class Database:
             except (json.JSONDecodeError, KeyError):
                 return None
         return None
+
+    def save_strategy_directive(self, directive: Dict, review_text: str = "") -> str:
+        """保存 AI 日终生成、在下一交易日生效的策略版本。"""
+        required = ("version", "review_date", "effective_date", "params")
+        missing = [key for key in required if not directive.get(key)]
+        if missing:
+            raise ValueError(f"策略指令缺少字段: {', '.join(missing)}")
+
+        self.conn.execute(
+            """
+            INSERT INTO strategy_directives
+            (version, review_date, effective_date, regime, directive, review_text, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                directive["version"],
+                directive["review_date"],
+                directive["effective_date"],
+                directive.get("regime", ""),
+                json.dumps(directive, ensure_ascii=False),
+                review_text or "",
+                directive.get("created_at", datetime.now().isoformat()),
+            ),
+        )
+        self.conn.commit()
+        return directive["version"]
+
+    def get_effective_strategy_directive(self, date: str) -> Optional[Dict]:
+        """读取指定日期可用的最新 AI 策略指令。"""
+        row = self.conn.execute(
+            """
+            SELECT directive FROM strategy_directives
+            WHERE effective_date <= ?
+            ORDER BY effective_date DESC, id DESC
+            LIMIT 1
+            """,
+            (date,),
+        ).fetchone()
+        if not row or not row["directive"]:
+            return None
+        try:
+            return json.loads(row["directive"])
+        except json.JSONDecodeError:
+            logger.warning("策略指令JSON损坏，忽略该版本")
+            return None
+
+    def get_strategy_directive_history(self, limit: int = 20) -> List[Dict]:
+        """读取日终策略指令历史，供驾驶日报和版本回溯使用。"""
+        rows = self.conn.execute(
+            """
+            SELECT directive FROM strategy_directives
+            ORDER BY effective_date DESC, id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        history = []
+        for row in rows:
+            try:
+                history.append(json.loads(row["directive"]))
+            except json.JSONDecodeError:
+                continue
+        return history
 
     def insert_auto_event(self, event: Dict) -> int:
         """

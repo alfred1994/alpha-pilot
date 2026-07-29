@@ -394,11 +394,25 @@ export class DashboardTab {
     }
 
     renderStrategySnapshot(data) {
+        const directive = data.strategy_directive || {};
         const adaptive = data.adaptive || {};
-        this.setText('strategy-buy-threshold', adaptive.buy_threshold ?? '-');
-        this.setText('strategy-min-score', adaptive.min_score ?? '-');
-        this.setText('strategy-top-k', adaptive.top_k_delta ?? '-');
-        this.setText('strategy-position-scale', adaptive.position_scale ?? '-');
+        const params = directive.params || {};
+        const hasDirective = Boolean(directive.version);
+        this.setText('strategy-intent', directive.intent || '等待日终指令');
+        this.setText('strategy-version', hasDirective ? directive.version.replace('directive-', 'v') : 'legacy');
+        this.setText('strategy-top-k', this.isKnownNumber(params.top_k) ? `Top ${params.top_k}` : '-');
+        this.setText('strategy-min-score', this.isKnownNumber(params.min_score) ? `${Number(params.min_score).toFixed(0)} 分` : (adaptive.min_score ?? '-'));
+        this.setText('strategy-max-weight', this.isKnownNumber(params.max_weight) ? `${(Number(params.max_weight) * 100).toFixed(1)}%` : '-');
+
+        const summary = document.getElementById('strategy-directive-summary');
+        if (summary) {
+            if (!hasDirective) {
+                summary.textContent = '尚未生成 AI 日终策略指令，当前使用兼容策略。';
+            } else {
+                const effective = directive.effective_date || '下一交易日';
+                summary.textContent = `${effective} 生效：${directive.summary || '-'} 诊断：${directive.diagnosis || '-'}`;
+            }
+        }
     }
 
     renderKPIs(data, performance, positions, tradesData) {

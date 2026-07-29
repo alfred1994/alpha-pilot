@@ -295,15 +295,16 @@
                     </div>
 
                     <div class="card">
-                        <h2>策略调校快照</h2>
+                        <h2>AI 明日策略</h2>
                         <div class="strategy-grid">
-                            <div><span>买入阈值</span><b id="strategy-buy-threshold">-</b></div>
-                            <div><span>入选分</span><b id="strategy-min-score">-</b></div>
-                            <div><span>TopK 微调</span><b id="strategy-top-k">-</b></div>
-                            <div><span>仓位缩放</span><b id="strategy-position-scale">-</b></div>
+                            <div><span>策略意图</span><b id="strategy-intent">-</b></div>
+                            <div><span>生效版本</span><b id="strategy-version">-</b></div>
+                            <div><span>LLM 评估池</span><b id="strategy-top-k">-</b></div>
+                            <div><span>评估最低分</span><b id="strategy-min-score">-</b></div>
+                            <div><span>单票上限</span><b id="strategy-max-weight">-</b></div>
                         </div>
-                        <div class="public-note mt-3">
-                            公网站点只展示交易赛车的状态、资产曲线、持仓与脱敏决策摘要；暂停、恢复和修复动作不在网页暴露。
+                        <div class="public-note mt-3" id="strategy-directive-summary">
+                            日终复盘完成后，AI 会在这里说明下一交易日的策略结论。
                         </div>
                     </div>
                 </div>

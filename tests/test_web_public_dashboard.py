@@ -27,6 +27,16 @@ def _sample_status():
             "total_pnl_pct": 0.17,
         },
         "adaptive": {"buy_threshold": 63, "min_score": 58},
+        "strategy_directive": {
+            "version": "directive-20260702-123456",
+            "effective_date": "2026-07-02",
+            "intent": "谨慎探索",
+            "summary": "扩展LLM评估池",
+            "diagnosis": "评分门槛压制",
+            "rationale": "不要泄露 token=secret 或 /home/ubuntu/path",
+            "hypothesis": "恢复LLM判断",
+            "params": {"top_k": 3, "min_score": 60, "max_weight": 0.06},
+        },
         "crash_open": True,
         "pipeline_progress": {"prefetch": True, "scan": False, "execute": False, "review": False},
         "recent_logs": [
@@ -91,6 +101,9 @@ def test_public_status_is_sanitized():
         assert data["recent_logs"][0]["action"] == "自动健康巡检完成"
         assert "Traceback" not in data["recent_logs"][0]["error"]
         assert data["recent_logs"][0]["error"] == ""
+        assert data["strategy_directive"]["intent"] == "谨慎探索"
+        assert "token=secret" not in data["strategy_directive"]["rationale"]
+        assert "/home/ubuntu" not in data["strategy_directive"]["rationale"]
         ok("生产 /api/status 返回公开脱敏快照")
     finally:
         _restore_env(old_env)

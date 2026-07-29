@@ -96,7 +96,19 @@ def build_agent_status_snapshot():
         except Exception:
             pass
 
-    # 6. 检测未决 Crash 状态
+    # 6. 读取当前生效的日终 AI 策略指令。它是次日扫描实际优先使用的
+    # 策略版本，不能再只把旧自适应参数当作唯一策略状态展示。
+    strategy_directive = None
+    try:
+        from strategy.directive import get_effective_trade_policy
+        strategy_directive = get_effective_trade_policy(
+            datetime.now().strftime("%Y-%m-%d"),
+            (adaptive_params or {}).get("regime", "sideways"),
+        )
+    except Exception:
+        pass
+
+    # 7. 检测未决 Crash 状态
     crash_open = False
     project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     crash_file = os.path.join(project_dir, "data", "latest_crash.json")
@@ -109,7 +121,7 @@ def build_agent_status_snapshot():
         except Exception:
             pass
 
-    # 7. 读取自动盯盘状态文件中的进度与循环计数
+    # 8. 读取自动盯盘状态文件中的进度与循环计数
     from scheduler.auto_trader import AUTO_STATE_FILE
     pipeline_progress = {
         "prefetch": False,
@@ -145,7 +157,7 @@ def build_agent_status_snapshot():
         except Exception:
             pass
 
-    # 8. 读取最近系统运行日志事件
+    # 9. 读取最近系统运行日志事件
     recent_logs = []
     try:
         from data.database import Database
@@ -175,7 +187,7 @@ def build_agent_status_snapshot():
     except Exception:
         pass
 
-    # 9. 构建驾驶舱风险报警列表
+    # 10. 构建驾驶舱风险报警列表
     risk_warnings = []
     if not health_ok:
         risk_warnings.append(f"环境自检异常: {', '.join(health_failed)}")
@@ -212,6 +224,7 @@ def build_agent_status_snapshot():
             "total_pnl_pct": total_pnl_pct
         },
         "adaptive": adaptive_params,
+        "strategy_directive": strategy_directive,
         "crash_open": crash_open,
         "pipeline_progress": pipeline_progress,
         "recent_logs": recent_logs[:20],

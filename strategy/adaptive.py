@@ -105,7 +105,7 @@ class AdaptiveEngine:
         except Exception as e:
             logger.warning(f"SQLite双写失败(不影响JSON): {e}")
 
-    def analyze_and_adjust(self, days: int = 10) -> Dict:
+    def analyze_and_adjust(self, days: int = 10, apply_adjustments: bool = True) -> Dict:
         """
         主入口: 分析近期表现并调整参数
 
@@ -129,6 +129,18 @@ class AdaptiveEngine:
 
         # 4. 分析各来源有效性
         source_stats = self._analyze_source_effectiveness(trades)
+
+        # 日终 AI 策略指令接管后，此处只保留绩效分析作为 LLM 输入，不再由
+        # 固定胜率规则直接改写下一交易日参数。
+        if not apply_adjustments:
+            return {
+                "status": "ok",
+                "overall": overall,
+                "signal_stats": signal_stats,
+                "source_stats": source_stats,
+                "adjustments": [],
+                "suggestions": self._generate_suggestions(overall, signal_stats, source_stats),
+            }
 
         # 5. 调整参数
 

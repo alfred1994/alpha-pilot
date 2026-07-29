@@ -55,6 +55,8 @@ class TradePlan:
     date: str = ""
     regime: str = "sideways"
     regime_confidence: float = 0.0
+    strategy_version: str = ""
+    strategy_intent: str = ""
     deadline: str = "14:50"
     orders: list = field(default_factory=list)   # TradeOrder列表
     hold_reasons: dict = field(default_factory=dict)  # code → reason_code
@@ -68,6 +70,8 @@ class TradePlan:
             "date": self.date,
             "regime": self.regime,
             "regime_confidence": self.regime_confidence,
+            "strategy_version": self.strategy_version,
+            "strategy_intent": self.strategy_intent,
             "deadline": self.deadline,
             "orders": [
                 {
@@ -356,9 +360,29 @@ def fast_scan(
         plan.elapsed = elapsed()
         return plan
 
-    # ── 60-75s: 动态TopK决策 ──
+    # ── 60-75s: 读取日终 AI 策略指令并决定 TopK ──
     from strategy.regime_config import get_trade_params
-    params = get_trade_params(regime)
+    from strategy.directive import get_effective_trade_policy
+
+    directive = get_effective_trade_policy(plan.date, regime)
+    if directive:
+        params = dict(directive["params"])
+        plan.strategy_version = directive["version"]
+        plan.strategy_intent = directive.get("intent", "")
+        logger.info(
+            "[快链路] AI策略指令: %s | %s | Top%s 最低%s 仓位上限%.0f%%",
+            plan.strategy_version,
+            plan.strategy_intent,
+            params["top_k"],
+            params["min_score"],
+            params["max_weight"] * 100,
+        )
+    else:
+        # 兼容首次运行或日终 LLM 不可用场景；一旦存在 AI 指令，旧自适应
+        # 状态不会再直接支配盘中策略。
+        params = get_trade_params(regime)
+        plan.strategy_version = "legacy-adaptive"
+        plan.strategy_intent = "兼容自适应策略"
     top_k = params.get("top_k", 3)
     min_score = params.get("min_score", 58)
     max_weight = params.get("max_weight", 0.20)
@@ -1254,7 +1278,9 @@ def run_review() -> PipelineResult:
         try:
             from strategy.adaptive import AdaptiveEngine
             adaptive = AdaptiveEngine()
-            adaptive_data = adaptive.analyze_and_adjust(days=10)
+            # 固定规则只负责生成绩效分析，不再直接调整明日参数；明日策略
+            # 由下方的 LLM 日终策略指令统一决定。
+            adaptive_data = adaptive.analyze_and_adjust(days=10, apply_adjustments=False)
             # 提取自适应分析关键信息
             adj_status = adaptive_data.get("status", "unknown")
             regime = adaptive_data.get("regime", {})
@@ -1281,6 +1307,54 @@ def run_review() -> PipelineResult:
                 review_data,
                 adaptive_data=adaptive_data,
             )
+            directive = None
+            try:
+                from strategy.directive import (
+                    generate_and_save_strategy_directive,
+                    get_effective_trade_policy,
+                )
+                from strategy.regime_config import get_trade_params
+                from strategy.market_regime import get_regime_history
+
+                current_regime = "sideways"
+                history = get_regime_history(days=1)
+                if history:
+                    current_regime = history[0].regime
+                active_policy = get_effective_trade_policy(result.date, current_regime)
+                current_params = (
+                    active_policy["params"] if active_policy else get_trade_params(current_regime)
+                )
+                directive = generate_and_save_strategy_directive(
+                    review_date=result.date,
+                    review_data=review_data,
+                    llm_review=llm_analysis,
+                    regime=current_regime,
+                    current_params=current_params,
+                )
+                if directive:
+                    result.steps.append(StepResult(
+                        name="AI明日策略指令", success=True,
+                        elapsed=time.time() - t0,
+                        detail=(
+                            f"{directive['version']} {directive['effective_date']}生效 | "
+                            f"{directive['intent']} | Top{directive['params']['top_k']} "
+                            f"最低分{directive['params']['min_score']:.0f}"
+                        ),
+                    ))
+                else:
+                    result.steps.append(StepResult(
+                        name="AI明日策略指令", success=False,
+                        elapsed=time.time() - t0,
+                        detail="LLM策略指令无效，沿用上一有效版本",
+                    ))
+            except Exception as e:
+                logger.warning(f"AI策略指令生成失败(非致命): {e}")
+                result.steps.append(StepResult(
+                    name="AI明日策略指令", success=False,
+                    elapsed=time.time() - t0,
+                    detail="策略指令生成异常，沿用上一有效版本",
+                    error=str(e),
+                ))
             lesson_count = extract_and_save_lessons(
                 review_data,
                 llm_analysis=llm_analysis,
@@ -1323,6 +1397,15 @@ def run_review() -> PipelineResult:
                 elapsed=time.time() - t0,
                 detail=llm_detail,
             ))
+            # 复盘快照必须同时保留 AI 全文与可执行指令，供日报和策略版本回溯。
+            review_data["llm_review"] = llm_analysis
+            review_data["strategy_directive"] = directive
+            try:
+                from data.database import Database
+                with Database() as db:
+                    db.save_review_snapshot(result.date, review_data)
+            except Exception as e:
+                logger.warning(f"AI复盘快照回写失败(非致命): {e}")
         except Exception as e:
             logger.warning(f"LLM复盘进化失败(非致命): {e}")
     except Exception as e:
@@ -1384,6 +1467,7 @@ def format_trade_plan_report(plan_data: dict) -> str:
         f"📋 TradePlan | {plan_data.get('date', 'N/A')}",
         "=" * 60,
         f"市场环境: {plan_data.get('regime', 'N/A')} (置信度{plan_data.get('regime_confidence', 0):.0%})",
+        f"策略版本: {plan_data.get('strategy_version', 'legacy-adaptive')} {plan_data.get('strategy_intent', '')}",
         f"执行截止: {plan_data.get('deadline', 'N/A')}",
         f"耗时: {plan_data.get('elapsed', 0):.1f}s",
         "",
