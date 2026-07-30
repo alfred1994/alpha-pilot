@@ -394,7 +394,9 @@ export class DashboardTab {
     }
 
     renderStrategySnapshot(data) {
-        const directive = data.strategy_directive || {};
+        const activeDirective = data.strategy_directive || null;
+        const pendingDirective = data.pending_strategy_directive || null;
+        const directive = activeDirective || pendingDirective || {};
         const adaptive = data.adaptive || {};
         const params = directive.params || {};
         const hasDirective = Boolean(directive.version);
@@ -410,7 +412,8 @@ export class DashboardTab {
                 summary.textContent = '尚未生成 AI 日终策略指令，当前使用兼容策略。';
             } else {
                 const effective = directive.effective_date || '下一交易日';
-                summary.textContent = `${effective} 生效：${directive.summary || '-'} 诊断：${directive.diagnosis || '-'}`;
+                const state = activeDirective ? '当前生效' : '待生效';
+                summary.textContent = `${state} ${effective}：${directive.summary || '-'} 诊断：${directive.diagnosis || '-'}`;
             }
         }
     }

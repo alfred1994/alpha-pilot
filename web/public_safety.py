@@ -98,6 +98,25 @@ def sanitize_public_text(value: Any, max_len: int = 220) -> str:
     return text
 
 
+def _sanitize_strategy_directive(directive: Dict[str, Any]) -> Dict[str, Any]:
+    """公开展示策略版本时保留产品信息，隐藏可能夹带的内部内容。"""
+    directive_params = directive.get("params") or {}
+    return {
+        "version": sanitize_public_text(directive.get("version"), 64),
+        "effective_date": sanitize_public_text(directive.get("effective_date"), 16),
+        "intent": sanitize_public_text(directive.get("intent"), 48),
+        "summary": sanitize_public_text(directive.get("summary"), 220),
+        "diagnosis": sanitize_public_text(directive.get("diagnosis"), 220),
+        "rationale": sanitize_public_text(directive.get("rationale"), 220),
+        "hypothesis": sanitize_public_text(directive.get("hypothesis"), 160),
+        "params": {
+            "top_k": directive_params.get("top_k"),
+            "min_score": directive_params.get("min_score"),
+            "max_weight": directive_params.get("max_weight"),
+        },
+    }
+
+
 def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     """生成公开仪表盘使用的只读状态快照。"""
     health = snapshot.get("health") or {}
@@ -127,7 +146,7 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
 
     account = snapshot.get("account") or {}
     directive = snapshot.get("strategy_directive") or {}
-    directive_params = directive.get("params") or {}
+    pending_directive = snapshot.get("pending_strategy_directive") or {}
     return {
         "timestamp": snapshot.get("timestamp"),
         "public_mode": True,
@@ -152,20 +171,8 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "total_pnl_pct": account.get("total_pnl_pct", 0.0),
         },
         "adaptive": snapshot.get("adaptive") or {},
-        "strategy_directive": {
-            "version": sanitize_public_text(directive.get("version"), 64),
-            "effective_date": sanitize_public_text(directive.get("effective_date"), 16),
-            "intent": sanitize_public_text(directive.get("intent"), 48),
-            "summary": sanitize_public_text(directive.get("summary"), 220),
-            "diagnosis": sanitize_public_text(directive.get("diagnosis"), 220),
-            "rationale": sanitize_public_text(directive.get("rationale"), 220),
-            "hypothesis": sanitize_public_text(directive.get("hypothesis"), 160),
-            "params": {
-                "top_k": directive_params.get("top_k"),
-                "min_score": directive_params.get("min_score"),
-                "max_weight": directive_params.get("max_weight"),
-            },
-        } if directive else None,
+        "strategy_directive": _sanitize_strategy_directive(directive) if directive else None,
+        "pending_strategy_directive": _sanitize_strategy_directive(pending_directive) if pending_directive else None,
         "crash_open": bool(snapshot.get("crash_open")),
         "pipeline_progress": snapshot.get("pipeline_progress") or {},
         "recent_logs": recent_logs,

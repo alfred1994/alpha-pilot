@@ -99,12 +99,17 @@ def build_agent_status_snapshot():
     # 6. 读取当前生效的日终 AI 策略指令。它是次日扫描实际优先使用的
     # 策略版本，不能再只把旧自适应参数当作唯一策略状态展示。
     strategy_directive = None
+    pending_strategy_directive = None
     try:
         from strategy.directive import get_effective_trade_policy
+        from data.database import Database
+        today = datetime.now().strftime("%Y-%m-%d")
         strategy_directive = get_effective_trade_policy(
-            datetime.now().strftime("%Y-%m-%d"),
+            today,
             (adaptive_params or {}).get("regime", "sideways"),
         )
+        with Database() as db:
+            pending_strategy_directive = db.get_next_strategy_directive(today)
     except Exception:
         pass
 
@@ -225,6 +230,7 @@ def build_agent_status_snapshot():
         },
         "adaptive": adaptive_params,
         "strategy_directive": strategy_directive,
+        "pending_strategy_directive": pending_strategy_directive,
         "crash_open": crash_open,
         "pipeline_progress": pipeline_progress,
         "recent_logs": recent_logs[:20],

@@ -73,6 +73,10 @@ def main():
         assert_true(policy["version"] == directive["version"], "读取到同一策略版本")
         assert_true(policy["params"] == {"top_k": 3, "min_score": 60.0, "max_weight": 0.06}, "指令参数可被交易链路直接消费")
 
+        with Database(db_path=db_path) as db:
+            pending = db.get_next_strategy_directive("2026-07-29")
+        assert_true(pending["version"] == directive["version"], "复盘当日可读取待生效策略指令供看板展示")
+
         plan = TradePlan(date="2026-07-30", strategy_version=policy["version"], strategy_intent=policy["intent"])
         plan_data = plan.to_dict()
         assert_true(plan_data["strategy_version"] == directive["version"], "TradePlan 记录实际执行的策略版本")

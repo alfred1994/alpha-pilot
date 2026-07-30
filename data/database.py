@@ -1466,6 +1466,25 @@ class Database:
             logger.warning("策略指令JSON损坏，忽略该版本")
             return None
 
+    def get_next_strategy_directive(self, date: str) -> Optional[Dict]:
+        """读取指定日期之后最早生效的已生成策略指令。"""
+        row = self.conn.execute(
+            """
+            SELECT directive FROM strategy_directives
+            WHERE effective_date > ?
+            ORDER BY effective_date ASC, id DESC
+            LIMIT 1
+            """,
+            (date,),
+        ).fetchone()
+        if not row or not row["directive"]:
+            return None
+        try:
+            return json.loads(row["directive"])
+        except json.JSONDecodeError:
+            logger.warning("待生效策略指令JSON损坏，忽略该版本")
+            return None
+
     def get_strategy_directive_history(self, limit: int = 20) -> List[Dict]:
         """读取日终策略指令历史，供驾驶日报和版本回溯使用。"""
         rows = self.conn.execute(
