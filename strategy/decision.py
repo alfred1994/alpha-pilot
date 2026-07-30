@@ -139,6 +139,17 @@ def compute_dimension_scores(
     except Exception as e:
         dims["fundamental"] = DimensionScore("fundamental", 50, 0.0, f"基本面异常: {e}")
 
+    # 6. ML预测 (LightGBM量化信号)
+    try:
+        from strategy.qlib_signal import get_ml_signal
+        ml_score, ml_conf = get_ml_signal(code)
+        dims["ml"] = DimensionScore(
+            name="ml", score=ml_score, confidence=ml_conf,
+            detail=f"ML预测={ml_score:.0f} 置信={ml_conf:.0%}",
+        )
+    except Exception as e:
+        dims["ml"] = DimensionScore("ml", 50, 0.0, f"ML信号异常: {e}")
+
     return dims
 
 _CAPITAL_SCORE_CACHE = None
@@ -411,6 +422,17 @@ def make_decision_with_cache(
     except Exception as e:
         dims["fundamental"] = DimensionScore("fundamental", 50, 0.0, f"基本面异常: {e}")
 
+    # 6. ML预测
+    try:
+        from strategy.qlib_signal import get_ml_signal
+        ml_score, ml_conf = get_ml_signal(code)
+        dims["ml"] = DimensionScore(
+            name="ml", score=ml_score, confidence=ml_conf,
+            detail=f"ML预测={ml_score:.0f} 置信={ml_conf:.0%}",
+        )
+    except Exception as e:
+        dims["ml"] = DimensionScore("ml", 50, 0.0, f"ML信号异常: {e}")
+
     # 加权融合
     total_weight = sum(weights.get(k, 0) for k in dims)
     if total_weight == 0:
@@ -548,6 +570,7 @@ def _dim_label(dim_name: str) -> str:
         "sentiment": "舆情面",
         "emotion": "情绪面",
         "fundamental": "基本面",
+        "ml": "ML预测",
     }.get(dim_name, dim_name)
 
 
@@ -566,7 +589,7 @@ def format_decision_report(decisions: List[TradeDecision]) -> str:
         action_emoji = {"BUY": "[买入]", "SELL": "[卖出]", "HOLD": "[持有]"}.get(d.action, "[?]")
         lines.append(f"\n{action_emoji} {d.code} {d.name}")
         lines.append(f"  综合分: {d.composite_score:.1f} | 置信度: {d.confidence:.0%} | 决策: {d.action}")
-        for dim_name in ["technical", "capital", "sentiment", "emotion", "fundamental"]:
+        for dim_name in ["technical", "capital", "sentiment", "emotion", "fundamental", "ml"]:
             dim = d.dimensions.get(dim_name)
             if dim:
                 lines.append(f"    {_dim_label(dim_name)}: {dim.score:.1f} (conf={dim.confidence:.0%}) {dim.detail}")
