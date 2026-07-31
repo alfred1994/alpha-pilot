@@ -22,6 +22,7 @@ from scheduler.market_calendar import _now_bj
 from config import (
     AUTO_LOOP_INTERVAL,
     AUTO_RESCUE_SCAN_INTERVAL,
+    AUTO_RESCUE_SCAN_BUDGET_SECONDS,
     AUTO_SCAN_INTERVAL,
     AUTO_STOP_INTERVAL,
     AUTO_WATCH_INTERVAL,
@@ -300,7 +301,7 @@ def _run_rescue_scan_default(watch_result: dict):
         if item.get("code") in set(eligible_codes)
     ]
     scan_result = run_scan(
-        budget_seconds=180,
+        budget_seconds=AUTO_RESCUE_SCAN_BUDGET_SECONDS,
         candidate_codes=eligible_codes,
         candidate_items=rescue_items,
     )

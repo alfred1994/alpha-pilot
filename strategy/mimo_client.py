@@ -12,6 +12,7 @@ import queue
 from typing import Optional
 
 import requests
+from config import MIMO_CONNECT_TIMEOUT, MIMO_HTTP_TIMEOUT
 
 logger = logging.getLogger("strategy.mimo_client")
 
@@ -29,8 +30,8 @@ FALLBACK_BASE_URL = os.environ.get("FALLBACK_BASE_URL", "https://api.deepseek.co
 FALLBACK_API_KEY = os.environ.get("FALLBACK_API_KEY") or os.environ.get("DEEPSEEK_API_KEY")
 FALLBACK_MODEL = os.environ.get("FALLBACK_MODEL", "deepseek-chat")
 
-DEFAULT_HTTP_TIMEOUT = int(os.environ.get("MIMO_HTTP_TIMEOUT", "45"))
-DEFAULT_CONNECT_TIMEOUT = int(os.environ.get("MIMO_CONNECT_TIMEOUT", "8"))
+DEFAULT_HTTP_TIMEOUT = MIMO_HTTP_TIMEOUT
+DEFAULT_CONNECT_TIMEOUT = MIMO_CONNECT_TIMEOUT
 
 
 def _request_worker(url: str, headers: dict, payload: dict, timeout: tuple, result_queue):

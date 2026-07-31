@@ -30,6 +30,13 @@ from typing import List, Dict, Optional
 import concurrent.futures
 
 from scheduler import logger
+from config import (
+    FAST_SCAN_BUDGET_SECONDS,
+    FAST_SCAN_LLM_DECISION_TIMEOUT,
+    FAST_SCAN_LLM_RESULT_TIMEOUT,
+    FAST_SCAN_SELL_LLM_TIMEOUT,
+    FAST_SCAN_STOCK_PICK_TIMEOUT,
+)
 
 # P2-8: LLM连续超时自动关闭计数器
 _llm_timeout_count = 0
@@ -166,11 +173,11 @@ def prefetch(candidate_codes: List[str] = None):
 
 
 # ═══════════════════════════════════════════════════════════════════
-# 快链路：早盘快速扫描（240秒预算）
+# 快链路：早盘快速扫描（480秒预算）
 # ═══════════════════════════════════════════════════════════════════
 
 def fast_scan(
-    budget_seconds: int = 240,
+    budget_seconds: int = FAST_SCAN_BUDGET_SECONDS,
     candidate_codes: Optional[List[str]] = None,
     candidate_items: Optional[List[dict]] = None,
 ) -> TradePlan:
@@ -180,12 +187,11 @@ def fast_scan(
     严格时间预算，到点必须出结果。
     所有外部调用有超时降级，不阻塞。
 
-    时间分配(默认240s):
-      0-30s:  选股(缓存优先)
-      30-40s: 市场快照 + 环境
-      40-140s: 舆情分析(MiMo LLM, 单次最长60s)
-      140-200s: 并发打分
-      200-240s: LLM决策(每只25s, Top3)
+    时间分配(默认480s):
+      0-90s:   选股(缓存优先)
+      90-280s: 舆情分析(MiMo LLM，主备均允许完整返回)
+      280-370s: 并发打分
+      370-480s: LLM决策与计划生成
 
     Args:
         budget_seconds: 总时间预算(秒)
@@ -272,7 +278,7 @@ def fast_scan(
                     low_position_mode=True,   # 低位模式
                     sentiment_boost=sentiment_boost,  # 舆情加成
                 ),
-                timeout=60,
+                timeout=FAST_SCAN_STOCK_PICK_TIMEOUT,
                 fallback=[],
                 desc="多维选股",
             )
@@ -461,7 +467,7 @@ def fast_scan(
                     total_assets=_total_assets,
                     cash=_cash,
                     llm_retries=0,
-                    llm_timeout=60,
+                    llm_timeout=FAST_SCAN_LLM_DECISION_TIMEOUT,
                 )
             except Exception as _e:
                 logger.warning(f"[快链路] LLM决策异常 {_s.get('code', '?')}: {_e}")
@@ -473,7 +479,10 @@ def fast_scan(
                     _llm_executor.submit(_parallel_llm_decision, _s): _s
                     for _s in top_candidates[:5]
                 }
-                for _future in concurrent.futures.as_completed(_llm_futures, timeout=90):
+                for _future in concurrent.futures.as_completed(
+                    _llm_futures,
+                    timeout=FAST_SCAN_LLM_RESULT_TIMEOUT,
+                ):
                     try:
                         _s, _decision = _future.result()
                         if _decision and _decision.action:
@@ -493,7 +502,9 @@ def fast_scan(
                     except Exception as _e:
                         logger.warning(f"[快链路] LLM并发结果处理失败: {_e}")
         except concurrent.futures.TimeoutError:
-            logger.warning(f"[快链路] LLM决策超时(90s)，已使用已有结果")
+            logger.warning(
+                f"[快链路] LLM决策超时({FAST_SCAN_LLM_RESULT_TIMEOUT}s)，已使用已有结果"
+            )
         except Exception as _e:
             logger.warning(f"[快链路] LLM决策异常: {_e}")
 
@@ -599,7 +610,7 @@ def fast_scan(
                             cash=_cash_sell,
                             memory=_sell_memory,
                             llm_retries=0,
-                            llm_timeout=30,
+                            llm_timeout=FAST_SCAN_SELL_LLM_TIMEOUT,
                         )
 
                         _sell_eval_count += 1
@@ -1558,7 +1569,7 @@ def format_pipeline_report(result: PipelineResult) -> str:
 # ═══════════════════════════════════════════════════════════════════
 
 def run_scan(
-    budget_seconds: int = 240,
+    budget_seconds: int = FAST_SCAN_BUDGET_SECONDS,
     candidate_codes: Optional[List[str]] = None,
     candidate_items: Optional[List[dict]] = None,
 ) -> PipelineResult:

@@ -91,6 +91,18 @@ LIMIT_UP_MAX_SCORE = 30           # 涨停板最高分（原80，现30）
 # ══════════════════════════════════════════════════════════════════
 # 自动盯盘配置
 # ══════════════════════════════════════════════════════════════════
+# 外部行情与模型服务在交易时段可能出现短暂拥塞。以下预算统一通过环境变量
+# 覆盖，默认值为完整决策链路保留足够时间，同时仍保留超时降级保护。
+MIMO_HTTP_TIMEOUT = int(os.environ.get("MIMO_HTTP_TIMEOUT", "90"))
+MIMO_CONNECT_TIMEOUT = int(os.environ.get("MIMO_CONNECT_TIMEOUT", "15"))
+BAOSTOCK_TIMEOUT = int(os.environ.get("BAOSTOCK_TIMEOUT", "75"))
+FAST_SCAN_BUDGET_SECONDS = int(os.environ.get("FAST_SCAN_BUDGET_SECONDS", "480"))
+FAST_SCAN_STOCK_PICK_TIMEOUT = int(os.environ.get("FAST_SCAN_STOCK_PICK_TIMEOUT", "90"))
+FAST_SCAN_LLM_DECISION_TIMEOUT = int(os.environ.get("FAST_SCAN_LLM_DECISION_TIMEOUT", "90"))
+FAST_SCAN_LLM_RESULT_TIMEOUT = int(os.environ.get("FAST_SCAN_LLM_RESULT_TIMEOUT", "150"))
+FAST_SCAN_SELL_LLM_TIMEOUT = int(os.environ.get("FAST_SCAN_SELL_LLM_TIMEOUT", "90"))
+AUTO_RESCUE_SCAN_BUDGET_SECONDS = int(os.environ.get("AUTO_RESCUE_SCAN_BUDGET_SECONDS", "360"))
+
 AUTO_LOOP_INTERVAL = int(os.environ.get("AUTO_LOOP_INTERVAL", "60"))       # 自动盯盘主循环间隔(秒)
 AUTO_SCAN_INTERVAL = int(os.environ.get("AUTO_SCAN_INTERVAL", "1800"))     # 盘中扫描间隔(秒)
 AUTO_STOP_INTERVAL = int(os.environ.get("AUTO_STOP_INTERVAL", "60"))       # 止损巡检间隔(秒)

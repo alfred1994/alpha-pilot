@@ -16,9 +16,9 @@ import queue
 from datetime import datetime, timedelta
 from typing import Optional
 import logging
+from config import BAOSTOCK_TIMEOUT
 
 logger = logging.getLogger("data.history")
-BAOSTOCK_TIMEOUT = int(os.environ.get("BAOSTOCK_TIMEOUT", "45"))
 
 # 字段映射
 DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
