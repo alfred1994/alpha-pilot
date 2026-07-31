@@ -62,19 +62,26 @@ def _get_early_stage_candidates() -> Dict[str, Candidate]:
     candidates = {}
     try:
         from strategy.stock_picker import _get_active_stocks
-        from data.a_stock_data import get_realtime_quote, normalize_code
+        from data.realtime import get_realtime_batch
 
         active = _get_active_stocks(min_amount=2000, limit=100)
         logger.info(f"低价股扫描池: {len(active)}只")
 
-        for code, name in list(active.items())[:60]:
+        # 腾讯行情模块是项目内稳定的实时行情入口；一次批量获取避免逐只请求。
+        active_items = list(active.items())[:60]
+        quote_by_code = {
+            quote.code: quote
+            for quote in get_realtime_batch([code for code, _ in active_items])
+        }
+
+        for code, name in active_items:
             try:
-                quote = get_realtime_quote(normalize_code(code))
+                quote = quote_by_code.get(code)
                 if not quote:
                     continue
 
-                price = quote.get("price", 0)
-                change = quote.get("change_percent", 0)
+                price = quote.price
+                change = quote.change_pct
 
                 # 筛选：股价5-15元，涨跌幅-3%~5%
                 if 5 <= price <= 15 and -3 <= change <= 5:

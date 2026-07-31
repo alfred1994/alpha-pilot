@@ -311,6 +311,7 @@ def fast_scan(
     if remaining() < 10:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过打分")
         plan.elapsed = elapsed()
+        _save_trade_plan(plan)
         return plan
 
     # ── 10-30s: 市场环境 + 实时数据 ──
@@ -342,6 +343,7 @@ def fast_scan(
     if remaining() < 20:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过打分")
         plan.elapsed = elapsed()
+        _save_trade_plan(plan)
         return plan
 
     # ── 30-60s: 并发打分 ──
@@ -364,6 +366,7 @@ def fast_scan(
     if remaining() < 30:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过决策")
         plan.elapsed = elapsed()
+        _save_trade_plan(plan)
         return plan
 
     # ── 60-75s: 读取日终 AI 策略指令并决定 TopK ──
@@ -473,40 +476,43 @@ def fast_scan(
                 logger.warning(f"[快链路] LLM决策异常 {_s.get('code', '?')}: {_e}")
                 return _s, None
 
+        _llm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as _llm_executor:
-                _llm_futures = {
-                    _llm_executor.submit(_parallel_llm_decision, _s): _s
-                    for _s in top_candidates[:5]
-                }
-                for _future in concurrent.futures.as_completed(
-                    _llm_futures,
-                    timeout=FAST_SCAN_LLM_RESULT_TIMEOUT,
-                ):
-                    try:
-                        _s, _decision = _future.result()
-                        if _decision and _decision.action:
-                            # LLM决策成功：用LLM结果覆盖加权打分的action
-                            _s["llm_action"] = _decision.action
-                            _s["llm_confidence"] = _decision.confidence
-                            _s["llm_reason"] = _decision.reason
-                            if _decision.confidence > 0:
-                                _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
-                                llm_count += 1
-                            else:
-                                _llm_timeout_count += 1
-                            if _decision.action == "HOLD":
-                                plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
-                            elif _decision.action == "SELL":
-                                _s["llm_action"] = "SELL"
-                    except Exception as _e:
-                        logger.warning(f"[快链路] LLM并发结果处理失败: {_e}")
+            _llm_futures = {
+                _llm_executor.submit(_parallel_llm_decision, _s): _s
+                for _s in top_candidates[:5]
+            }
+            for _future in concurrent.futures.as_completed(
+                _llm_futures,
+                timeout=FAST_SCAN_LLM_RESULT_TIMEOUT,
+            ):
+                try:
+                    _s, _decision = _future.result()
+                    if _decision and _decision.action:
+                        # LLM决策成功：用LLM结果覆盖加权打分的action
+                        _s["llm_action"] = _decision.action
+                        _s["llm_confidence"] = _decision.confidence
+                        _s["llm_reason"] = _decision.reason
+                        if _decision.confidence > 0:
+                            _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
+                            llm_count += 1
+                        else:
+                            _llm_timeout_count += 1
+                        if _decision.action == "HOLD":
+                            plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
+                        elif _decision.action == "SELL":
+                            _s["llm_action"] = "SELL"
+                except Exception as _e:
+                    logger.warning(f"[快链路] LLM并发结果处理失败: {_e}")
         except concurrent.futures.TimeoutError:
             logger.warning(
                 f"[快链路] LLM决策超时({FAST_SCAN_LLM_RESULT_TIMEOUT}s)，已使用已有结果"
             )
         except Exception as _e:
             logger.warning(f"[快链路] LLM决策异常: {_e}")
+        finally:
+            # 不在收集超时后等待未完成的模型线程，防止其侵占后续执行窗口。
+            _llm_executor.shutdown(wait=False, cancel_futures=True)
 
         logger.info(f"[快链路] LLM决策: {llm_count}/{min(5, len(top_candidates))} 成功")
 
@@ -749,7 +755,8 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
 
     results = []
     # 并发执行，总超时控制
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+    try:
         futures = {executor.submit(score_one, c): c for c in candidates}
         done, _ = concurrent.futures.wait(futures, timeout=timeout)
         for future in done:
@@ -759,6 +766,9 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
                 c = futures[future]
                 code = c.code if hasattr(c, "code") else c.get("code", "")
                 logger.warning(f"打分失败 {code}: {e}")
+    finally:
+        # 与快链路总预算对齐：超时后不等待慢数据源线程完成。
+        executor.shutdown(wait=False, cancel_futures=True)
 
     logger.info(f"并发打分完成: {len(results)}/{len(candidates)}只, 超时={timeout}s")
     return results

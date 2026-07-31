@@ -302,16 +302,20 @@ def with_timeout(func, timeout: int = 15, fallback=None, desc: str = ""):
     """
     import concurrent.futures
 
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    future = executor.submit(func)
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(func)
-            return future.result(timeout=timeout)
+        return future.result(timeout=timeout)
     except concurrent.futures.TimeoutError:
         logger.warning(f"超时降级({timeout}s): {desc}")
         return fallback
     except Exception as e:
         logger.warning(f"异常降级: {desc}: {e}")
         return fallback
+    finally:
+        # 超时后不能等待线程自然退出，否则“超时降级”仍会占满扫描预算。
+        # 已运行的第三方调用无法由线程安全中断，后续结果会被丢弃。
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 # ═══════════════════════════════════════════════════════════════════
