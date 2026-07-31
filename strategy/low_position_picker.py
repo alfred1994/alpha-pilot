@@ -189,7 +189,7 @@ def pick_low_position_stocks(
         code = c.code
         if "退" in name or "ST" in name:
             return False
-        if code.startswith(("8", "4", "688")):
+        if code.startswith(("8", "4", "920", "688")):
             return False
         return True
 

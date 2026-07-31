@@ -247,8 +247,12 @@ def fast_scan(
         if pool and pool.get("candidates"):
             for c in pool["candidates"]:
                 from strategy.stock_picker import Candidate
+                _code = str(c.get("code", "")).strip()
+                # 防御: 过滤北交所/科创板(缓存可能含脏数据)
+                if _code.startswith(("8", "4", "920", "688")):
+                    continue
                 candidates.append(Candidate(
-                    code=c["code"], name=c["name"],
+                    code=_code, name=c.get("name", _code),
                     source=c.get("source", []), score=c.get("score", 0),
                 ))
             logger.info(f"[快链路] 从缓存加载候选池: {len(candidates)}只")

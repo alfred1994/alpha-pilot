@@ -632,8 +632,8 @@ def pick_stocks(
         # 过滤名称过短（可能是异常数据）
         if len(c.name.strip()) < 2:
             return False
-        # 过滤北交所（8/4开头，无权限）
-        if code.startswith(("8", "4")):
+        # 过滤北交所（8/4/920开头，无权限）
+        if code.startswith(("8", "4", "920")):
             return False
         # 过滤科创板（688开头，无权限）
         if code.startswith("688"):
@@ -821,7 +821,7 @@ def _get_active_stocks(min_amount: float = 5000, limit: int = 500) -> Dict[str, 
             # 过滤退市
             if "退" in name:
                 continue
-            if code.startswith(("8", "4")):  # 北交所
+            if code.startswith(("8", "4", "920")):  # 北交所
                 continue
             if code.startswith("688"):       # 科创板
                 continue
@@ -894,7 +894,7 @@ def pick_stocks_by_htsc(
                     if not code:
                         continue
                     # 过滤北交所/科创板/退市
-                    if code.startswith(("8", "4")):
+                    if code.startswith(("8", "4", "920")):
                         continue
                     if code.startswith("688"):
                         continue
