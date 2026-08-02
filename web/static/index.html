@@ -3,478 +3,193 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AlphaPilot - AI 交易员数字孪生仪表盘</title>
+    <title>AlphaPilot - 个人 AI 交易员</title>
     <link rel="icon" href="data:,">
-    <!-- Google Fonts Inter & Outfit -->
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <!-- Lucide Icons -->
-    <script src="vendor/lucide.min.js?v=2026070301"></script>
-    <!-- ECharts CDN -->
-    <script src="vendor/echarts.min.js?v=2026070301"></script>
-    <link rel="stylesheet" href="css/styles.css?v=2026070301">
+    <link href="https://fonts.googleapis.com/css2?family=Epilogue:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <script src="vendor/lucide.min.js?v=2026080201"></script>
+    <script src="vendor/echarts.min.js?v=2026080201"></script>
+    <link rel="stylesheet" href="css/styles.css?v=2026080201">
 </head>
 <body>
-    <div class="app-container">
-        <!-- 头部大屏 Header -->
-        <header class="app-header">
-            <div class="logo-area">
-                <span class="pulse-dot green" id="status-pulse"></span>
-                <h1>AlphaPilot <span class="badge">🤖 AI Trader</span></h1>
-            </div>
-            <nav class="app-nav">
-                <button class="nav-btn active" data-tab="dashboard">
-                    <i data-lucide="layout-dashboard"></i>
-                    <span>仪表盘</span>
-                </button>
-                <button class="nav-btn" data-tab="decisions">
-                    <i data-lucide="brain-circuit"></i>
-                    <span>LLM 决策</span>
-                </button>
-                <button class="nav-btn" data-tab="evolution">
-                    <i data-lucide="git-merge"></i>
-                    <span>自适应进化</span>
-                </button>
+    <div class="app-shell">
+        <header class="topbar">
+            <a class="brand" href="#" aria-label="AlphaPilot 首页">
+                <span class="brand-mark">AP</span>
+                <span>
+                    <strong>AlphaPilot</strong>
+                    <small>个人 AI 交易员</small>
+                </span>
+            </a>
+            <nav class="main-nav" aria-label="主导航">
+                <button class="nav-btn active" data-tab="dashboard"><i data-lucide="sunrise"></i><span>今日</span></button>
+                <button class="nav-btn" data-tab="decisions"><i data-lucide="route"></i><span>决策流水</span></button>
+                <button class="nav-btn" data-tab="evolution"><i data-lucide="brain"></i><span>策略与复盘</span></button>
+                <button class="nav-btn" data-tab="health"><i data-lucide="activity"></i><span>运行健康</span></button>
             </nav>
-            <div class="header-status">
-                <div class="status-item flex-center">
-                    <span class="status-indicator-dot" id="indicator-health" title="环境健康"></span>
-                    <span class="label">环境</span>
-                </div>
-                <div class="status-item flex-center">
-                    <span class="status-indicator-dot" id="indicator-watchdog" title="看门狗"></span>
-                    <span class="label">看门狗</span>
-                </div>
-                <div class="status-item flex-center">
-                    <span class="status-indicator-dot" id="indicator-crash" title="无崩溃"></span>
-                    <span class="label">无崩溃</span>
-                </div>
-                <div class="status-item flex-center">
-                    <span class="status-indicator-dot" id="indicator-control" title="交易控制"></span>
-                    <span class="label">交易</span>
-                </div>
-                <div class="status-item">
-                    <span class="label">大盘环境:</span>
-                    <span class="value" id="header-regime">-</span>
-                </div>
-                <div class="status-item">
-                    <span class="label">账户净值:</span>
-                    <span class="value highlight" id="header-assets">-</span>
+            <div class="topbar-status">
+                <span class="state-dot" id="status-pulse"></span>
+                <div>
+                    <strong id="header-trader-state">状态读取中</strong>
+                    <small><span id="header-regime">市场环境 -</span> · <span id="header-assets">净值 -</span></small>
                 </div>
             </div>
         </header>
 
-        <!-- 主内容区域 -->
-        <main class="app-main">
-            <!-- 自动驾驶异常通知警报条 -->
-            <div class="autopilot-alert-bar" id="autopilot-alert-bar" style="display: none;">
-                <div class="alert-content">
-                    <i data-lucide="alert-triangle" class="alert-icon"></i>
-                    <span id="alert-message">自动驾驶异常：-</span>
-                </div>
-                <div class="alert-actions">
-                    <span class="suggestion">公开页面仅展示脱敏状态，修复操作由 Hermes 驾驶员在服务器内执行</span>
-                </div>
+        <main class="page-wrap">
+            <div class="alert-banner" id="autopilot-alert-bar" hidden>
+                <i data-lucide="alert-triangle"></i>
+                <div><strong>运行提醒</strong><span id="alert-message">-</span></div>
             </div>
 
-            <!-- 仪表盘面板 Dashboard Tab -->
             <section class="tab-content active" id="tab-dashboard">
-                <div class="public-kpi-strip mb-4">
-                    <div class="kpi-card border-success">
-                        <div class="kpi-label">账户净值</div>
-                        <div class="kpi-value font-outfit num-animate" id="kpi-total-assets">-</div>
-                        <div class="kpi-trend">
-                            <span class="trend-flat" id="kpi-assets-trend">
-                                <span class="trend-arrow">→</span>
-                                <span class="trend-change">0.00%</span>
-                            </span>
+                <article class="trader-brief" id="trader-brief-card">
+                    <div class="brief-copy">
+                        <div class="brief-meta">
+                            <span class="state-pill" id="trader-state">读取中</span>
+                            <span id="trader-date">-</span>
+                            <span id="trader-market-status">-</span>
                         </div>
-                        <div class="kpi-icon-wrap"><i data-lucide="wallet" class="kpi-icon"></i></div>
+                        <h1 id="trader-headline">正在读取 AI 交易员状态</h1>
+                        <p id="trader-explanation">系统正在汇总今日扫描、判断、计划和执行事实。</p>
                     </div>
-                    <div class="kpi-card border-success">
-                        <div class="kpi-label">今日盈亏</div>
-                        <div class="kpi-value font-outfit num-animate" id="kpi-daily-pnl">-</div>
-                        <div class="kpi-trend">
-                            <span class="trend-flat" id="kpi-pnl-trend">
-                                <span class="trend-arrow">→</span>
-                                <span class="trend-change">-</span>
-                            </span>
+                    <div class="next-action">
+                        <span>下一动作</span>
+                        <strong id="trader-next-action">-</strong>
+                        <small id="trader-last-loop">最后循环 -</small>
+                    </div>
+                </article>
+
+                <section class="capability-rail" id="capability-rail" aria-label="交易能力状态">
+                    <div class="empty-state">正在读取能力状态</div>
+                </section>
+
+                <article class="card journey-card">
+                    <div class="section-heading">
+                        <div><span class="eyebrow">今日事实</span><h2>决策旅程</h2></div>
+                        <p>每一层都是不同事实；观察结论不等于交易信号。</p>
+                    </div>
+                    <div class="journey-flow">
+                        <div class="journey-step"><i data-lucide="search"></i><strong id="journey-candidates">0</strong><span>候选观察</span></div>
+                        <div class="journey-link"></div>
+                        <div class="journey-step"><i data-lucide="sliders-horizontal"></i><strong id="journey-scored">0</strong><span>完成打分</span></div>
+                        <div class="journey-link"></div>
+                        <div class="journey-step"><i data-lucide="brain-circuit"></i><strong id="journey-evaluated">0</strong><span>LLM 判断</span></div>
+                        <div class="journey-link"></div>
+                        <div class="journey-step observation"><i data-lucide="eye"></i><strong id="journey-observations">0</strong><span>观察结论</span></div>
+                        <div class="journey-link"></div>
+                        <div class="journey-step signal"><i data-lucide="zap"></i><strong id="journey-signals">0</strong><span>交易信号</span></div>
+                        <div class="journey-link"></div>
+                        <div class="journey-step"><i data-lucide="clipboard-list"></i><strong id="journey-planned">0</strong><span>待执行计划</span></div>
+                        <div class="journey-link"></div>
+                        <div class="journey-step executed"><i data-lucide="check-check"></i><strong id="journey-filled">0</strong><span>模拟成交</span></div>
+                    </div>
+                    <div class="journey-foot" id="journey-foot">今日尚无决策旅程事实。</div>
+                </article>
+
+                <div class="two-column">
+                    <article class="card">
+                        <div class="section-heading compact"><div><span class="eyebrow">执行解释</span><h2>计划结果</h2></div></div>
+                        <div class="execution-totals">
+                            <div><span>风控阻断</span><strong id="audit-blocked">0</strong></div>
+                            <div><span>正常跳过</span><strong id="audit-skipped">0</strong></div>
+                            <div><span>执行失败</span><strong id="audit-failed">0</strong></div>
                         </div>
-                        <div class="kpi-icon-wrap"><i data-lucide="trending-up" class="kpi-icon"></i></div>
-                    </div>
-                    <div class="kpi-card border-warn">
-                        <div class="kpi-label">持仓市值</div>
-                        <div class="kpi-value font-outfit num-animate" id="kpi-position-value">-</div>
-                        <div class="kpi-trend">
-                            <span class="trend-flat" id="kpi-pos-trend">
-                                <span class="trend-arrow">→</span>
-                                <span class="trend-change" id="kpi-exposure-text">-</span>
-                            </span>
+                        <div class="fact-list" id="order-audit-list"><div class="empty-state">今日没有订单执行记录</div></div>
+                    </article>
+                    <article class="card">
+                        <div class="section-heading compact"><div><span class="eyebrow">策略交接</span><h2>当前与下一交易日</h2></div></div>
+                        <div class="strategy-handoff">
+                            <div class="strategy-mini current">
+                                <span>当前执行</span><strong id="current-strategy-intent">等待策略</strong><small id="current-strategy-meta">-</small>
+                            </div>
+                            <i data-lucide="arrow-right"></i>
+                            <div class="strategy-mini pending">
+                                <span>下一交易日</span><strong id="pending-strategy-intent">尚未生成</strong><small id="pending-strategy-meta">-</small>
+                            </div>
                         </div>
-                        <div class="kpi-icon-wrap"><i data-lucide="briefcase" class="kpi-icon"></i></div>
-                    </div>
-                    <div class="kpi-card border-danger">
-                        <div class="kpi-label">最大回撤</div>
-                        <div class="kpi-value font-outfit num-animate" id="kpi-max-drawdown">-</div>
-                        <div class="kpi-trend">
-                            <span class="trend-flat" id="kpi-dd-trend">
-                                <span class="trend-arrow">→</span>
-                                <span class="trend-change">风险指标</span>
-                            </span>
-                        </div>
-                        <div class="kpi-icon-wrap"><i data-lucide="shield-alert" class="kpi-icon"></i></div>
-                    </div>
+                        <div class="strategy-diff-list" id="strategy-diff-list"><div class="empty-state">暂无策略参数变化</div></div>
+                    </article>
                 </div>
 
-                <!-- 自动驾驶驾驶舱监控 (Autopilot Cockpit) -->
-                <div class="grid-layout mb-4">
-                    <!-- 左侧：驾驶舱状态与进度 -->
-                    <div class="card card-hero card-glow-blue">
-                        <h2>自动驾驶监控 (Autopilot Cockpit)</h2>
-                        <div class="cockpit-status-grid mt-3" style="display:grid; grid-template-columns: repeat(2, 1fr); gap: 12px;">
-                            <div class="stat-box flex-center" style="gap: 8px;">
-                                <span class="status-indicator-dot" id="cockpit-watchdog"></span>
-                                <div>
-                                    <span class="stat-label">看门狗守护</span>
-                                    <span class="pos-value" id="cockpit-watchdog-text">-</span>
-                                </div>
-                            </div>
-                            <div class="stat-box flex-center" style="gap: 8px;">
-                                <span class="status-indicator-dot" id="cockpit-trading"></span>
-                                <div>
-                                    <span class="stat-label">日内交易阀门</span>
-                                    <span class="pos-value" id="cockpit-trading-text">-</span>
-                                </div>
-                            </div>
-                            <div class="stat-box flex-center" style="gap: 8px;">
-                                <i data-lucide="fuel" class="kpi-icon"></i>
-                                <div>
-                                    <span class="stat-label">现金燃料</span>
-                                    <span class="pos-value font-outfit" id="cash-ratio">-</span>
-                                </div>
-                            </div>
-                            <div class="stat-box flex-center" style="gap: 8px;">
-                                <i data-lucide="gauge" class="kpi-icon"></i>
-                                <div>
-                                    <span class="stat-label">仓位负载</span>
-                                    <span class="pos-value font-outfit" id="exposure-ratio">-</span>
-                                </div>
-                            </div>
-                        </div>
+                <section class="metric-grid">
+                    <article class="metric-card"><span>账户净值</span><strong id="total-assets">-</strong><small id="total-pnl">-</small></article>
+                    <article class="metric-card"><span>今日盈亏</span><strong id="daily-pnl">-</strong><small>按最近账户快照</small></article>
+                    <article class="metric-card"><span>可用资金</span><strong id="available-cash">-</strong><small id="cash-ratio">-</small></article>
+                    <article class="metric-card"><span>当前持仓</span><strong id="position-count">-</strong><small id="position-value">-</small></article>
+                </section>
 
-                        <div class="pipeline-progress-container mt-4">
-                            <h3 style="font-size:14px; font-weight:600; color:var(--text-secondary); margin-bottom:10px;">今日运行日历/闭环进度</h3>
-                            <div class="pipeline-steps mt-2">
-                                <div class="pipe-step" id="step-prefetch">
-                                    <div class="step-circle">1</div>
-                                    <div class="step-label">盘前预热</div>
-                                </div>
-                                <div class="pipe-step" id="step-scan">
-                                    <div class="step-circle">2</div>
-                                    <div class="step-label">盘中扫描</div>
-                                </div>
-                                <div class="pipe-step" id="step-execute">
-                                    <div class="step-circle">3</div>
-                                    <div class="step-label">模拟执行</div>
-                                </div>
-                                <div class="pipe-step" id="step-review">
-                                    <div class="step-circle">4</div>
-                                    <div class="step-label">盘后复盘</div>
-                                </div>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- 右侧：风险报警与公开动作流 -->
-                    <div class="card card-glow-red" style="display:flex; flex-direction:column; justify-content:space-between;">
-                        <div>
-                            <h2>系统风险警报</h2>
-                            <div class="risk-warnings" id="risk-warnings-list" style="margin-top:10px;">
-                                <div class="empty-state" style="padding: 10px;">运行状况正常</div>
-                            </div>
-                        </div>
-                        <div class="events-log mt-3" style="border-top:1px solid rgba(255,255,255,0.04); padding-top:10px; flex-grow:1;">
-                            <h3 style="font-size:14px; font-weight:600; color:var(--text-secondary);">公开动作流</h3>
-                            <div class="events-list" id="events-list" style="max-height:120px; overflow-y:auto; font-family:monospace; font-size:11px; color:var(--text-secondary); margin-top:6px;">
-                                <div class="empty-state" style="padding: 10px;">暂无日志</div>
-                            </div>
-                        </div>
-                    </div>
+                <div class="two-column account-area">
+                    <article class="card">
+                        <div class="section-heading compact"><div><span class="eyebrow">账户结果</span><h2>净值变化</h2></div><span id="trade-count">-</span></div>
+                        <div class="chart-container" id="perf-chart"></div>
+                    </article>
+                    <article class="card">
+                        <div class="section-heading compact"><div><span class="eyebrow">风险暴露</span><h2>当前持仓</h2></div></div>
+                        <div class="positions-list" id="positions-list"><div class="empty-state">暂无持仓</div></div>
+                    </article>
                 </div>
 
-                <div class="grid-layout">
-                    <!-- 左侧：资产/盈亏统计 -->
-                    <div class="card card-glow-green">
-                        <h2>账户总览</h2>
-                        <div class="stats-grid">
-                            <div class="stat-box">
-                                <span class="stat-label">总资产</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="total-assets" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">可用资金</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="available-cash" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">总盈亏</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="total-pnl" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">今日盈亏</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="daily-pnl" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">持仓市值</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="position-value" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">持仓数量</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="position-count" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">交易次数</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="trade-count" style="min-width:80px;">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">平仓胜率</span>
-                                <span class="stat-val font-outfit skeleton skeleton-text" id="win-rate" style="min-width:80px;">-</span>
-                            </div>
-                        </div>
-                        <!-- 收益率曲线图 chart -->
-                        <div class="chart-container mt-4" id="perf-chart" style="height: 250px;"></div>
+                <article class="card">
+                    <div class="section-heading compact"><div><span class="eyebrow">执行事实</span><h2>最近模拟成交</h2></div></div>
+                    <div class="table-wrap">
+                        <table><thead><tr><th>时间</th><th>标的</th><th>动作</th><th>价格</th><th>数量</th><th>盈亏</th><th>原因</th></tr></thead><tbody id="trades-table-body"><tr><td colspan="7">读取中</td></tr></tbody></table>
                     </div>
-
-                    <!-- 右侧：当前持仓 -->
-                    <div class="card">
-                        <h2>当前持仓</h2>
-                        <div class="positions-list" id="positions-list">
-                            <div class="empty-state">暂无持仓</div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- 风险指标面板 -->
-                <div class="risk-metrics-grid mt-4">
-                    <div class="risk-metric-card">
-                        <span class="metric-label">最大回撤</span>
-                        <span class="metric-value font-outfit" id="risk-max-drawdown">-</span>
-                        <span class="metric-status status-good" id="risk-dd-status">低风险</span>
-                    </div>
-                    <div class="risk-metric-card">
-                        <span class="metric-label">夏普比率</span>
-                        <span class="metric-value font-outfit" id="risk-sharpe">-</span>
-                        <span class="metric-status status-good" id="risk-sharpe-status">优秀</span>
-                    </div>
-                    <div class="risk-metric-card">
-                        <span class="metric-label">年化收益率</span>
-                        <span class="metric-value font-outfit" id="risk-annualized">-</span>
-                        <span class="metric-status status-medium" id="risk-annual-status">-</span>
-                    </div>
-                    <div class="risk-metric-card">
-                        <span class="metric-label">收益波动率</span>
-                        <span class="metric-value font-outfit" id="risk-volatility">-</span>
-                        <span class="metric-status status-medium" id="risk-vol-status">-</span>
-                    </div>
-                </div>
-
-                <div class="grid-layout mt-4">
-                    <div class="card">
-                        <h2>LLM 决策雷达摘要</h2>
-                        <div class="decision-summary-grid">
-                            <div class="stat-box">
-                                <span class="stat-label">最新动作</span>
-                                <span class="stat-val font-outfit" id="latest-decision">-</span>
-                            </div>
-                            <div class="stat-box">
-                                <span class="stat-label">平均置信度</span>
-                                <span class="stat-val font-outfit" id="avg-confidence">-</span>
-                            </div>
-                        </div>
-                        <div class="compact-feed mt-3" id="decision-feed">
-                            <div class="empty-state">暂无决策摘要</div>
-                        </div>
-                    </div>
-
-                    <div class="card">
-                        <h2>AI 明日策略</h2>
-                        <div class="strategy-grid">
-                            <div><span>策略意图</span><b id="strategy-intent">-</b></div>
-                            <div><span>生效版本</span><b id="strategy-version">-</b></div>
-                            <div><span>LLM 评估池</span><b id="strategy-top-k">-</b></div>
-                            <div><span>评估最低分</span><b id="strategy-min-score">-</b></div>
-                            <div><span>单票上限</span><b id="strategy-max-weight">-</b></div>
-                        </div>
-                        <div class="public-note mt-3" id="strategy-directive-summary">
-                            日终复盘完成后，AI 会在这里说明下一交易日的策略结论。
-                        </div>
-                    </div>
-                </div>
-
-                <div class="card mt-4">
-                    <h2>最近交易记录</h2>
-                    <div class="table-container">
-                        <table class="data-table">
-                            <thead>
-                                <tr>
-                                    <th>日期</th>
-                                    <th>股票</th>
-                                    <th>动作</th>
-                                    <th>价格</th>
-                                    <th>股数</th>
-                                    <th>手续费</th>
-                                    <th>盈亏</th>
-                                    <th>决策缘由</th>
-                                </tr>
-                            </thead>
-                            <tbody id="trades-table-body">
-                                <tr><td colspan="8" class="text-center">加载数据中...</td></tr>
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="grid-layout mt-4">
-                    <!-- 持仓行业分布 -->
-                    <div class="card card-glow-blue">
-                        <h2>持仓分布分析</h2>
-                        <div class="chart-container" id="position-dist-chart" style="height: 280px;"></div>
-                    </div>
-                    <!-- 交易热力日历 -->
-                    <div class="card">
-                        <h2>交易盈亏热力图</h2>
-                        <div class="heatmap-container" id="heatmap-container">
-                            <div class="heatmap-grid" id="heatmap-grid"></div>
-                        </div>
-                    </div>
-                </div>
+                </article>
             </section>
 
-            <!-- LLM 决策面板 Decisions Tab -->
             <section class="tab-content" id="tab-decisions">
-                <div class="grid-layout">
-                    <div class="card card-wide">
-                        <h2>最新 LLM 交易决策记录</h2>
-                        <div class="decision-stats-grid">
-                            <div class="decision-stat-card">
-                                <span class="stat-label">总决策数</span>
-                                <span class="stat-val font-outfit" id="dec-total-count">-</span>
-                            </div>
-                            <div class="decision-stat-card">
-                                <span class="stat-label">买入 / 卖出</span>
-                                <span class="stat-val font-outfit" id="dec-buy-sell-ratio">-</span>
-                            </div>
-                            <div class="decision-stat-card">
-                                <span class="stat-label">平均置信度</span>
-                                <span class="stat-val font-outfit" id="dec-avg-confidence">-</span>
-                            </div>
-                        </div>
-                        <div class="decisions-container" id="decisions-list">
-                            <div class="empty-state">暂无决策数据</div>
-                        </div>
-                    </div>
+                <div class="page-heading"><div><span class="eyebrow">判断不等于交易</span><h1>决策流水</h1></div><p>HOLD 是观察结论，只有 BUY 和 SELL 才是交易信号。</p></div>
+                <section class="metric-grid decision-metrics">
+                    <article class="metric-card"><span>有效判断</span><strong id="dec-total-count">-</strong><small>已过滤模型无响应</small></article>
+                    <article class="metric-card"><span>交易信号</span><strong id="dec-signal-count">-</strong><small id="dec-buy-sell-ratio">-</small></article>
+                    <article class="metric-card"><span>观察结论</span><strong id="dec-observation-count">-</strong><small>HOLD</small></article>
+                    <article class="metric-card"><span>平均置信度</span><strong id="dec-avg-confidence">-</strong><small>最近有效判断</small></article>
+                </section>
+                <div class="filter-bar" id="decision-filters">
+                    <button class="filter-btn active" data-kind="all">全部</button>
+                    <button class="filter-btn" data-kind="signal">只看交易信号</button>
+                    <button class="filter-btn" data-kind="observation">只看观察结论</button>
                 </div>
+                <div class="decision-list" id="decisions-list"><div class="empty-state">正在读取判断记录</div></div>
             </section>
 
-            <!-- 自适应进化面板 Evolution Tab -->
             <section class="tab-content" id="tab-evolution">
-                <!-- 自适应交易参数汇总卡片 -->
-                <div class="card mb-4" id="adaptive-params-card">
-                    <h2>自适应核心参数</h2>
-                    <div class="stats-grid" id="adaptive-params-grid">
-                        <div class="stat-box">
-                            <span class="stat-label">买入决策阈值 (buy_threshold)</span>
-                            <span class="stat-val font-outfit" id="param-buy-threshold">-</span>
-                        </div>
-                        <div class="stat-box">
-                            <span class="stat-label">选股最低入选分 (min_score)</span>
-                            <span class="stat-val font-outfit" id="param-min-score">-</span>
-                        </div>
-                        <div class="stat-box">
-                            <span class="stat-label">自适应TopK微调 (top_k_delta)</span>
-                            <span class="stat-val font-outfit" id="param-top-k-delta">-</span>
-                        </div>
-                        <div class="stat-box">
-                            <span class="stat-label">单笔仓位缩放 (position_scale)</span>
-                            <span class="stat-val font-outfit" id="param-position-scale">-</span>
-                        </div>
-                    </div>
-                    <div class="adaptive-meta mt-3" style="display:flex; justify-content:space-between; font-size:12px; color:var(--text-secondary);">
-                        <span id="param-last-update">上次参数进化时间: -</span>
-                        <span id="param-regime">当前自适应环境识别: -</span>
-                    </div>
+                <div class="page-heading"><div><span class="eyebrow">唯一策略事实源</span><h1>策略与复盘</h1></div><p>查看当前执行策略、下一交易日变化，以及上一假设是否被事实支持。</p></div>
+                <div class="two-column strategy-full-grid">
+                    <article class="card strategy-card" id="strategy-current-card"><div class="strategy-card-head"><span>当前执行</span><small id="strategy-current-date">-</small></div><h2 id="strategy-current-intent">等待策略</h2><p id="strategy-current-summary">-</p><dl id="strategy-current-params"></dl><div class="strategy-copy"><strong>当前假设</strong><p id="strategy-current-hypothesis">-</p></div></article>
+                    <article class="card strategy-card pending" id="strategy-pending-card"><div class="strategy-card-head"><span>下一交易日</span><small id="strategy-pending-date">-</small></div><h2 id="strategy-pending-intent">尚未生成</h2><p id="strategy-pending-summary">-</p><dl id="strategy-pending-params"></dl><div class="strategy-copy"><strong>调整依据</strong><p id="strategy-pending-rationale">-</p></div></article>
                 </div>
-
-                <!-- 最近参数进化详情 -->
-                <div class="card mb-4" id="latest-evolution-card" style="display: none;">
-                    <h2>最近参数进化详情</h2>
-                    <div style="font-size: 13.5px; line-height: 1.6; color: var(--text-secondary);">
-                        <p><b>执行时间:</b> <span id="evo-date">-</span></p>
-                        <p><b>阶段胜率:</b> <span id="evo-win-rate">-</span> | <b>盈亏比:</b> <span id="evo-profit-factor">-</span> | <b>阶段交易数:</b> <span id="evo-trades">-</span></p>
-                        <p><b>进化动作及原因:</b></p>
-                        <ul id="evo-actions" style="margin-left: 20px; margin-top: 6px; padding-left: 0;">
-                            <li>无参数变更</li>
-                        </ul>
-                    </div>
+                <div class="two-column">
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">参数变化</span><h2>策略差异</h2></div></div><div class="strategy-diff-list" id="strategy-page-diff"><div class="empty-state">暂无变化</div></div></article>
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">闭环验证</span><h2>上一假设评估</h2></div></div><div class="evaluation-card"><span class="evaluation-verdict" id="evaluation-verdict">证据不足</span><p id="evaluation-evidence">下一次日终复盘会依据实际漏斗和执行事实进行评估。</p></div></article>
                 </div>
-
-                <div class="grid-layout">
-                    <!-- 左侧：权重变动图 -->
-                    <div class="card card-double">
-                        <h2>信号权重自适应演进</h2>
-                        <div class="chart-container" id="weights-chart" style="height: 350px;"></div>
-                    </div>
-
-                    <!-- 右侧：交易教训库 -->
-                    <div class="card">
-                        <h2>教训库 (Self-Lessons)</h2>
-                        <div class="lessons-filter mb-3" style="display: flex; gap: 8px; flex-wrap: wrap;">
-                            <button class="badge active-filter" data-category="all" style="cursor: pointer; border: none;">全部</button>
-                            <button class="badge" data-category="buy" style="cursor: pointer; border: none;">买入</button>
-                            <button class="badge" data-category="sell" style="cursor: pointer; border: none;">卖出</button>
-                            <button class="badge" data-category="risk" style="cursor: pointer; border: none;">风控</button>
-                            <button class="badge" data-category="regime" style="cursor: pointer; border: none;">环境</button>
-                        </div>
-                        <div class="lessons-list" id="lessons-list">
-                            <div class="empty-state">暂无教训记录</div>
-                        </div>
-                    </div>
-                </div>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">可复用记忆</span><h2>复盘教训</h2></div></div><div class="filter-bar lessons-filter"><button class="filter-btn active" data-category="all">全部</button><button class="filter-btn" data-category="entry">入场</button><button class="filter-btn" data-category="execution">执行</button><button class="filter-btn" data-category="risk">风控</button><button class="filter-btn" data-category="general">综合</button></div><div class="lesson-list" id="lessons-list"><div class="empty-state">正在读取复盘记忆</div></div></article>
             </section>
 
+            <section class="tab-content" id="tab-health">
+                <div class="page-heading"><div><span class="eyebrow">服务存活不等于能力完整</span><h1>运行健康</h1></div><p>分别检查行情、信号、LLM、计划执行、日终复盘和自动循环。</p></div>
+                <div class="health-grid" id="health-capability-grid"><div class="empty-state">正在读取能力状态</div></div>
+                <div class="two-column">
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">需要关注</span><h2>当前提醒</h2></div></div><div class="fact-list" id="health-warning-list"><div class="empty-state">暂无提醒</div></div></article>
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">最近动作</span><h2>自动循环记录</h2></div></div><div class="timeline" id="health-event-list"><div class="empty-state">暂无动作记录</div></div></article>
+                </div>
+            </section>
         </main>
 
-        <!-- 底部大屏 Footer -->
-        <footer class="app-footer">
-            <span id="footer-update-time">最后更新: -</span>
-            <span>AlphaPilot 🤖 Powered by Gemini & MiMo LLM</span>
-        </footer>
+        <footer class="footer"><span id="footer-update-time">最后更新 -</span><span>AlphaPilot · 模拟盘研究系统</span></footer>
     </div>
 
-    <!-- 弹窗/抽屉（用于展示决策思维链 Detail） -->
-    <div class="modal" id="decision-modal">
-        <div class="modal-content card">
-            <header class="modal-header">
-                <h3 id="modal-title">决策详情</h3>
-                <button class="close-btn" id="modal-close-btn">&times;</button>
-            </header>
-            <div class="modal-body">
-                <div class="detail-grid mb-4" style="display:flex; gap:20px; justify-content:space-around;">
-                    <div class="detail-item">
-                        <span class="label" style="color:var(--text-secondary);">置信度: </span>
-                        <span class="value font-outfit" id="modal-confidence">-</span>
-                    </div>
-                    <div class="detail-item">
-                        <span class="label" style="color:var(--text-secondary);">动作决策: </span>
-                        <span class="value" id="modal-action">-</span>
-                    </div>
-                </div>
-                <h4>5维信号雷达</h4>
-                <div class="chart-container mb-4" id="radar-chart" style="height: 250px;"></div>
-                <h4>决策推理与分析 (Decision Analysis)</h4>
-                <div class="reasoning-text" id="modal-reasoning"></div>
-            </div>
+    <div class="modal" id="decision-modal" aria-hidden="true">
+        <div class="modal-panel">
+            <button class="modal-close" id="modal-close-btn" aria-label="关闭"><i data-lucide="x"></i></button>
+            <span class="eyebrow" id="modal-decision-type">观察结论</span>
+            <h2 id="modal-title">判断详情</h2>
+            <div class="modal-meta"><span>动作 <strong id="modal-action">-</strong></span><span>置信度 <strong id="modal-confidence">-</strong></span></div>
+            <div class="chart-container radar" id="radar-chart"></div>
+            <h3>判断依据</h3><p class="reasoning-text" id="modal-reasoning">-</p>
         </div>
     </div>
 
-    <script src="js/app.js?v=2026070301" type="module"></script>
+    <script src="js/app.js?v=2026080201" type="module"></script>
 </body>
 </html>

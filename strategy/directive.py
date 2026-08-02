@@ -72,6 +72,13 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
     if not summary or not diagnosis or not rationale:
         raise ValueError("策略指令必须包含 summary、diagnosis 和 rationale")
 
+    evaluation = raw.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        evaluation = {}
+    verdict = str(evaluation.get("verdict") or "inconclusive").strip().lower()
+    if verdict not in ("supported", "refuted", "inconclusive"):
+        verdict = "inconclusive"
+
     now = datetime.now().isoformat()
     version = f"directive-{effective_date.replace('-', '')}-{datetime.now().strftime('%H%M%S%f')}"
     return {
@@ -85,6 +92,11 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
         "diagnosis": diagnosis,
         "rationale": rationale,
         "hypothesis": str(raw.get("hypothesis") or "观察该策略版本的决策质量与执行结果").strip(),
+        "evaluation": {
+            "previous_version": str(evaluation.get("previous_version") or "").strip(),
+            "verdict": verdict,
+            "evidence": str(evaluation.get("evidence") or "当日事实不足，暂不下结论").strip(),
+        },
         "params": {
             "top_k": _number(params.get("top_k"), "params.top_k", MIN_TOP_K, MAX_TOP_K, integer=True),
             "min_score": _number(params.get("min_score"), "params.min_score", MIN_SCORE, MAX_SCORE),
@@ -94,8 +106,11 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
 
 
 def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
-                  llm_review: str, regime: str, current_params: Dict) -> str:
+                  llm_review: str, regime: str, current_params: Dict,
+                  current_directive: Dict = None) -> str:
     """要求 LLM 为下一交易日直接输出结构化策略版本。"""
+    daily_facts = review_data.get("daily_facts") or {}
+    current_directive = current_directive or {}
     return f"""你是 AlphaPilot 的自主策略负责人。请在收盘后，为下一交易日生成一份可直接执行的策略指令。
 
 复盘日期：{review_date}
@@ -105,15 +120,20 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
 当日盈亏：{review_data.get('daily_pnl', 0):.2f}
 当日交易数：{len(review_data.get('trade_reviews') or [])}
 当前策略参数：{json.dumps(current_params, ensure_ascii=False)}
+当前完整策略：{json.dumps(current_directive, ensure_ascii=False)}
+
+当日决策与执行事实：
+{json.dumps(daily_facts, ensure_ascii=False)}
 
 已有日终复盘：
 {llm_review or '无'}
 
 自主决策要求：
 1. 你可以保持、探索、收紧或放宽策略；不要机械地按连续天数或单一胜率规则行动。
-2. 要区分“市场无机会”与“评分门槛让 LLM 没有机会判断”。
-3. 只输出一个 JSON 对象，不要 Markdown 或额外文字。
-4. params.top_k 必须是 1-5 的整数；params.min_score 必须为 45-75；params.max_weight 必须为 0.03-0.25。
+2. 要区分“市场无机会”“评分门槛压制”“模型或数据降级”“计划被阻断”和“执行失败”。
+3. 必须依据当日决策漏斗评估上一策略的 hypothesis；证据不足时 verdict 必须为 inconclusive。
+4. 只输出一个 JSON 对象，不要 Markdown 或额外文字。
+5. params.top_k 必须是 1-5 的整数；params.min_score 必须为 45-75；params.max_weight 必须为 0.03-0.25。
 
 JSON 格式：
 {{
@@ -123,6 +143,7 @@ JSON 格式：
   "diagnosis": "候选、评分、LLM判断、计划或执行链路的主要诊断",
   "rationale": "为什么选择这些参数，必须引用当天事实",
   "hypothesis": "明日怎样的结果会支持或否定这次调整",
+  "evaluation": {{"previous_version": "当前策略版本", "verdict": "supported/refuted/inconclusive", "evidence": "引用当日漏斗和执行事实"}},
   "params": {{"top_k": 3, "min_score": 58, "max_weight": 0.1}}
 }}"""
 
@@ -132,10 +153,19 @@ def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
                                          current_params: Dict,
                                          db_path: str = None,
                                          effective_date: str = None,
-                                         llm_call: Callable[[str], Optional[str]] = None) -> Optional[Dict]:
+                                         llm_call: Callable[[str], Optional[str]] = None,
+                                         current_directive: Dict = None) -> Optional[Dict]:
     """生成并持久化下一交易日策略指令；失败时保留上一有效版本。"""
     effective_date = effective_date or _next_trading_date(review_date)
-    prompt = _build_prompt(review_date, effective_date, review_data, llm_review, regime, current_params)
+    prompt = _build_prompt(
+        review_date,
+        effective_date,
+        review_data,
+        llm_review,
+        regime,
+        current_params,
+        current_directive=current_directive,
+    )
     if llm_call is None:
         from review.llm_review import _call_llm
         llm_call = _call_llm

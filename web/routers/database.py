@@ -184,8 +184,8 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
         return {"success": False, "error": public_error_message() if is_production() else str(e)}
 
 @router.get("/decisions")
-def get_decisions(limit: int = Query(10, ge=1, le=50)):
-    """获取最新 LLM 决策记录，包含5维得分及链式推理思维栈"""
+def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = None):
+    """获取最新 LLM 判断；signal 仅包含 BUY/SELL，observation 仅包含 HOLD。"""
     try:
         with _get_db() as db:
             cursor = db.conn.cursor()
@@ -206,6 +206,9 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                 code = r[1]
                 if _is_no_response_decision(r[4], r[5], r[8]):
                     continue
+                decision_type = "signal" if r[3] in ("BUY", "SELL") else "observation"
+                if kind in ("signal", "observation") and decision_type != kind:
+                    continue
                 dimensions = {}
                 score_item = scores_map.get(code)
                 if score_item:
@@ -217,6 +220,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50)):
                     "name": _resolve_stock_name(cursor, code, scores_map, r[9]),
                     "date": r[2],
                     "action": r[3],
+                    "decision_type": decision_type,
                     "reasoning": sanitize_public_text(r[4], max_len=520),
                     "confidence": r[5],
                     "outcome": r[6],

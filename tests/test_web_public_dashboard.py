@@ -49,6 +49,19 @@ def _sample_status():
             }
         ],
         "risk_warnings": ["内部风险"],
+        "daily_trader": {
+            "date": "2026-07-01",
+            "market_status": "盘中",
+            "is_trading_day": True,
+            "state": "signal_pending",
+            "headline": "AI 已产生交易信号，但尚未形成成交",
+            "explanation": "存在 token=secret",
+            "next_action": "检查 /home/ubuntu/private",
+            "funnel": {"llm_evaluated": 2, "buy_signals": 1, "planned_orders": 1, "blocked": 1},
+            "order_audit": [{"code": "600519", "name": "贵州茅台", "action": "BUY", "status": "blocked", "reason": "systemctl --user restart private.service"}],
+            "strategy": {"current": None, "pending": None, "diff": []},
+        },
+        "capabilities": [{"key": "signals", "label": "信号计算", "status": "degraded", "summary": "ML异常 token=secret"}],
         "loop_count": 7,
         "last_loop_time": "2026-07-01T09:29:58",
     }
@@ -104,6 +117,11 @@ def test_public_status_is_sanitized():
         assert data["strategy_directive"]["intent"] == "谨慎探索"
         assert "token=secret" not in data["strategy_directive"]["rationale"]
         assert "/home/ubuntu" not in data["strategy_directive"]["rationale"]
+        assert data["daily_trader"]["funnel"]["buy_signals"] == 1
+        assert "secret" not in data["daily_trader"]["explanation"]
+        assert "systemctl" not in data["daily_trader"]["order_audit"][0]["reason"]
+        assert data["capabilities"][0]["status"] == "degraded"
+        assert any("信号" in item or "异常" in item for item in data["risk_warnings"])
         ok("生产 /api/status 返回公开脱敏快照")
     finally:
         _restore_env(old_env)

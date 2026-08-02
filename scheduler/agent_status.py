@@ -205,6 +205,96 @@ def build_agent_status_snapshot():
     if not account_available:
         risk_warnings.append("模拟账户状态不可用")
 
+    # 11. 统一每日交易员简报与能力健康。服务存活不等于交易能力完整，
+    # 信号维度、LLM、执行和复盘必须分别给出状态。
+    daily_trader = {}
+    capabilities = []
+    try:
+        from scheduler.trader_brief import build_daily_facts
+        daily_trader = build_daily_facts()
+        if control_paused:
+            daily_trader.update({
+                "state": "paused",
+                "headline": "AI 交易员当前处于暂停状态",
+                "explanation": control_reason or "交易控制阀门已暂停。",
+                "next_action": "等待暂停原因解除后继续自动循环。",
+            })
+        elif not watchdog_ok or crash_open:
+            daily_trader.update({
+                "state": "attention",
+                "headline": "AI 交易员需要运行维护",
+                "explanation": "守护检查发现影响自动循环的问题。",
+                "next_action": "Doctor 将优先诊断并恢复交易闭环。",
+            })
+
+        funnel = daily_trader.get("funnel") or {}
+        degradations = daily_trader.get("degradations") or []
+        capabilities = [
+            {
+                "key": "scheduler",
+                "label": "自动循环",
+                "status": "healthy" if watchdog_ok and not crash_open else "degraded",
+                "summary": "循环与守护正常" if watchdog_ok and not crash_open else "自动循环需要维护",
+            },
+            {
+                "key": "market_data",
+                "label": "行情数据",
+                "status": "healthy" if health_ok else "degraded",
+                "summary": "基础数据源可用" if health_ok else "基础数据源存在异常",
+            },
+            {
+                "key": "signals",
+                "label": "信号计算",
+                "status": "degraded" if degradations else "healthy",
+                "summary": "；".join(item.get("summary", "") for item in degradations) if degradations else "当前信号维度未发现降级",
+            },
+            {
+                "key": "llm",
+                "label": "LLM 判断",
+                "status": (
+                    "degraded" if daily_trader.get("llm_no_response_count", 0)
+                    else "healthy" if funnel.get("llm_evaluated", 0)
+                    else "idle"
+                ),
+                "summary": (
+                    f"{daily_trader.get('llm_no_response_count', 0)} 次判断未获得有效响应"
+                    if daily_trader.get("llm_no_response_count", 0)
+                    else f"今日完成 {funnel.get('llm_evaluated', 0)} 次有效判断"
+                    if funnel.get("llm_evaluated", 0)
+                    else "当前阶段尚未调用 LLM"
+                ),
+            },
+            {
+                "key": "execution",
+                "label": "计划执行",
+                "status": "degraded" if funnel.get("failed", 0) else "healthy" if funnel.get("planned_orders", 0) else "idle",
+                "summary": (
+                    f"今日 {funnel.get('failed', 0)} 笔执行失败"
+                    if funnel.get("failed", 0)
+                    else f"计划 {funnel.get('planned_orders', 0)} 笔，成交 {funnel.get('filled', 0)} 笔"
+                    if funnel.get("planned_orders", 0)
+                    else "今日尚无待执行计划"
+                ),
+            },
+            {
+                "key": "review",
+                "label": "日终复盘",
+                "status": "healthy" if daily_trader.get("reviewed") else "pending",
+                "summary": "今日复盘已保存" if daily_trader.get("reviewed") else "等待收盘后的复盘窗口",
+            },
+        ]
+        for item in degradations:
+            risk_warnings.append(item.get("summary", "信号能力降级"))
+        if funnel.get("failed", 0):
+            risk_warnings.append(f"今日有{funnel.get('failed')}笔计划执行失败")
+    except Exception as e:
+        daily_trader = {
+            "state": "attention",
+            "headline": "每日交易员简报暂不可用",
+            "explanation": str(e),
+            "next_action": "自动循环不受影响，等待下一次状态刷新。",
+        }
+
     return {
         "timestamp": datetime.now().isoformat(),
         "health": {
@@ -235,6 +325,8 @@ def build_agent_status_snapshot():
         "pipeline_progress": pipeline_progress,
         "recent_logs": recent_logs[:20],
         "risk_warnings": risk_warnings,
+        "daily_trader": daily_trader,
+        "capabilities": capabilities,
         "loop_count": loop_count,
         "last_loop_time": last_loop_time
     }

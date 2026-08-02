@@ -790,17 +790,26 @@ class Database:
     # ════════════════════════════════════════════════════════════════
 
     def insert_lesson(self, lesson: Dict) -> int:
-        """插入教训，返回 id"""
+        """插入教训，按日期、类别和内容保持幂等，返回记录 id。"""
         c = self.conn.cursor()
+        lesson_date = lesson.get("date", "")
+        category = lesson.get("category", "")
+        content = lesson.get("content", "")
+        existing = c.execute(
+            "SELECT id FROM lessons WHERE date=? AND category=? AND content=? ORDER BY id DESC LIMIT 1",
+            (lesson_date, category, content),
+        ).fetchone()
+        if existing:
+            return int(existing["id"])
         c.execute("""
             INSERT INTO lessons
             (date, category, content, importance, market_regime,
              related_trades, created_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (
-            lesson.get("date", ""),
-            lesson.get("category", ""),
-            lesson.get("content", ""),
+            lesson_date,
+            category,
+            content,
             lesson.get("importance", 3),
             lesson.get("market_regime", ""),
             lesson.get("related_trades"),
@@ -1389,6 +1398,20 @@ class Database:
         self.conn.commit()
         logger.debug(f"复盘快照写入SQLite: {date}")
 
+    def get_review_snapshot(self, date: str) -> Optional[Dict]:
+        """读取指定交易日唯一的复盘快照。"""
+        row = self.conn.execute(
+            "SELECT data FROM review_snapshots WHERE date=?",
+            (date,),
+        ).fetchone()
+        if not row or not row["data"]:
+            return None
+        try:
+            return json.loads(row["data"])
+        except json.JSONDecodeError:
+            logger.warning("复盘快照JSON损坏，忽略: %s", date)
+            return None
+
     def save_adaptive_state(self, state: Dict):
         """
         统一接口：保存自适应状态到 SQLite
@@ -1422,28 +1445,53 @@ class Database:
         return None
 
     def save_strategy_directive(self, directive: Dict, review_text: str = "") -> str:
-        """保存 AI 日终生成、在下一交易日生效的策略版本。"""
+        """保存 AI 日终策略；同一复盘日重复运行时更新唯一有效版本。"""
         required = ("version", "review_date", "effective_date", "params")
         missing = [key for key in required if not directive.get(key)]
         if missing:
             raise ValueError(f"策略指令缺少字段: {', '.join(missing)}")
 
-        self.conn.execute(
+        existing = self.conn.execute(
             """
-            INSERT INTO strategy_directives
-            (version, review_date, effective_date, regime, directive, review_text, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            SELECT id FROM strategy_directives
+            WHERE review_date=? AND effective_date=?
+            ORDER BY id DESC LIMIT 1
             """,
-            (
-                directive["version"],
-                directive["review_date"],
-                directive["effective_date"],
-                directive.get("regime", ""),
-                json.dumps(directive, ensure_ascii=False),
-                review_text or "",
-                directive.get("created_at", datetime.now().isoformat()),
-            ),
+            (directive["review_date"], directive["effective_date"]),
+        ).fetchone()
+        values = (
+            directive["version"],
+            directive.get("regime", ""),
+            json.dumps(directive, ensure_ascii=False),
+            review_text or "",
+            directive.get("created_at", datetime.now().isoformat()),
         )
+        if existing:
+            self.conn.execute(
+                """
+                UPDATE strategy_directives
+                SET version=?, regime=?, directive=?, review_text=?, created_at=?
+                WHERE id=?
+                """,
+                values + (existing["id"],),
+            )
+        else:
+            self.conn.execute(
+                """
+                INSERT INTO strategy_directives
+                (version, review_date, effective_date, regime, directive, review_text, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    directive["version"],
+                    directive["review_date"],
+                    directive["effective_date"],
+                    directive.get("regime", ""),
+                    json.dumps(directive, ensure_ascii=False),
+                    review_text or "",
+                    directive.get("created_at", datetime.now().isoformat()),
+                ),
+            )
         self.conn.commit()
         return directive["version"]
 

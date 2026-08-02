@@ -287,6 +287,37 @@ def _record_auto_event(db_path: str, event: dict):
         logger.warning(f"自动盯盘事件写入失败(非致命): {e}")
 
 
+def _build_scan_journey(scan_result, exec_result=None) -> dict:
+    """把一次扫描压缩为产品可消费的决策旅程事实。"""
+    if scan_result is None:
+        return {}
+    plan = getattr(scan_result, "trade_plan", {}) or {}
+    scores = plan.get("raw_scores") or []
+    actions = [str(item.get("llm_action") or "").upper() for item in scores]
+    llm_actions = [action for action in actions if action in ("BUY", "SELL", "HOLD")]
+    orders = plan.get("orders") or []
+    audit = getattr(exec_result, "order_audit", []) or [] if exec_result is not None else []
+    return {
+        "candidate_count": len(getattr(scan_result, "candidates", []) or scores),
+        "scored_count": len(scores),
+        "llm_evaluated": len(llm_actions),
+        "observations": sum(1 for action in llm_actions if action == "HOLD"),
+        "buy_signals": sum(1 for action in llm_actions if action == "BUY"),
+        "sell_signals": sum(1 for action in llm_actions if action == "SELL"),
+        "planned_orders": len(orders),
+        "strategy_version": plan.get("strategy_version", ""),
+        "strategy_intent": plan.get("strategy_intent", ""),
+        "hold_reasons": len(plan.get("hold_reasons") or {}),
+        "execution": {
+            "filled": sum(1 for item in audit if item.get("status") == "filled"),
+            "blocked": sum(1 for item in audit if item.get("status") == "blocked"),
+            "skipped": sum(1 for item in audit if item.get("status") == "skipped"),
+            "failed": sum(1 for item in audit if item.get("status") == "failed"),
+        },
+        "errors": list(getattr(scan_result, "errors", []) or []) + list(getattr(exec_result, "errors", []) or []),
+    }
+
+
 def _run_rescue_scan_default(watch_result: dict):
     """
     默认救援扫描：复用快链路生成计划，但只执行二次确认观察池里的BUY。
@@ -376,6 +407,7 @@ def run_auto_cycle(
     actions = []
     now_ts = now_ts_override if now_ts_override is not None else time.time()
     exec_result = None
+    scan_result = None
     control_state = get_auto_control_state(control_file=control_file)
     paused = bool(control_state.get("paused"))
 
@@ -631,6 +663,7 @@ def run_auto_cycle(
                 "missed_opportunity_count": state.missed_opportunity_count,
                 "rescue_scan_count": state.rescue_scan_count,
                 "order_audit": getattr(exec_result, "order_audit", []),
+                "scan_journey": _build_scan_journey(scan_result, exec_result),
             },
             "error": state.last_error,
         })

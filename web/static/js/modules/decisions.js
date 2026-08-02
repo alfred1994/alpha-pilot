@@ -1,160 +1,148 @@
 export class DecisionsTab {
     constructor(app) {
         this.app = app;
+        this.decisions = [];
+        this.kind = 'all';
         this.radarChart = null;
+        this.filtersReady = false;
+        this.modalReady = false;
     }
 
     text(value, fallback = '-') {
-        if (value === null || value === undefined || value === '') return fallback;
-        return String(value);
+        return value === null || value === undefined || value === '' ? fallback : String(value);
     }
 
     escape(value) {
-        return this.text(value, '')
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;');
+        return this.text(value, '').replace(/&/g, '&amp;').replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
     }
 
     stockLabel(item) {
-        const code = this.text(item?.code, '');
         const name = this.text(item?.name, '');
-        if (name && name !== code) return `${name} ${code}`;
-        return code || '-';
+        const code = this.text(item?.code, '');
+        return name && name !== code ? `${name} ${code}` : code || '-';
     }
 
     async load() {
-        const res = await fetch(`${this.app.apiBase}/decisions?limit=10`);
-        const data = await res.json();
-        const container = document.getElementById('decisions-list');
-        container.innerHTML = '';
+        try {
+            const response = await fetch(`${this.app.apiBase}/decisions?limit=50`);
+            const data = await response.json();
+            this.decisions = data.success ? (data.decisions || []) : [];
+        } catch (error) {
+            console.error('Failed to load decisions:', error);
+            this.decisions = [];
+        }
+        this.renderStats();
+        this.renderList();
+        this.initFilters();
+        this.initModal();
+        if (window.lucide) window.lucide.createIcons();
+    }
 
-        if (!data.success || !data.decisions || data.decisions.length === 0) {
-            container.innerHTML = '<div class="empty-state">暂无最新决策数据</div>';
+    initFilters() {
+        if (this.filtersReady) return;
+        const filters = document.getElementById('decision-filters');
+        if (!filters) return;
+        filters.addEventListener('click', event => {
+            const button = event.target.closest('[data-kind]');
+            if (!button) return;
+            filters.querySelectorAll('.filter-btn').forEach(item => item.classList.toggle('active', item === button));
+            this.kind = button.dataset.kind || 'all';
+            this.renderList();
+        });
+        this.filtersReady = true;
+    }
+
+    initModal() {
+        if (this.modalReady) return;
+        document.getElementById('modal-close-btn')?.addEventListener('click', () => this.closeModal());
+        document.getElementById('decision-modal')?.addEventListener('click', event => {
+            if (event.target.id === 'decision-modal') this.closeModal();
+        });
+        this.modalReady = true;
+    }
+
+    renderStats() {
+        const signals = this.decisions.filter(item => item.decision_type === 'signal' || ['BUY', 'SELL'].includes(item.action));
+        const observations = this.decisions.filter(item => item.action === 'HOLD');
+        const buys = signals.filter(item => item.action === 'BUY').length;
+        const sells = signals.filter(item => item.action === 'SELL').length;
+        const confidence = this.decisions.length
+            ? this.decisions.reduce((sum, item) => sum + Number(item.confidence || 0), 0) / this.decisions.length : 0;
+        this.setText('dec-total-count', this.decisions.length);
+        this.setText('dec-signal-count', signals.length);
+        this.setText('dec-observation-count', observations.length);
+        this.setText('dec-buy-sell-ratio', `BUY ${buys} · SELL ${sells}`);
+        this.setText('dec-avg-confidence', this.decisions.length ? `${(confidence * 100).toFixed(0)}%` : '-');
+    }
+
+    renderList() {
+        const container = document.getElementById('decisions-list');
+        if (!container) return;
+        const rows = this.kind === 'all' ? this.decisions : this.decisions.filter(item => {
+            const kind = item.decision_type || (item.action === 'HOLD' ? 'observation' : 'signal');
+            return kind === this.kind;
+        });
+        if (!rows.length) {
+            container.innerHTML = '<div class="empty-state">当前筛选下没有判断记录</div>';
             return;
         }
-
-        this.renderStats(data.decisions);
-
-        data.decisions.forEach(d => {
-            const div = document.createElement('div');
-            div.className = 'decision-item';
-            
-            const badgeClass = d.action === 'BUY' ? 'btn-success' : (d.action === 'SELL' ? 'btn-danger' : '');
-            const badgeText = d.action === 'BUY' ? '买入 BUY' : (d.action === 'SELL' ? '卖出 SELL' : '持有 HOLD');
-            const reasoning = this.text(d.reasoning, '');
-            const shortReasoning = reasoning.substring(0, 180);
-            const stockText = this.escape(this.stockLabel(d));
-            
-            div.innerHTML = `
-                <div class="decision-item-header">
-                    <div>
-                        <span style="font-weight:700; font-size:16px;">${stockText}</span>
-                        <span class="badge" style="margin-left:8px;">置信度: ${(d.confidence * 100).toFixed(0)}%</span>
+        container.innerHTML = rows.map(item => {
+            const kind = item.decision_type || (item.action === 'HOLD' ? 'observation' : 'signal');
+            const kindLabel = kind === 'signal' ? `交易信号 · ${item.action}` : '观察结论 · HOLD';
+            return `
+                <article class="decision-item ${kind}" data-decision-id="${item.id}">
+                    <div class="decision-head">
+                        <div class="decision-title"><strong>${this.escape(this.stockLabel(item))}</strong><small>${this.escape(item.date)} · 置信度 ${(Number(item.confidence || 0) * 100).toFixed(0)}%</small></div>
+                        <span class="decision-kind">${this.escape(kindLabel)}</span>
                     </div>
-                    <span class="badge ${badgeClass}">${badgeText}</span>
-                </div>
-                <div class="decision-item-body">
-                    <p style="margin-bottom:8px;"><b>决策时间:</b> ${this.escape(d.date)}</p>
-                    <p style="margin-bottom:8px;"><b>逻辑摘要:</b> ${this.escape(shortReasoning)}${reasoning.length > 180 ? '...' : ''}</p>
-                    <button class="decision-btn-detail" data-id="${d.id}">查看决策详情</button>
-                </div>
-            `;
-            container.appendChild(div);
-        });
-
-        container.querySelectorAll('.decision-btn-detail').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const id = parseInt(e.currentTarget.getAttribute('data-id'));
-                const decision = data.decisions.find(item => item.id === id);
-                if (decision) {
-                    this.showDetailModal(decision);
-                }
-            });
-        });
-
-        document.getElementById('modal-close-btn').addEventListener('click', () => {
-            document.getElementById('decision-modal').classList.remove('active');
-        });
+                    <p class="decision-reason">${this.escape(item.reasoning || '暂无公开判断依据')}</p>
+                    <button class="decision-detail-btn" data-detail-id="${item.id}">查看判断详情</button>
+                </article>`;
+        }).join('');
+        container.querySelectorAll('[data-detail-id]').forEach(button => button.addEventListener('click', () => {
+            const id = Number(button.dataset.detailId);
+            const decision = this.decisions.find(item => item.id === id);
+            if (decision) this.showDetail(decision);
+        }));
     }
 
-    renderStats(decisions) {
-        if (!decisions || !decisions.length) return;
-
-        const total = decisions.length;
-        const buys = decisions.filter(d => d.action === 'BUY').length;
-        const sells = decisions.filter(d => d.action === 'SELL').length;
-        const avgConf = decisions.reduce((s, d) => s + Number(d.confidence || 0), 0) / total;
-
-        const totalEl = document.getElementById('dec-total-count');
-        if (totalEl) totalEl.textContent = total;
-
-        const ratioEl = document.getElementById('dec-buy-sell-ratio');
-        if (ratioEl) ratioEl.textContent = `${buys} / ${sells}`;
-
-        const confEl = document.getElementById('dec-avg-confidence');
-        if (confEl) confEl.textContent = `${(avgConf * 100).toFixed(0)}%`;
+    showDetail(item) {
+        const kind = item.decision_type || (item.action === 'HOLD' ? 'observation' : 'signal');
+        this.setText('modal-decision-type', kind === 'signal' ? '交易信号' : '观察结论');
+        this.setText('modal-title', this.stockLabel(item));
+        this.setText('modal-action', item.action);
+        this.setText('modal-confidence', `${(Number(item.confidence || 0) * 100).toFixed(0)}%`);
+        this.setText('modal-reasoning', item.reasoning || '暂无公开判断依据');
+        const modal = document.getElementById('decision-modal');
+        modal?.classList.add('active');
+        modal?.setAttribute('aria-hidden', 'false');
+        this.renderRadar(item.dimensions || {});
     }
 
-    showDetailModal(d) {
-        document.getElementById('modal-title').textContent = `${this.stockLabel(d)} 决策推理详情`;
-        document.getElementById('modal-confidence').textContent = `${(d.confidence * 100).toFixed(0)}%`;
-        
-        const actionEl = document.getElementById('modal-action');
-        actionEl.textContent = d.action;
-        actionEl.className = `value ${d.action === 'BUY' ? 'green-text' : (d.action === 'SELL' ? 'red-text' : '')}`;
-
-        document.getElementById('modal-reasoning').textContent = this.text(d.reasoning, '暂无公开摘要');
-
-        document.getElementById('decision-modal').classList.add('active');
-
-        this.renderRadarChart(d.dimensions || {});
+    closeModal() {
+        const modal = document.getElementById('decision-modal');
+        modal?.classList.remove('active');
+        modal?.setAttribute('aria-hidden', 'true');
     }
 
-    renderRadarChart(dims) {
-        const chartDom = document.getElementById('radar-chart');
-        if (!this.radarChart) {
-            this.radarChart = echarts.init(chartDom);
-        }
+    renderRadar(dimensions) {
+        const dom = document.getElementById('radar-chart');
+        if (!dom || !window.echarts) return;
+        if (!this.radarChart) this.radarChart = window.echarts.init(dom);
+        const keys = ['technical', 'capital', 'sentiment', 'emotion', 'fundamental', 'ml'];
+        const labels = ['技术面', '资金面', '舆情面', '情绪面', '基本面', '机器学习'];
+        const available = keys.map((key, index) => ({ key, label: labels[index] })).filter(item => dimensions[item.key]);
+        const rows = available.length ? available : keys.slice(0, 5).map((key, index) => ({ key, label: labels[index] }));
+        this.radarChart.setOption({
+            radar: { indicator: rows.map(item => ({ name: item.label, max: 100 })), splitArea: { areaStyle: { color: ['rgba(139,157,131,.04)', 'rgba(139,157,131,.12)'] } }, axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.14)' } }, name: { color: '#6f725e', fontSize: 9 } },
+            series: [{ type: 'radar', data: [{ value: rows.map(item => Number(dimensions[item.key]?.score || 0)), areaStyle: { color: 'rgba(198,107,61,.2)' }, lineStyle: { color: '#c66b3d', width: 2 }, itemStyle: { color: '#c66b3d' } }] }],
+        });
+        setTimeout(() => this.radarChart?.resize(), 50);
+    }
 
-        const technical = dims.technical?.score || 50;
-        const capital = dims.capital?.score || 50;
-        const sentiment = dims.sentiment?.score || 50;
-        const emotion = dims.emotion?.score || 50;
-        const fundamental = dims.fundamental?.score || 50;
-
-        const option = {
-            backgroundColor: 'transparent',
-            radar: {
-                indicator: [
-                    { name: '技术面', max: 100 },
-                    { name: '资金面', max: 100 },
-                    { name: '舆情面', max: 100 },
-                    { name: '情绪面', max: 100 },
-                    { name: '基本面', max: 100 }
-                ],
-                splitArea: { show: false },
-                splitLine: { lineStyle: { color: 'rgba(255,255,255,0.04)' } },
-                axisLine: { lineStyle: { color: 'rgba(255,255,255,0.06)' } },
-                name: { textStyle: { color: '#8a96a8', fontSize: 11 } }
-            },
-            series: [{
-                name: '5维信号',
-                type: 'radar',
-                data: [
-                    {
-                        value: [technical, capital, sentiment, emotion, fundamental],
-                        name: '得分',
-                        itemStyle: { color: '#5b79e2' },
-                        areaStyle: { color: 'rgba(91, 121, 226, 0.25)' }
-                    }
-                ]
-            }]
-        };
-
-        this.radarChart.setOption(option);
-        setTimeout(() => this.radarChart.resize(), 100);
+    setText(id, value) {
+        const element = document.getElementById(id);
+        if (element) element.textContent = value;
     }
 }

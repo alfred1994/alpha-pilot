@@ -101,6 +101,7 @@ def sanitize_public_text(value: Any, max_len: int = 220) -> str:
 def _sanitize_strategy_directive(directive: Dict[str, Any]) -> Dict[str, Any]:
     """公开展示策略版本时保留产品信息，隐藏可能夹带的内部内容。"""
     directive_params = directive.get("params") or {}
+    evaluation = directive.get("evaluation") or {}
     return {
         "version": sanitize_public_text(directive.get("version"), 64),
         "effective_date": sanitize_public_text(directive.get("effective_date"), 16),
@@ -109,10 +110,69 @@ def _sanitize_strategy_directive(directive: Dict[str, Any]) -> Dict[str, Any]:
         "diagnosis": sanitize_public_text(directive.get("diagnosis"), 220),
         "rationale": sanitize_public_text(directive.get("rationale"), 220),
         "hypothesis": sanitize_public_text(directive.get("hypothesis"), 160),
+        "evaluation": {
+            "previous_version": sanitize_public_text(evaluation.get("previous_version"), 64),
+            "verdict": sanitize_public_text(evaluation.get("verdict"), 16),
+            "evidence": sanitize_public_text(evaluation.get("evidence"), 220),
+        },
         "params": {
             "top_k": directive_params.get("top_k"),
             "min_score": directive_params.get("min_score"),
             "max_weight": directive_params.get("max_weight"),
+        },
+    }
+
+
+def _sanitize_daily_trader(value: Dict[str, Any]) -> Dict[str, Any]:
+    """公开每日简报保留交易事实，隐藏内部审计细节。"""
+    funnel = value.get("funnel") or {}
+    strategy = value.get("strategy") or {}
+    audits = []
+    for item in (value.get("order_audit") or [])[:12]:
+        audits.append({
+            "code": sanitize_public_text(item.get("code"), 16),
+            "name": sanitize_public_text(item.get("name"), 32),
+            "action": sanitize_public_text(item.get("action"), 8),
+            "status": sanitize_public_text(item.get("status"), 16),
+            "reason": sanitize_public_text(item.get("reason"), 120),
+        })
+    return {
+        "date": sanitize_public_text(value.get("date"), 16),
+        "market_status": sanitize_public_text(value.get("market_status"), 24),
+        "is_trading_day": bool(value.get("is_trading_day")),
+        "state": sanitize_public_text(value.get("state"), 24),
+        "headline": sanitize_public_text(value.get("headline"), 100),
+        "explanation": sanitize_public_text(value.get("explanation"), 220),
+        "next_action": sanitize_public_text(value.get("next_action"), 220),
+        "funnel": {
+            key: int(funnel.get(key) or 0)
+            for key in (
+                "scan_cycles", "candidates", "scored", "llm_evaluated", "observations",
+                "buy_signals", "sell_signals", "planned_orders", "filled", "blocked", "failed", "skipped"
+            )
+        },
+        "order_audit": audits,
+        "degradations": [
+            {
+                "key": sanitize_public_text(item.get("key"), 24),
+                "label": sanitize_public_text(item.get("label"), 32),
+                "summary": sanitize_public_text(item.get("summary"), 120),
+            }
+            for item in (value.get("degradations") or [])[:8]
+        ],
+        "reviewed": bool(value.get("reviewed")),
+        "strategy": {
+            "current": _sanitize_strategy_directive(strategy.get("current") or {}) if strategy.get("current") else None,
+            "pending": _sanitize_strategy_directive(strategy.get("pending") or {}) if strategy.get("pending") else None,
+            "diff": [
+                {
+                    "key": sanitize_public_text(item.get("key"), 24),
+                    "label": sanitize_public_text(item.get("label"), 48),
+                    "before": item.get("before"),
+                    "after": item.get("after"),
+                }
+                for item in (strategy.get("diff") or [])[:8]
+            ],
         },
     }
 
@@ -132,6 +192,11 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         risk_warnings.append("系统存在未关闭故障")
     if control.get("paused"):
         risk_warnings.append("自动交易当前处于暂停状态")
+    for capability in (snapshot.get("capabilities") or []):
+        if capability.get("status") == "degraded":
+            warning = sanitize_public_text(capability.get("summary"), 120)
+            if warning and warning not in risk_warnings:
+                risk_warnings.append(warning)
 
     recent_logs = []
     for log in (snapshot.get("recent_logs") or [])[:8]:
@@ -177,6 +242,16 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
         "pipeline_progress": snapshot.get("pipeline_progress") or {},
         "recent_logs": recent_logs,
         "risk_warnings": risk_warnings,
+        "daily_trader": _sanitize_daily_trader(snapshot.get("daily_trader") or {}),
+        "capabilities": [
+            {
+                "key": sanitize_public_text(item.get("key"), 24),
+                "label": sanitize_public_text(item.get("label"), 48),
+                "status": sanitize_public_text(item.get("status"), 16),
+                "summary": sanitize_public_text(item.get("summary"), 140),
+            }
+            for item in (snapshot.get("capabilities") or [])[:10]
+        ],
         "loop_count": snapshot.get("loop_count", 0),
         "last_loop_time": snapshot.get("last_loop_time", "-"),
     }

@@ -264,6 +264,25 @@ def test_dashboard_frontend_separates_decision_confidence_and_unknown_pnl():
     assert_true("Number(t.pnl || 0)" not in source, "前端统计不再把空盈亏当作0")
 
 
+def test_dashboard_frontend_uses_trader_journey_and_single_strategy_source():
+    project_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(project_dir, "web", "static", "index.html"), "r", encoding="utf-8") as file:
+        html = file.read()
+    with open(os.path.join(project_dir, "web", "static", "js", "modules", "dashboard.js"), "r", encoding="utf-8") as file:
+        dashboard_source = file.read()
+    with open(os.path.join(project_dir, "web", "static", "js", "modules", "decisions.js"), "r", encoding="utf-8") as file:
+        decision_source = file.read()
+    with open(os.path.join(project_dir, "web", "static", "js", "modules", "evolution.js"), "r", encoding="utf-8") as file:
+        evolution_source = file.read()
+
+    assert_true("决策旅程" in html and "候选观察" in html and "待执行计划" in html, "首页按交易事实展示完整决策旅程")
+    assert_true("观察结论不等于交易信号" in html, "首页明确区分HOLD观察与BUY/SELL信号")
+    assert_true("当前与下一交易日" in html, "当前策略与待生效策略同时展示")
+    assert_true("activeDirective || pendingDirective" not in dashboard_source, "首页不再用当前策略覆盖明日策略")
+    assert_true("decision_type" in decision_source and "观察结论 · HOLD" in decision_source, "决策页按判断类型分层")
+    assert_true("data.adaptive" not in evolution_source, "策略页不再把旧自适应参数作为权威策略源")
+
+
 if __name__ == "__main__":
     test_decisions_hide_no_response_and_include_name()
     test_decisions_resolve_name_from_llm_prompt()
@@ -273,4 +292,5 @@ if __name__ == "__main__":
     test_performance_appends_today_when_review_is_stale()
     test_performance_daily_pnl_matches_adjacent_assets()
     test_dashboard_frontend_separates_decision_confidence_and_unknown_pnl()
+    test_dashboard_frontend_uses_trader_journey_and_single_strategy_source()
     print("仪表盘数据展示契约测试通过")

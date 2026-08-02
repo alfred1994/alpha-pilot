@@ -12,11 +12,11 @@
 - **本地验证命令**：[测试](#测试)
 - **使用文档**：[本地演示](docs/demo.md) / [AI 驾驶员指南](docs/ai-driver-skill.md) / [部署到 Hermes](docs/hermes-github-actions-deploy.md)
 
-面向 A 股的自愈式 AI 模拟盘交易驾驶舱。
+面向个人自部署的一对一 A 股 AI 模拟盘交易员。
 
-AlphaPilot 把 A 股模拟盘系统改造成一辆可被 Agent 驾驶的交易赛车：
-LLM 负责交易决策，Linux/Hermes Agent 可以无人值守驾驶，Watchdog 和 Doctor
-负责监控与自愈，公网只读仪表盘展示驾驶舱状态，但不暴露控制动作。
+AlphaPilot 把行情理解、交易判断、模拟执行、日终复盘和次日策略接成一个自动闭环：
+LLM 负责交易决策和策略复盘，Linux/Hermes Agent 可以无人值守驾驶，Watchdog 和 Doctor
+负责监控与自愈。每个部署实例只服务自己的账户，公网只读仪表盘是这个 AI 交易员的个人工作台。
 
 > 仅用于研究、教育和模拟盘观察。AlphaPilot 不构成投资建议，不保证收益。
 > 除非你完全理解风险，请保持 `BROKER_MODE=paper`。
@@ -31,7 +31,7 @@ AlphaPilot 更关注 AI 交易员周围的工程闭环：
 - 止损巡检
 - 盘后复盘
 - LLM 教训提取
-- 自适应参数进化
+- LLM 日终复盘与次日策略指令
 - Watchdog 监控
 - Doctor 自愈
 - Linux `systemd --user` 无人值守运行
@@ -49,18 +49,27 @@ AlphaPilot 更关注 AI 交易员周围的工程闭环：
 
 公网仪表盘只用于观测。它不会暴露暂停、恢复、修复、Token 输入、原始环境变量或交易控制接口。
 
+驾驶舱围绕“今天 AI 交易员做了什么、为什么没有成交、明天会改变什么”组织为四个页面：
+
+- **今日**：一句话每日交易员简报、下一动作、六项能力健康、从候选到模拟成交的完整决策旅程。
+- **决策流水**：明确区分观察结论和交易信号；`HOLD` 只表示 AI 已完成判断，只有 `BUY` / `SELL` 才是可执行信号。
+- **策略与复盘**：同时展示当前执行策略和下一交易日待生效策略、参数差异、策略假设及上一假设的事实评估。
+- **运行健康**：分别报告自动循环、行情、信号计算、LLM、计划执行和日终复盘，避免把“服务进程存活”误当成“交易能力完整”。
+
 ## 核心特性
 
 - **LLM 交易决策**：支持 MiMo/Xiaomi 兼容 OpenAI 风格 API，用于决策推理和交易计划生成。
 - **五维信号上下文**：技术面、资金面、舆情面、情绪面和基本面。
 - **模拟账户引擎**：模拟现金、持仓、成交、手续费、盈亏和账户快照。
 - **交易记忆**：盘后复盘和教训可以反馈到后续决策。
-- **日终 AI 策略指令**：收盘复盘由 LLM 生成下一交易日生效的策略版本；扫描、TradePlan 和结果会关联该版本，便于回看 AI 为什么调整。
+- **每日交易员事实简报**：统一聚合候选、打分、LLM 判断、观察结论、交易信号、计划、风控阻断、失败和成交，直接解释“为什么没交易”。
+- **日终 AI 策略指令**：收盘复盘由 LLM 读取完整决策漏斗和执行事实，自主生成下一交易日生效的策略版本；扫描、个股判断、TradePlan 和结果都消费或关联该版本。
+- **策略假设验证**：下一次复盘会把上一策略假设标记为 `supported`、`refuted` 或 `inconclusive`，让策略演进有事实反馈而不是按固定天数机械调参。
 - **绩效分析**：交易结果、信号质量和来源表现会成为日终 AI 复盘输入，而不是用固定胜率规则直接支配下一轮策略。
 - **Watchdog 与 Doctor**：检测循环停滞、过期状态、未决崩溃和闭环缺口。
 - **Hermes/Linux 模式**：生成 `systemd --user` 任务，支持 Linux 无人值守运行。
 - **公网安全层**：生产 Web 模式会脱敏内部路径、命令、Token、Traceback 和长 Prompt 式推理。
-- **仪表盘优先的可观察性**：展示账户、持仓、风险状态、LLM 决策、策略参数、教训和心跳。
+- **能力级可观察性**：展示账户、持仓、决策旅程、订单审计、当前/下一策略、教训和六项能力健康。
 
 ## 架构
 
@@ -174,7 +183,8 @@ LLM 负责判断路线，Watchdog 像赛道监控，Doctor 像维修技师，而
 5. 让 Agent 每次操作后汇报“现在是否在跑、为什么没交易、下一步需要什么”。
 
 日终复盘成功后，Agent 还会生成并保存一个下一交易日生效的 AI 策略版本。
-盘中 TradePlan 会记录实际使用的版本；若 LLM 没有返回有效结构化指令，系统会继续沿用上一有效版本。
+下一交易日的扫描和个股 LLM 判断都会收到这份完整策略，盘中 TradePlan 会记录实际使用的版本；
+若 LLM 没有返回有效结构化指令，系统会继续沿用上一有效版本。
 
 一句话：人负责定目标和看结果，AI 驾驶员负责盯盘、巡检、诊断和把车重新开回赛道。
 
@@ -267,6 +277,11 @@ python3 tests/test_auto_doctor.py
 python3 tests/test_auto_trader.py
 python3 tests/test_paper_readiness.py
 python3 tests/test_paper_bootstrap.py
+python3 tests/test_strategy_directive.py
+python3 tests/test_trader_brief.py
+python3 tests/test_ml_signal_contract.py
+python3 tests/test_order_audit_lessons.py
+python3 tests/test_web_dashboard_data.py
 ```
 
 更宽的测试取决于你的行情、LLM 和本地环境配置。

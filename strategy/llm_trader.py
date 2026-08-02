@@ -329,6 +329,7 @@ def _build_decision_prompt(
     cash: float = 0,
     htsc_diagnosis: str = "",
     overnight_text: str = "",
+    strategy_directive: dict = None,
 ) -> str:
     """
     构建LLM决策prompt
@@ -414,6 +415,20 @@ def _build_decision_prompt(
     if overnight_text:
         overnight_section = f"\n【外围市场·隔夜快照】\n{_untrusted_context(overnight_text, max_len=1200)}\n"
 
+    strategy_directive = strategy_directive or {}
+    strategy_section = "暂无已生效的 AI 日终策略，按基础交易纪律判断。"
+    if strategy_directive:
+        strategy_payload = {
+            "version": strategy_directive.get("version"),
+            "intent": strategy_directive.get("intent"),
+            "summary": strategy_directive.get("summary"),
+            "diagnosis": strategy_directive.get("diagnosis"),
+            "rationale": strategy_directive.get("rationale"),
+            "hypothesis": strategy_directive.get("hypothesis"),
+            "params": strategy_directive.get("params") or {},
+        }
+        strategy_section = json.dumps(strategy_payload, ensure_ascii=False)
+
     prompt = f"""请分析以下股票，做出交易决策。
 
 【股票信息】
@@ -422,6 +437,9 @@ def _build_decision_prompt(
 【市场环境】
 {regime_label}
 {overnight_section}
+【今日生效的 AI 策略】
+{strategy_section}
+
 【5维信号】
 {signals_text}
 {position_text}{sell_analysis}{htsc_text}
@@ -430,14 +448,14 @@ def _build_decision_prompt(
 {_untrusted_context(memory_context, max_len=1600) if memory_context else "暂无相关历史记忆。"}
 
 【决策要求】
-1. 综合考虑5维信号、外围市场环境、市场环境和历史记忆
+1. 综合考虑今日生效策略、5维信号、外围市场、市场环境和历史记忆
 2. 如果外围市场大跌（美股跌幅>1%或A50跌幅>1%），即使个股信号偏多也要谨慎
 3. 如果市场环境是熊市，即使信号偏多也要谨慎
 4. 如果历史记忆中有该股票的亏损教训，要特别注意
-5. 当综合分>=60且置信度>=30%时，应积极考虑买入
-6. 对于热门板块（半导体、光模块、AI、算力）的股票，可以适当放宽买入条件
+5. 候选已通过今日策略的评分门槛；是否交易由你结合策略意图和当日事实自主判断，不使用固定连续天数规则
 6. 如果已持有该股票，分析是否应该卖出（止盈/减仓/清仓）：当盈利达到目标、基本面恶化、技术面转空、或有更好的替代标的时，应考虑SELL
-7. 持仓股如果信号仍强且无卖出理由，应返回HOLD继续持有
+7. 硬风控和数据有效性优先于策略意图；证据不足时返回HOLD并明确缺少什么
+8. 持仓股如果信号仍强且无卖出理由，应返回HOLD继续持有
 
 请返回JSON:
 {{"action": "BUY/SELL/HOLD", "confidence": 0.0-1.0, "reasoning": "50字以内的决策理由"}}
@@ -475,6 +493,7 @@ def make_decision(
     sell_threshold: float = None,       # 兼容旧接口，忽略
     htsc_diagnosis: str = "",
     overnight_text: str = "",
+    strategy_directive: dict = None,
     memory=None,  # P2-12: 外部传入的 TradeMemory 实例（连接复用）
     llm_retries: int = 2,
     llm_timeout: int = DEFAULT_HTTP_TIMEOUT,
@@ -561,6 +580,7 @@ def make_decision(
         current_positions, total_assets, cash,
         htsc_diagnosis=htsc_diagnosis,
         overnight_text=overnight_text,
+        strategy_directive=strategy_directive,
     )
 
     # 调用LLM

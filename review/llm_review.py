@@ -168,13 +168,43 @@ def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None
             prompt_parts.append(f"- {k}: {v}")
         prompt_parts.append("")
 
-    # 7. 分析要求
-    prompt_parts.append("## 七、请分析以下内容")
+    # 7. 当日完整决策漏斗。AI 必须基于事实区分主动观望、门槛压制、
+    # 能力降级、风控阻断和执行失败，不能只用账户无成交倒推原因。
+    daily_facts = review_data.get("daily_facts") or {}
+    if daily_facts:
+        funnel = daily_facts.get("funnel") or {}
+        prompt_parts.append("## 七、当日决策与执行事实")
+        prompt_parts.append(
+            "- 扫描{scan_cycles}轮，候选观察{candidates}次，完成打分{scored}次，LLM判断{llm_evaluated}次".format(
+                **{key: funnel.get(key, 0) for key in ("scan_cycles", "candidates", "scored", "llm_evaluated")}
+            )
+        )
+        prompt_parts.append(
+            "- 观察HOLD{observations}次，BUY信号{buy_signals}次，SELL信号{sell_signals}次，计划订单{planned_orders}笔".format(
+                **{key: funnel.get(key, 0) for key in ("observations", "buy_signals", "sell_signals", "planned_orders")}
+            )
+        )
+        prompt_parts.append(
+            "- 成交{filled}笔，风控阻断{blocked}笔，跳过{skipped}笔，执行失败{failed}笔".format(
+                **{key: funnel.get(key, 0) for key in ("filled", "blocked", "skipped", "failed")}
+            )
+        )
+        for item in (daily_facts.get("order_audit") or [])[:10]:
+            prompt_parts.append(
+                f"  - {item.get('name') or item.get('code')} {item.get('action')} "
+                f"{item.get('status')}: {item.get('reason') or '无'}"
+            )
+        for item in (daily_facts.get("degradations") or [])[:10]:
+            prompt_parts.append(f"  - 能力降级: {item.get('summary')}")
+        prompt_parts.append("")
+
+    # 8. 分析要求
+    prompt_parts.append("## 八、请分析以下内容")
     prompt_parts.append("""
 1. **当日战况总结**: 用2-3句话概括今天的表现，是赢是亏，主要原因是什么
 2. **持仓诊断**: 逐只分析持仓股票的状态，哪些该持有，哪些需要注意
 3. **交易反思**: 今天的买卖决策是否合理，有没有明显的错误
-4. **策略评估**: 当前策略的胜率和盈亏比是否健康，需要怎么调整
+4. **策略评估**: 必须引用当日决策漏斗，判断是主动观望、门槛压制、能力降级、风控阻断还是执行失败
 5. **风险提示**: 当前持仓和市场环境中存在的风险点
 6. **次日操作建议**: 明天开盘前应该关注什么，具体的操作建议
 7. **策略优化建议**: 基于近期表现，有什么可以改进的地方

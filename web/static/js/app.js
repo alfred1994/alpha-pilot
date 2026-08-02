@@ -1,134 +1,90 @@
-import { DashboardTab } from './modules/dashboard.js?v=2026070301';
-import { DecisionsTab } from './modules/decisions.js?v=2026070301';
-import { EvolutionTab } from './modules/evolution.js?v=2026070301';
+import { DashboardTab } from './modules/dashboard.js?v=2026080201';
+import { DecisionsTab } from './modules/decisions.js?v=2026080201';
+import { EvolutionTab } from './modules/evolution.js?v=2026080201';
+import { HealthTab } from './modules/health.js?v=2026080201';
 
 class App {
     constructor() {
-        this.tabs = {};
-        this.currentTab = 'dashboard';
-        this.updateTimer = null;
         this.apiBase = '/api';
-
+        this.currentTab = 'dashboard';
+        this.globalData = null;
+        this.timer = null;
+        this.tabs = {
+            dashboard: new DashboardTab(this),
+            decisions: new DecisionsTab(this),
+            evolution: new EvolutionTab(this),
+            health: new HealthTab(this),
+        };
         this.init();
     }
 
     async init() {
-        this.tabs['dashboard'] = new DashboardTab(this);
-        this.tabs['decisions'] = new DecisionsTab(this);
-        this.tabs['evolution'] = new EvolutionTab(this);
-
-        document.querySelectorAll('.nav-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const targetTab = e.currentTarget.getAttribute('data-tab');
-                this.switchTab(targetTab);
-            });
-        });
-
-        await this.loadGlobalStatus();
-        await this.tabs[this.currentTab].load();
-
-        this.startPoll();
+        document.querySelectorAll('.nav-btn').forEach(button => button.addEventListener('click', () => this.switchTab(button.dataset.tab)));
+        await this.refresh();
+        this.timer = window.setInterval(() => this.refresh(), 15000);
+        if (window.lucide) window.lucide.createIcons();
     }
 
-    switchTab(tabName) {
-        if (this.currentTab === tabName) return;
-
-        document.querySelectorAll('.nav-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.getAttribute('data-tab') === tabName);
-        });
-
-        document.querySelectorAll('.tab-content').forEach(content => {
-            content.classList.toggle('active', content.getAttribute('id') === `tab-${tabName}`);
-        });
-
-        this.currentTab = tabName;
-        if (this.tabs[this.currentTab]) {
-            this.tabs[this.currentTab].load();
-        }
+    switchTab(name) {
+        if (!this.tabs[name]) return;
+        document.querySelectorAll('.nav-btn').forEach(button => button.classList.toggle('active', button.dataset.tab === name));
+        document.querySelectorAll('.tab-content').forEach(section => section.classList.toggle('active', section.id === `tab-${name}`));
+        this.currentTab = name;
+        this.tabs[name].load();
     }
 
-    async loadGlobalStatus() {
+    async refresh() {
         try {
-            const res = await fetch(`${this.apiBase}/public/status`);
-            const data = await res.json();
-            
-            const regimeStr = data.adaptive?.regime || (data.globalData?.regime) || 'sideways';
-            document.getElementById('header-regime').textContent = this.formatRegime(regimeStr);
-            document.getElementById('header-assets').textContent = `￥${data.account?.total_assets?.toLocaleString('zh-CN', {minimumFractionDigits:0, maximumFractionDigits:0}) || '-'}`;
-            
-            const pulse = document.getElementById('status-pulse');
-            if (data.health?.ok && data.watchdog?.ok && !data.crash_open && !data.control?.paused) {
-                pulse.className = 'pulse-dot green';
-            } else {
-                pulse.className = 'pulse-dot red';
-            }
-
-            // 更新头部 4 个核心状态指示灯
-            const hDot = document.getElementById('indicator-health');
-            if (hDot) {
-                hDot.className = data.health?.ok ? 'status-indicator-dot green-dot' : 'status-indicator-dot red-dot pulse-dot';
-            }
-            const wdDot = document.getElementById('indicator-watchdog');
-            if (wdDot) {
-                wdDot.className = data.watchdog?.ok ? 'status-indicator-dot green-dot' : 'status-indicator-dot red-dot pulse-dot';
-            }
-            const cDot = document.getElementById('indicator-crash');
-            if (cDot) {
-                cDot.className = !data.crash_open ? 'status-indicator-dot green-dot' : 'status-indicator-dot red-dot pulse-dot';
-            }
-            const ctrlDot = document.getElementById('indicator-control');
-            if (ctrlDot) {
-                ctrlDot.className = !data.control?.paused ? 'status-indicator-dot green-dot' : 'status-indicator-dot orange-dot pulse-dot';
-            }
-
-            // 更新顶部警告条
-            const alertBar = document.getElementById('autopilot-alert-bar');
-            const alertMsg = document.getElementById('alert-message');
-            if (alertBar && alertMsg) {
-                if (data.risk_warnings && data.risk_warnings.length > 0) {
-                    alertMsg.textContent = `自动驾驶异常报警: ${data.risk_warnings.join(' | ')}`;
-                    alertBar.style.display = 'flex';
-                } else {
-                    alertBar.style.display = 'none';
-                }
-            }
-
-            const timeStr = new Date(data.timestamp).toLocaleTimeString();
-            document.getElementById('footer-update-time').textContent = `最后更新: ${timeStr}`;
-
-            this.globalData = data;
-        } catch (e) {
-            console.error('Failed to load global status:', e);
+            const response = await fetch(`${this.apiBase}/public/status`);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            this.globalData = await response.json();
+            this.renderHeader(this.globalData);
+            await this.tabs[this.currentTab].load();
+        } catch (error) {
+            console.error('Failed to load global status:', error);
+            this.renderUnavailable();
         }
     }
 
-    formatRegime(regime) {
-        return {
-            'bull': '🟢 牛市环境',
-            'bear': '🔴 熊市环境',
-            'sideways': '⚪ 震荡环境',
-            'rebound': '🔵 超跌反弹'
-        }[regime] || `⚪ ${regime}环境`;
+    renderHeader(data) {
+        const brief = data.daily_trader || {};
+        const capabilities = data.capabilities || [];
+        const degraded = capabilities.some(item => item.status === 'degraded');
+        const critical = !data.health?.ok || !data.watchdog?.ok || data.crash_open || data.control?.paused;
+        const dot = document.getElementById('status-pulse');
+        if (dot) dot.className = `state-dot ${critical ? 'danger' : degraded ? 'degraded' : ''}`;
+        this.setText('header-trader-state', brief.headline || '状态读取中');
+        this.setText('header-regime', this.regimeLabel(data.adaptive?.regime));
+        this.setText('header-assets', `净值 ￥${Number(data.account?.total_assets || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`);
+        this.setText('footer-update-time', `最后更新 ${this.formatTime(data.timestamp)}`);
+
+        const alert = document.getElementById('autopilot-alert-bar');
+        const warnings = data.risk_warnings || [];
+        if (alert) alert.hidden = warnings.length === 0;
+        this.setText('alert-message', warnings.join('；'));
     }
 
-    startPoll() {
-        this.stopPoll();
-        this.updateTimer = setInterval(async () => {
-            await this.loadGlobalStatus();
-            if (this.tabs[this.currentTab]) {
-                this.tabs[this.currentTab].load();
-            }
-        }, 10000);
+    renderUnavailable() {
+        const dot = document.getElementById('status-pulse');
+        if (dot) dot.className = 'state-dot danger';
+        this.setText('header-trader-state', '状态暂不可用');
+        this.setText('trader-headline', '暂时无法读取 AI 交易员状态');
+        this.setText('trader-explanation', '公开状态接口没有返回有效数据，请稍后刷新。');
     }
 
-    stopPoll() {
-        if (this.updateTimer) {
-            clearInterval(this.updateTimer);
-            this.updateTimer = null;
-        }
+    regimeLabel(regime) {
+        return { bull: '牛市环境', bear: '熊市环境', sideways: '震荡环境', rebound: '反弹环境' }[regime] || '市场环境待识别';
+    }
+
+    formatTime(value) {
+        const date = new Date(value);
+        return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false });
+    }
+
+    setText(id, value) {
+        const element = document.getElementById(id);
+        if (element) element.textContent = value;
     }
 }
 
-window.addEventListener('DOMContentLoaded', () => {
-    window.app = new App();
-});
+window.addEventListener('DOMContentLoaded', () => { window.app = new App(); });

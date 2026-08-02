@@ -473,6 +473,7 @@ def fast_scan(
                     current_positions=_positions,
                     total_assets=_total_assets,
                     cash=_cash,
+                    strategy_directive=directive,
                     llm_retries=0,
                     llm_timeout=FAST_SCAN_LLM_DECISION_TIMEOUT,
                 )
@@ -618,6 +619,7 @@ def fast_scan(
                             current_positions=_positions_sell,
                             total_assets=_total_assets_sell,
                             cash=_cash_sell,
+                            strategy_directive=directive,
                             memory=_sell_memory,
                             llm_retries=0,
                             llm_timeout=FAST_SCAN_SELL_LLM_TIMEOUT,
@@ -1265,6 +1267,14 @@ def run_review() -> PipelineResult:
         review_data = review_payload.get("data", {})
         review_data["order_audit"] = _load_today_order_audit(result.date)
         try:
+            from scheduler.trader_brief import build_daily_facts
+            daily_facts = build_daily_facts(date=result.date)
+            review_data["daily_facts"] = daily_facts
+            # 每日事实层已经按订单结果去重，复盘和教训必须使用同一口径。
+            review_data["order_audit"] = daily_facts.get("order_audit") or review_data["order_audit"]
+        except Exception as e:
+            logger.warning(f"每日决策事实聚合失败(非致命): {e}")
+        try:
             from data.database import Database
             with Database() as db:
                 db.save_review_snapshot(result.date, review_data)
@@ -1355,6 +1365,7 @@ def run_review() -> PipelineResult:
                     llm_review=llm_analysis,
                     regime=current_regime,
                     current_params=current_params,
+                    current_directive=active_policy,
                 )
                 if directive:
                     result.steps.append(StepResult(

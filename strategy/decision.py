@@ -61,6 +61,18 @@ class TradeDecision:
         return f"[{self.action}] {self.code} {self.name} score={self.composite_score:.1f} conf={self.confidence:.0%}"
 
 
+def _compute_ml_dimension(code: str) -> DimensionScore:
+    """按 MLPrediction 对象契约生成机器学习信号维度。"""
+    from strategy.qlib_signal import get_ml_signal
+    prediction = get_ml_signal(code)
+    return DimensionScore(
+        name="ml",
+        score=prediction.score,
+        confidence=prediction.confidence,
+        detail=prediction.detail or f"ML预测={prediction.score:.0f} 置信={prediction.confidence:.0%}",
+    )
+
+
 def compute_dimension_scores(
     code: str,
     df=None,
@@ -141,12 +153,7 @@ def compute_dimension_scores(
 
     # 6. ML预测 (LightGBM量化信号)
     try:
-        from strategy.qlib_signal import get_ml_signal
-        ml_score, ml_conf = get_ml_signal(code)
-        dims["ml"] = DimensionScore(
-            name="ml", score=ml_score, confidence=ml_conf,
-            detail=f"ML预测={ml_score:.0f} 置信={ml_conf:.0%}",
-        )
+        dims["ml"] = _compute_ml_dimension(code)
     except Exception as e:
         dims["ml"] = DimensionScore("ml", 50, 0.0, f"ML信号异常: {e}")
 
@@ -424,12 +431,7 @@ def make_decision_with_cache(
 
     # 6. ML预测
     try:
-        from strategy.qlib_signal import get_ml_signal
-        ml_score, ml_conf = get_ml_signal(code)
-        dims["ml"] = DimensionScore(
-            name="ml", score=ml_score, confidence=ml_conf,
-            detail=f"ML预测={ml_score:.0f} 置信={ml_conf:.0%}",
-        )
+        dims["ml"] = _compute_ml_dimension(code)
     except Exception as e:
         dims["ml"] = DimensionScore("ml", 50, 0.0, f"ML信号异常: {e}")
 
