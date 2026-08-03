@@ -44,6 +44,8 @@ class Order:
     filled_at: str = ""
     error: str = ""
     atr: float = 0.0           # 买入时的ATR值（用于动态止损）
+    trade_date: str = ""       # 计划交易日，用于 T+1 校验
+    allow_t0: bool = False     # 仅由证券元数据明确标记可当日回转
 
     def __post_init__(self):
         if not self.created_at:
@@ -89,6 +91,8 @@ class OrderManager:
         amount: float = None,
         reason: str = "信号买入",
         atr: float = None,
+        trade_date: str = None,
+        allow_t0: bool = False,
     ) -> Order:
         """
         创建买入订单
@@ -101,6 +105,8 @@ class OrderManager:
             amount: 买入金额
             reason: 买入原因
             atr: 买入时的ATR值（用于动态止损）
+            trade_date: 计划交易日
+            allow_t0: 是否明确允许当日回转
 
         Returns:
             Order对象
@@ -119,6 +125,8 @@ class OrderManager:
             shares=shares,
             reason=reason,
             atr=atr if atr and atr > 0 else 0.0,
+            trade_date=trade_date or "",
+            allow_t0=bool(allow_t0),
         )
         self.orders.append(order)
         logger.info(f"创建买入订单: {order}")
@@ -130,6 +138,7 @@ class OrderManager:
         price: float,
         shares: int = None,
         reason: str = "信号卖出",
+        trade_date: str = None,
     ) -> Order:
         """
         创建卖出订单
@@ -139,6 +148,7 @@ class OrderManager:
             price: 预期卖出价
             shares: 卖出股数（None=全部）
             reason: 卖出原因
+            trade_date: 计划交易日
 
         Returns:
             Order对象
@@ -157,6 +167,7 @@ class OrderManager:
             price=price,
             shares=shares,
             reason=reason,
+            trade_date=trade_date or "",
         )
         self.orders.append(order)
         logger.info(f"创建卖出订单: {order}")
@@ -190,6 +201,8 @@ class OrderManager:
                     shares=order.shares,
                     reason=order.reason,
                     atr=order.atr if order.atr > 0 else None,
+                    trade_date=order.trade_date or None,
+                    allow_t0=order.allow_t0,
                 )
             else:
                 trade = self.account.sell(
@@ -197,6 +210,7 @@ class OrderManager:
                     price=price,
                     shares=order.shares,
                     reason=order.reason,
+                    trade_date=order.trade_date or None,
                 )
 
             if trade:

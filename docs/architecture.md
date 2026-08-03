@@ -243,9 +243,9 @@ confidence: 0.0-1.0
 
 ### 8.1 模拟账户 (`paper_account.py`)
 
-- JSON文件存储 (`data/paper_account.json`)
+- SQLite 是账户与成交的唯一事实来源，`data/paper_account.json` 仅作原子备份
 - 初始资金: 100万
-- 模拟A股交易规则: T+1、涨跌停、佣金万三、印花税千一
+- 模拟A股交易规则: 普通 A 股 T+1；仅显式标记品种允许 T+0；佣金万三、卖出印花税按配置计算
 
 ### 8.2 订单管理 (`order.py`)
 

@@ -121,6 +121,37 @@ def main():
         with Database(db_path=db_path) as db:
             assert_true(len(db.get_trades(code="600519", limit=5)) == 1, "重复TradePlan不产生第二条成交记录")
 
+        same_day_sell_plan = {
+            "date": "2026-06-09",
+            "regime": "sideways",
+            "orders": [{
+                "code": "600519",
+                "name": "贵州茅台",
+                "action": "SELL",
+                "priority": 1,
+                "target_weight": 0,
+                "max_price": 0,
+                "reason": "同日卖出应被阻断",
+                "score": 75,
+                "conviction": 0.7,
+            }],
+        }
+        same_day_sell = execute_trade_plan(
+            same_day_sell_plan,
+            broker=broker,
+            realtime_func=fake_realtime,
+            market_status="盘中",
+            drawdown_controller=DrawdownController(state_file=drawdown_path),
+            system_risk_controller=SystemRiskController(state_file=system_risk_path),
+            update_memory=False,
+        )
+        assert_true(not same_day_sell.executed_orders, "同日SELL计划不产生模拟成交")
+        assert_true(same_day_sell.order_audit[0]["status"] == "blocked", "同日SELL审计记录阻断状态")
+        assert_true("T+1" in same_day_sell.order_audit[0]["reason"], "同日SELL审计记录T+1原因")
+        assert_true(broker.has_position("600519"), "同日SELL阻断后持仓仍在")
+        with Database(db_path=db_path) as db:
+            assert_true(len(db.get_trades(code="600519", limit=5)) == 1, "同日SELL阻断不写入成交记录")
+
         blocked_plan = {
             "date": "2026-06-09",
             "regime": "sideways",

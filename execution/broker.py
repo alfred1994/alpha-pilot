@@ -39,18 +39,24 @@ class BrokerAdapter(ABC):
         """是否持有指定证券"""
 
     @abstractmethod
+    def get_sellable_shares(self, code: str, trade_date: str = None) -> int:
+        """获取指定交易日的可卖数量"""
+
+    @abstractmethod
     def buy(self, code: str, name: str, price: float, shares: int,
-            reason: str = "TradePlan执行", atr: float = None) -> Optional[dict]:
+            reason: str = "TradePlan执行", atr: float = None,
+            trade_date: str = None, allow_t0: bool = False) -> Optional[dict]:
         """买入"""
 
     @abstractmethod
     def sell(self, code: str, price: float, shares: int = None,
-             reason: str = "TradePlan执行") -> Optional[dict]:
+             reason: str = "TradePlan执行", trade_date: str = None) -> Optional[dict]:
         """卖出"""
 
     @abstractmethod
     def check_stop_conditions(self, prices: Dict[str, float],
-                              atr_map: Dict[str, float] = None) -> List[dict]:
+                              atr_map: Dict[str, float] = None,
+                              trade_date: str = None) -> List[dict]:
         """检查并执行止损止盈"""
 
 
@@ -79,8 +85,12 @@ class PaperBrokerAdapter(BrokerAdapter):
     def has_position(self, code: str) -> bool:
         return self.account.has_position(code)
 
+    def get_sellable_shares(self, code: str, trade_date: str = None) -> int:
+        return self.account.get_sellable_shares(code, trade_date=trade_date)
+
     def buy(self, code: str, name: str, price: float, shares: int,
-            reason: str = "TradePlan执行", atr: float = None) -> Optional[dict]:
+            reason: str = "TradePlan执行", atr: float = None,
+            trade_date: str = None, allow_t0: bool = False) -> Optional[dict]:
         return self.account.buy(
             code=code,
             name=name,
@@ -88,15 +98,23 @@ class PaperBrokerAdapter(BrokerAdapter):
             shares=shares,
             reason=reason,
             atr=atr,
+            trade_date=trade_date,
+            allow_t0=allow_t0,
         )
 
     def sell(self, code: str, price: float, shares: int = None,
-             reason: str = "TradePlan执行") -> Optional[dict]:
-        return self.account.sell(code=code, price=price, shares=shares, reason=reason)
+             reason: str = "TradePlan执行", trade_date: str = None) -> Optional[dict]:
+        return self.account.sell(
+            code=code, price=price, shares=shares, reason=reason,
+            trade_date=trade_date,
+        )
 
     def check_stop_conditions(self, prices: Dict[str, float],
-                              atr_map: Dict[str, float] = None) -> List[dict]:
-        return self.account.check_stop_conditions(prices, atr_map=atr_map)
+                              atr_map: Dict[str, float] = None,
+                              trade_date: str = None) -> List[dict]:
+        return self.account.check_stop_conditions(
+            prices, atr_map=atr_map, trade_date=trade_date,
+        )
 
 
 class RealBrokerAdapter(BrokerAdapter):
@@ -124,16 +142,21 @@ class RealBrokerAdapter(BrokerAdapter):
     def has_position(self, code: str) -> bool:
         raise NotImplementedError
 
+    def get_sellable_shares(self, code: str, trade_date: str = None) -> int:
+        raise NotImplementedError
+
     def buy(self, code: str, name: str, price: float, shares: int,
-            reason: str = "TradePlan执行", atr: float = None) -> Optional[dict]:
+            reason: str = "TradePlan执行", atr: float = None,
+            trade_date: str = None, allow_t0: bool = False) -> Optional[dict]:
         raise NotImplementedError
 
     def sell(self, code: str, price: float, shares: int = None,
-             reason: str = "TradePlan执行") -> Optional[dict]:
+             reason: str = "TradePlan执行", trade_date: str = None) -> Optional[dict]:
         raise NotImplementedError
 
     def check_stop_conditions(self, prices: Dict[str, float],
-                              atr_map: Dict[str, float] = None) -> List[dict]:
+                              atr_map: Dict[str, float] = None,
+                              trade_date: str = None) -> List[dict]:
         raise NotImplementedError
 
 

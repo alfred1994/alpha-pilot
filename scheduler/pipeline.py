@@ -91,6 +91,7 @@ class TradePlan:
                     "reason": o.reason,
                     "score": o.score,
                     "conviction": o.conviction,
+                    "allow_t0": o.allow_t0,
                 }
                 for o in self.orders
             ],
@@ -114,6 +115,7 @@ class TradeOrder:
     reason: str = ""
     score: float = 0.0
     conviction: float = 0.0  # 置信度
+    allow_t0: bool = False   # 仅由证券元数据明确标记可当日回转
 
 
 @dataclass
@@ -1019,7 +1021,9 @@ def execute_trade_plan(
                     logger.debug(f"获取 {code} 实时价格失败: {e}")
 
             # 检查止损条件（内部会自动执行卖出）
-            stop_trades = broker.check_stop_conditions(prices)
+            stop_trades = broker.check_stop_conditions(
+                prices, trade_date=plan_data["date"],
+            )
 
             # 记录止损执行结果
             for trade in stop_trades:
@@ -1067,6 +1071,14 @@ def execute_trade_plan(
             if not broker.has_position(code):
                 _audit_order(result, order, "skipped", "无持仓可卖")
                 continue
+            sellable_shares = broker.get_sellable_shares(
+                code, trade_date=plan_data["date"],
+            )
+            if sellable_shares <= 0:
+                reason = "T+1限制: 当日买入普通A股不可卖出"
+                logger.info(f"SELL阻断: {code} - {reason}")
+                _audit_order(result, order, "blocked", reason, sellable_shares=0)
+                continue
             try:
                 rt = realtime_func([code])
                 price = rt[0].price if rt and rt[0].price > 0 else 0
@@ -1076,7 +1088,11 @@ def execute_trade_plan(
                     continue
                 reason = order.get("reason", "LLM卖出建议")
                 positions = broker.get_positions()
-                trade = broker.sell(code, price, positions[code]["shares"], reason=reason)
+                shares = min(int(positions[code]["shares"]), int(sellable_shares))
+                trade = broker.sell(
+                    code, price, shares, reason=reason,
+                    trade_date=plan_data["date"],
+                )
                 if trade:
                     result.executed_orders.append(trade)
                     _audit_order(
@@ -1162,6 +1178,8 @@ def execute_trade_plan(
                     price=current_price,
                     shares=shares,
                     reason=execution_reason,
+                    trade_date=plan_data["date"],
+                    allow_t0=bool(order.get("allow_t0", False)),
                 )
                 if hasattr(broker, "account"):
                     om.account = broker.account
@@ -1173,6 +1191,8 @@ def execute_trade_plan(
                         price=current_price,
                         shares=shares,
                         reason=execution_reason,
+                        trade_date=plan_data["date"],
+                        allow_t0=bool(order.get("allow_t0", False)),
                     )
                     buy_order.status = "filled" if trade else "failed"
                 if buy_order.status == "filled":

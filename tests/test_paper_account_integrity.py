@@ -45,7 +45,10 @@ def main():
         assert_true(account.buy("600519", "贵州茅台", 10, shares=50) is None, "拒绝非整手买入")
         assert_true(account.cash == initial_cash and not account.positions, "非法买入不改变账户状态")
 
-        buy = account.buy("600519", "贵州茅台", 10, shares=100)
+        buy = account.buy(
+            "600519", "贵州茅台", 10, shares=100,
+            trade_date="2026-08-03",
+        )
         assert_true(buy is not None, "合法整手买入成功")
         cash_after_buy = account.cash
         shares_after_buy = account.positions["600519"]["shares"]
@@ -56,6 +59,13 @@ def main():
         assert_true(account.cash == cash_after_buy, "非法卖出不改变现金")
         assert_true(account.positions["600519"]["shares"] == shares_after_buy, "非法卖出不改变持仓")
 
+        same_day_sell = account.sell(
+            "600519", 10, shares=100, trade_date="2026-08-03",
+        )
+        assert_true(same_day_sell is None, "普通A股买入当日受T+1限制不可卖出")
+        assert_true(account.cash == cash_after_buy, "T+1阻断不改变现金")
+        assert_true(account.positions["600519"]["shares"] == 100, "T+1阻断保留完整持仓")
+
         with Database(db_path=db_path) as db:
             state = db.get_account_state()
             positions = db.get_all_positions()
@@ -63,6 +73,33 @@ def main():
         assert_true(state["cash"] == cash_after_buy, "账户快照与内存现金一致")
         assert_true(len(positions) == 1 and positions[0]["shares"] == 100, "持仓投影与账户快照同时提交")
         assert_true(len(trades) == 1 and trades[0]["action"] == "BUY", "成交记录与账户变更同时提交")
+
+        next_day_sell = account.sell(
+            "600519", 10, shares=100, trade_date="2026-08-04",
+        )
+        assert_true(next_day_sell is not None, "普通A股下一交易日可以卖出")
+
+        unmarked_etf = account.buy(
+            "510300", "沪深300ETF", 4, shares=100,
+            trade_date="2026-08-03",
+        )
+        assert_true(unmarked_etf is not None, "未标记ETF可以买入")
+        assert_true(
+            account.sell("510300", 4, shares=100, trade_date="2026-08-03") is None,
+            "ETF不会仅凭代码自动获得T+0权限",
+        )
+
+        t0_buy = account.buy(
+            "113000", "明确T+0品种", 100, shares=100,
+            trade_date="2026-08-03", allow_t0=True,
+        )
+        assert_true(t0_buy is not None, "明确标记的T+0品种可以买入")
+        reloaded = PaperAccount(filepath=account_path, db_path=db_path)
+        assert_true(reloaded.positions["113000"]["allow_t0"] is True, "T+0属性持久化到SQLite账户状态")
+        assert_true(
+            reloaded.sell("113000", 101, shares=100, trade_date="2026-08-03") is not None,
+            "明确标记的T+0品种允许当日卖出",
+        )
     finally:
         cleanup(account_path, db_path)
 

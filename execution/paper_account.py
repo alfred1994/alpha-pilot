@@ -242,6 +242,32 @@ class PaperAccount:
     def get_position(self, code: str) -> Optional[dict]:
         return self.positions.get(code)
 
+    @staticmethod
+    def _normalize_trade_date(trade_date: str = None) -> Optional[str]:
+        """将交易日期规范为 YYYY-MM-DD；无效日期返回 None。"""
+        if trade_date is None:
+            return datetime.now().strftime("%Y-%m-%d")
+        try:
+            return datetime.strptime(str(trade_date), "%Y-%m-%d").strftime("%Y-%m-%d")
+        except (TypeError, ValueError):
+            logger.warning(f"拒绝非法交易日期: {trade_date!r}")
+            return None
+
+    def get_sellable_shares(self, code: str, trade_date: str = None) -> int:
+        """返回指定交易日可卖数量，普通 A 股买入当日不可卖出。"""
+        pos = self.positions.get(code)
+        if not pos:
+            return 0
+        effective_date = self._normalize_trade_date(trade_date)
+        if not effective_date:
+            return 0
+        if bool(pos.get("allow_t0", False)):
+            return int(pos.get("shares", 0))
+        buy_date = pos.get("buy_date")
+        if buy_date and effective_date <= str(buy_date):
+            return 0
+        return int(pos.get("shares", 0))
+
     def market_value(self, prices: Dict[str, float] = None) -> float:
         """持仓市值（按买入价或最新价）"""
         value = 0.0
@@ -286,6 +312,8 @@ class PaperAccount:
         amount: float = None,
         reason: str = "信号买入",
         atr: float = None,
+        trade_date: str = None,
+        allow_t0: bool = False,
     ) -> Optional[dict]:
         """
         买入股票（加锁保证读-改-写的原子性）
@@ -298,11 +326,16 @@ class PaperAccount:
             amount: 买入金额（自动计算整百股数）
             reason: 买入原因
             atr: 买入时的ATR值（用于动态止损）
+            trade_date: 交易日期，默认当天
+            allow_t0: 是否明确允许当日回转；普通 A 股必须保持 False
 
         Returns:
             交易记录 dict 或 None
         """
         with self._lock:
+            effective_trade_date = self._normalize_trade_date(trade_date)
+            if not effective_trade_date:
+                return None
             if not self._validate_trade_input(code, price, shares=shares, amount=amount):
                 return None
             if self.has_position(code):
@@ -348,11 +381,12 @@ class PaperAccount:
                 "name": name,
                 "shares": shares,
                 "buy_price": price,
-                "buy_date": datetime.now().strftime("%Y-%m-%d"),
+                "buy_date": effective_trade_date,
                 "cost": cost,
                 "highest_price": price,
                 "current_price": price,
                 "atr_at_buy": atr if atr and atr > 0 else 0.0,
+                "allow_t0": bool(allow_t0),
             }
 
             trade = {
@@ -388,6 +422,7 @@ class PaperAccount:
         price: float,
         shares: int = None,
         reason: str = "信号卖出",
+        trade_date: str = None,
     ) -> Optional[dict]:
         """
         卖出股票（加锁保证读-改-写的原子性）
@@ -397,6 +432,7 @@ class PaperAccount:
             price: 卖出价格
             shares: 卖出股数（None=全部卖出）
             reason: 卖出原因
+            trade_date: 交易日期，默认当天
 
         Returns:
             交易记录 dict 或 None
@@ -414,7 +450,15 @@ class PaperAccount:
                 shares = pos["shares"]
 
             if shares > pos["shares"]:
-                logger.warning(f"卖出股数超过可卖数量: {shares}>{pos['shares']}")
+                logger.warning(f"卖出股数超过持仓数量: {shares}>{pos['shares']}")
+                return None
+
+            sellable_shares = self.get_sellable_shares(code, trade_date=trade_date)
+            if shares > sellable_shares:
+                logger.info(
+                    f"T+1限制: {code} 本次卖出{shares}股，可卖{sellable_shares}股，"
+                    "当日买入普通A股不可卖出"
+                )
                 return None
 
             # 【TaskB】卖出前保存持仓快照，供SQLite同步使用
@@ -483,6 +527,7 @@ class PaperAccount:
         self,
         prices: Dict[str, float],
         atr_map: Dict[str, float] = None,
+        trade_date: str = None,
     ) -> List[dict]:
         """
         检查止损止盈条件（使用StopLossManager，支持ATR动态止损）
@@ -490,6 +535,7 @@ class PaperAccount:
         Args:
             prices: {code: current_price}
             atr_map: {code: atr_value} ATR值（可选，优先使用买入时ATR）
+            trade_date: 交易日期，默认当天
 
         Returns:
             触发的卖出交易列表
@@ -527,7 +573,7 @@ class PaperAccount:
             )
 
             if signal:
-                trade = self.sell(code, current, reason=signal.reason)
+                trade = self.sell(code, current, reason=signal.reason, trade_date=trade_date)
                 if trade:
                     triggered.append(trade)
 
