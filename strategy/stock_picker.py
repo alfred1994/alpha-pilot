@@ -808,13 +808,19 @@ def _get_active_stocks(min_amount: float = 5000, limit: int = 500) -> Dict[str, 
         for item in items:
             code = str(item.get("f12", ""))
             name = str(item.get("f14", ""))
-            amount = item.get("f6", 0)  # 成交额（元）
+            amount = item.get("f6", 0)  # 成交额（元），东方财富可能返回字符串
 
             if not code or not name:
                 continue
 
-            # 成交额转万元
-            amount_wan = amount / 10000 if amount else 0
+            # 成交额转万元；供应商返回 "-"/字符串时视为缺失，不让单只
+            # 股票的类型错误中断整批选股。
+            try:
+                amount_value = float(amount or 0)
+            except (TypeError, ValueError):
+                logger.debug(f"活跃股成交额不可解析 {code}: {amount!r}")
+                continue
+            amount_wan = amount_value / 10000 if amount_value > 0 else 0
             if amount_wan < min_amount:
                 continue
 

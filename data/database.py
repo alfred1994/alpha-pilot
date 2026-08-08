@@ -144,7 +144,8 @@ class Database:
                 cost               REAL,
                 highest_price      REAL,
                 current_price      REAL,
-                market_regime_at_buy TEXT
+                market_regime_at_buy TEXT,
+                trade_unit         INTEGER DEFAULT 100
             )
         """)
 
@@ -218,6 +219,10 @@ class Database:
             pass
         try:
             c.execute("ALTER TABLE trades ADD COLUMN pnl_pct REAL")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            c.execute("ALTER TABLE positions ADD COLUMN trade_unit INTEGER DEFAULT 100")
         except sqlite3.OperationalError:
             pass
 
@@ -598,8 +603,8 @@ class Database:
         c.execute("""
             INSERT OR REPLACE INTO positions
             (code, name, shares, buy_price, buy_date, cost,
-             highest_price, current_price, market_regime_at_buy)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             highest_price, current_price, market_regime_at_buy, trade_unit)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             pos["code"],
             pos.get("name", ""),
@@ -610,6 +615,7 @@ class Database:
             pos.get("highest_price", 0),
             pos.get("current_price", 0),
             pos.get("market_regime_at_buy", ""),
+            pos.get("trade_unit", 100),
         ))
         self.conn.commit()
 
@@ -1219,8 +1225,8 @@ class Database:
             cursor.execute("""
                 INSERT INTO positions
                 (code, name, shares, buy_price, buy_date, cost,
-                 highest_price, current_price, market_regime_at_buy)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 highest_price, current_price, market_regime_at_buy, trade_unit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 code,
                 pos.get("name", ""),
@@ -1231,6 +1237,7 @@ class Database:
                 pos.get("highest_price", 0),
                 pos.get("current_price") or pos.get("buy_price", 0),
                 pos.get("market_regime_at_buy", ""),
+                pos.get("trade_unit", 100),
             ))
 
     @staticmethod

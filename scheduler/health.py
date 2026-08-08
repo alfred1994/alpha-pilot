@@ -77,14 +77,33 @@ def run_health_check(db_path: str = None, control_file: str = None) -> List[Heal
                 hints = row["cnt"] if row else 0
             except Exception:
                 hints = 0
+            try:
+                ab_row = db.conn.execute("SELECT COUNT(*) AS cnt FROM ab_test_trades").fetchone()
+                ab_samples = ab_row["cnt"] if ab_row else 0
+            except Exception:
+                ab_samples = 0
         items.append(HealthItem(
             "交易记忆闭环",
             True,
-            f"教训{lessons}条 LLM决策{decisions}条 active_hints={hints}",
+            f"教训{lessons}条 LLM决策{decisions}条 active_hints={hints} ab_samples={ab_samples}",
             False,
         ))
     except Exception as e:
         items.append(HealthItem("交易记忆闭环", False, str(e), False))
+
+    # 数据快照新鲜度：静默降级会让模型在空数据上做出看似正常的 HOLD。
+    try:
+        from data.snapshot import get_market_snapshot_status, get_candidate_pool_status
+        market = get_market_snapshot_status(max_age=1800, refresh=False)
+        pool = get_candidate_pool_status(max_age=1800)
+        for name, status in (("市场快照", market), ("候选池快照", pool)):
+            fresh = bool(status.get("fresh"))
+            source = status.get("source", "unavailable")
+            age = status.get("age_seconds")
+            detail = f"source={source} fresh={fresh} age={age}s error={status.get('refresh_error', '')}"
+            items.append(HealthItem(name, fresh, detail, False))
+    except Exception as e:
+        items.append(HealthItem("数据快照", False, str(e), False))
 
     # 自动盯盘通知
     try:

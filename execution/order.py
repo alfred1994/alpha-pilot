@@ -46,6 +46,12 @@ class Order:
     atr: float = 0.0           # 买入时的ATR值（用于动态止损）
     trade_date: str = ""       # 计划交易日，用于 T+1 校验
     allow_t0: bool = False     # 仅由证券元数据明确标记可当日回转
+    trade_unit: int = 100
+    trade_id: int = None
+    signal_score: float = None
+    signal_detail: str = ""
+    market_regime: str = ""
+    dimensions: dict = None
 
     def __post_init__(self):
         if not self.created_at:
@@ -93,6 +99,11 @@ class OrderManager:
         atr: float = None,
         trade_date: str = None,
         allow_t0: bool = False,
+        trade_unit: int = 100,
+        signal_score: float = None,
+        signal_detail: str = "",
+        market_regime: str = "",
+        dimensions: dict = None,
     ) -> Order:
         """
         创建买入订单
@@ -127,6 +138,11 @@ class OrderManager:
             atr=atr if atr and atr > 0 else 0.0,
             trade_date=trade_date or "",
             allow_t0=bool(allow_t0),
+            trade_unit=max(1, int(trade_unit or 100)),
+            signal_score=signal_score,
+            signal_detail=signal_detail,
+            market_regime=market_regime,
+            dimensions=dimensions,
         )
         self.orders.append(order)
         logger.info(f"创建买入订单: {order}")
@@ -203,6 +219,11 @@ class OrderManager:
                     atr=order.atr if order.atr > 0 else None,
                     trade_date=order.trade_date or None,
                     allow_t0=order.allow_t0,
+                    trade_unit=order.trade_unit,
+                    signal_score=order.signal_score,
+                    signal_detail=order.signal_detail,
+                    market_regime=order.market_regime,
+                    dimensions=order.dimensions,
                 )
             else:
                 trade = self.account.sell(
@@ -219,6 +240,7 @@ class OrderManager:
                 order.filled_shares = trade["shares"]
                 order.filled_amount = trade["amount"]
                 order.commission = trade.get("commission", 0)
+                order.trade_id = trade.get("id")
                 order.filled_at = datetime.now().isoformat()
                 logger.info(f"订单成交: {order.order_id} {order.side} {order.code} {order.filled_shares}股@{price}")
                 return True

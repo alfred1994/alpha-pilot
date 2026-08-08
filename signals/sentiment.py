@@ -266,11 +266,13 @@ def batch_sentiment_signal(stocks: list, weibo_posts: list = None) -> dict:
         except (ValueError, TypeError) as e:
             logger.warning(f"批量舆情LLM解析失败: {e}, raw={raw[:200]}")
 
-    # 未返回的股票默认50分
+    # 未返回的股票只保留“不可用”占位，不参与综合加权；不能把解析失败
+    # 伪装成中性有效信号。
     for s in stocks:
         code = s.get("code", "")
         if code not in results:
-            results[code] = SignalResult("舆情分析", 50, Direction.HOLD, 0.0, "LLM未返回")
+            logger.warning(f"舆情未返回，剔除该维度: {code}")
+            results[code] = SignalResult("舆情分析", 50, Direction.HOLD, 0.0, "舆情数据不可用(LLM未返回)")
 
     return results
 

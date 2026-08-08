@@ -45,12 +45,16 @@ class BrokerAdapter(ABC):
     @abstractmethod
     def buy(self, code: str, name: str, price: float, shares: int,
             reason: str = "TradePlan执行", atr: float = None,
-            trade_date: str = None, allow_t0: bool = False) -> Optional[dict]:
+            trade_date: str = None, allow_t0: bool = False,
+            trade_unit: int = 100, signal_score: float = None,
+            signal_detail: str = "", market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         """买入"""
 
     @abstractmethod
     def sell(self, code: str, price: float, shares: int = None,
-             reason: str = "TradePlan执行", trade_date: str = None) -> Optional[dict]:
+             reason: str = "TradePlan执行", trade_date: str = None,
+             signal_score: float = None, signal_detail: str = "",
+             market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         """卖出"""
 
     @abstractmethod
@@ -90,7 +94,9 @@ class PaperBrokerAdapter(BrokerAdapter):
 
     def buy(self, code: str, name: str, price: float, shares: int,
             reason: str = "TradePlan执行", atr: float = None,
-            trade_date: str = None, allow_t0: bool = False) -> Optional[dict]:
+            trade_date: str = None, allow_t0: bool = False,
+            trade_unit: int = 100, signal_score: float = None,
+            signal_detail: str = "", market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         return self.account.buy(
             code=code,
             name=name,
@@ -100,13 +106,24 @@ class PaperBrokerAdapter(BrokerAdapter):
             atr=atr,
             trade_date=trade_date,
             allow_t0=allow_t0,
+            trade_unit=trade_unit,
+            signal_score=signal_score,
+            signal_detail=signal_detail,
+            market_regime=market_regime,
+            dimensions=dimensions,
         )
 
     def sell(self, code: str, price: float, shares: int = None,
-             reason: str = "TradePlan执行", trade_date: str = None) -> Optional[dict]:
+             reason: str = "TradePlan执行", trade_date: str = None,
+             signal_score: float = None, signal_detail: str = "",
+             market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         return self.account.sell(
             code=code, price=price, shares=shares, reason=reason,
             trade_date=trade_date,
+            signal_score=signal_score,
+            signal_detail=signal_detail,
+            market_regime=market_regime,
+            dimensions=dimensions,
         )
 
     def check_stop_conditions(self, prices: Dict[str, float],
@@ -147,11 +164,15 @@ class RealBrokerAdapter(BrokerAdapter):
 
     def buy(self, code: str, name: str, price: float, shares: int,
             reason: str = "TradePlan执行", atr: float = None,
-            trade_date: str = None, allow_t0: bool = False) -> Optional[dict]:
+            trade_date: str = None, allow_t0: bool = False,
+            trade_unit: int = 100, signal_score: float = None,
+            signal_detail: str = "", market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         raise NotImplementedError
 
     def sell(self, code: str, price: float, shares: int = None,
-             reason: str = "TradePlan执行", trade_date: str = None) -> Optional[dict]:
+             reason: str = "TradePlan执行", trade_date: str = None,
+             signal_score: float = None, signal_detail: str = "",
+             market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         raise NotImplementedError
 
     def check_stop_conditions(self, prices: Dict[str, float],

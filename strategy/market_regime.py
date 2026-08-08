@@ -370,6 +370,36 @@ def _classify_regime_llm(indicators: Dict) -> Optional[tuple]:
         return None
 
 
+def _apply_regime_hysteresis(today: str, candidate: str, confidence: float, reasoning: str, db_path: str = None):
+    """对环境标签做置信度迟滞，避免单日模型抖动直接驱动清仓/建仓。
+
+    只使用上一交易日的已落库标签；当新标签置信度不足 0.75 时沿用旧标签，
+    并把原始判断写入指标供审计。这里不依赖“连续几天”计数，模型有足够把握时
+    仍可在一天内切换环境。
+    """
+    try:
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            row = db.conn.execute(
+                "SELECT date, regime, confidence FROM market_regimes WHERE date < ? ORDER BY date DESC LIMIT 1",
+                (today,),
+            ).fetchone()
+        if not row:
+            return candidate, confidence, reasoning, False, ""
+        previous = row["regime"]
+        if previous and previous != candidate and float(confidence or 0) < 0.75:
+            return (
+                previous,
+                round(min(float(row["confidence"] or 0.5), float(confidence or 0.5)), 2),
+                f"迟滞沿用前日{previous}: 今日原始判断{candidate}置信度{float(confidence or 0):.0%}不足",
+                True,
+                candidate,
+            )
+    except Exception as e:
+        logger.debug(f"市场环境迟滞读取失败，使用原始判断: {e}")
+    return candidate, confidence, reasoning, False, ""
+
+
 def detect_regime(use_llm: bool = True) -> MarketRegime:
     """
     主函数: 检测当前市场环境
@@ -420,6 +450,16 @@ def detect_regime(use_llm: bool = True) -> MarketRegime:
     else:
         regime, confidence, reasoning = _classify_regime(indicators)
         llm_reasoning = f"规则判断: {reasoning}"
+
+    raw_regime, raw_confidence = regime, confidence
+    regime, confidence, hysteresis_reason, hysteresis_applied, raw_label = _apply_regime_hysteresis(
+        today, regime, confidence, llm_reasoning,
+    )
+    if hysteresis_applied:
+        indicators["raw_regime"] = raw_label or raw_regime
+        indicators["raw_confidence"] = raw_confidence
+        indicators["hysteresis_applied"] = True
+        llm_reasoning = hysteresis_reason
 
     # 3. 构建结果
     result = MarketRegime(

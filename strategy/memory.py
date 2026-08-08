@@ -790,7 +790,7 @@ class TradeMemory:
 
                     # 查找该决策之后的卖出交易（同一只股票）
                     c.execute("""
-                        SELECT price FROM trades
+                        SELECT price, reason FROM trades
                         WHERE code = ? AND action = 'SELL'
                           AND created_at > (SELECT created_at FROM trades WHERE id = ?)
                         ORDER BY created_at ASC LIMIT 1
@@ -799,7 +799,7 @@ class TradeMemory:
                 else:
                     # 回退到旧逻辑：按code匹配最近的买卖（兼容历史数据）
                     c.execute("""
-                        SELECT price FROM trades
+                        SELECT price, reason FROM trades
                         WHERE code = ? AND action = 'BUY'
                         ORDER BY created_at DESC LIMIT 1
                     """, (code,))
@@ -809,7 +809,7 @@ class TradeMemory:
                     entry_price = float(buy_row["price"])
 
                     c.execute("""
-                        SELECT price FROM trades
+                        SELECT price, reason FROM trades
                         WHERE code = ? AND action = 'SELL'
                         ORDER BY created_at DESC LIMIT 1
                     """, (code,))
@@ -827,7 +827,13 @@ class TradeMemory:
                     continue
 
                 pnl_pct = (sell_price - entry_price) / entry_price
-                outcome = "win" if pnl_pct > 0 else "lose"
+                exit_reason = str(sell_row.get("reason") or "") if hasattr(sell_row, "get") else str(sell_row["reason"] or "")
+                # 系统止损/止盈反映的是退出纪律，不应被当成选股逻辑失败，
+                # 否则低胜率会反向喂给 prompt，最终形成 HOLD 死循环。
+                system_exit = pnl_pct <= 0 and any(
+                    token in exit_reason for token in ("止损", "移动止损", "T+1限制", "风控")
+                )
+                outcome = "risk_exit" if system_exit else ("win" if pnl_pct > 0 else "lose")
 
                 db.update_llm_decision(decision_id, {
                     "outcome": outcome,

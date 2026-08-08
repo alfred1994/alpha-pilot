@@ -230,10 +230,17 @@ class DailyReviewer:
             hit = profit_pct >= 0 if action == "SELL" else True
 
             if action == "SELL":
-                if hit:
-                    win_count += 1
-                else:
-                    lose_count += 1
+                exit_reason = str(t.get("reason") or "")
+                system_exit = (not hit) and any(
+                    token in exit_reason for token in ("止损", "移动止损", "风控")
+                )
+                # 系统退出用于评估风控，不作为选股胜负样本，避免低胜率
+                # 反馈把 LLM 推向永久 HOLD。
+                if not system_exit:
+                    if hit:
+                        win_count += 1
+                    else:
+                        lose_count += 1
 
             trade_reviews.append(TradeReview(
                 code=code,
@@ -242,7 +249,7 @@ class DailyReviewer:
                 price=t.get("price", 0),
                 shares=t.get("shares", 0),
                 reason=t.get("reason", ""),
-                signal_score=0,
+                signal_score=t.get("signal_score") or 0,
                 result_pct=profit_pct,
                 hit=hit,
             ))

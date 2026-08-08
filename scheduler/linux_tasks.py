@@ -171,6 +171,14 @@ HERMES_ENV_FILE="${{HERMES_ENV_FILE:-{hermes_env_file}}}"
 mkdir -p "$(dirname "$LOG_FILE")"
 cd "$PROJECT_DIR"
 
+# 日志轮转：单文件超过20MB时保留一个历史副本，避免 auto.log 无限增长。
+if [ -f "$LOG_FILE" ]; then
+  log_size=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
+  if [ "$log_size" -gt 20971520 ]; then
+    mv -f "$LOG_FILE" "${LOG_FILE}.1"
+  fi
+fi
+
 {_venv_activation_block()}
 if [ -f "$HERMES_ENV_FILE" ]; then
   set -a

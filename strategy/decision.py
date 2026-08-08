@@ -48,7 +48,7 @@ def get_effective_signal_weights(
 ) -> Dict[str, float]:
     """过滤不可用维度，返回本轮实际参与融合的权重。
 
-    ML 服务异常时会保留维度详情供审计，但其 ``confidence=0`` 不应再用
+    任一数据维度异常时会保留详情供审计，但 ``confidence<=0`` 不应再用
     伪造的 50 分占据固定权重；分母由剩余可用维度重新归一化。
     """
     weights = weights or SIGNAL_WEIGHTS
@@ -57,18 +57,18 @@ def get_effective_signal_weights(
         weight = float(weights.get(name, 0) or 0)
         if weight <= 0:
             continue
-        if name == "ml":
-            try:
-                raw_confidence = (
-                    dimension.confidence
-                    if hasattr(dimension, "confidence")
-                    else (dimension or {}).get("confidence", 0)
-                )
-                confidence = float(raw_confidence)
-            except (TypeError, ValueError):
-                confidence = 0.0
-            if not math.isfinite(confidence) or confidence <= 0:
+        try:
+            raw_confidence = (
+                dimension.confidence
+                if hasattr(dimension, "confidence")
+                else (dimension or {}).get("confidence", 0)
+            )
+            confidence = float(raw_confidence)
+            raw_score = dimension.score if hasattr(dimension, "score") else (dimension or {}).get("score", 0)
+            if not math.isfinite(confidence) or confidence <= 0 or not math.isfinite(float(raw_score)):
                 continue
+        except (TypeError, ValueError):
+            continue
         effective[name] = weight
     return effective
 
@@ -84,6 +84,7 @@ class TradeDecision:
     dimensions: Dict[str, DimensionScore]  # 各维度详情
     reason: str = ""               # 决策理由
     timestamp: str = ""
+    decision_id: int = None        # llm_decisions 主键，供成交精确关联
 
     def __post_init__(self):
         if not self.timestamp:

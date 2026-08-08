@@ -138,12 +138,19 @@ class AutoLoopLock:
             finally:
                 os.close(fd)
             # 原子替换锁文件（POSIX rename保证原子性）
+            if not os.path.exists(self.lock_file):
+                logger.info("自动盯盘锁已被释放，跳过本次心跳")
+                return
             os.replace(tmp_file, self.lock_file)
             # 替换后验证token，检测是否被其他进程抢占
             payload = self._read_payload()
             if payload.get("token") != self.token:
                 logger.warning("自动盯盘锁已被其他进程接管，停止刷新心跳")
                 self.acquired = False
+        except FileNotFoundError:
+            # 释放与心跳并发时锁文件可能已被正常删除，不视为故障。
+            logger.info("自动盯盘锁已不存在，停止刷新心跳")
+            self.acquired = False
         except Exception as e:
             logger.warning(f"自动盯盘锁心跳失败: {e}")
         finally:
@@ -814,7 +821,6 @@ def run_auto_loop(loop_interval: int = None, scan_interval: int = None,
             if loop_lock:
                 loop_lock.heartbeat()
             result = run_auto_cycle(state=state, force_scan=force_scan, scan_interval=scan_interval)
-            print(result["report"])
             state = AutoTraderState(**result["state"])
             if once:
                 return result

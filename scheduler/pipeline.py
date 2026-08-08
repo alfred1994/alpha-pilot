@@ -94,6 +94,11 @@ class TradePlan:
                     "score": o.score,
                     "conviction": o.conviction,
                     "allow_t0": o.allow_t0,
+                    "trade_unit": o.trade_unit,
+                    "market_regime": o.market_regime,
+                    "dimensions": o.dimensions,
+                    "signal_detail": o.signal_detail,
+                    "decision_id": o.decision_id,
                 }
                 for o in self.orders
             ],
@@ -120,6 +125,11 @@ class TradeOrder:
     score: float = 0.0
     conviction: float = 0.0  # 置信度
     allow_t0: bool = False   # 仅由证券元数据明确标记可当日回转
+    trade_unit: int = 100    # 证券最小交易单位；可转债为10张
+    market_regime: str = ""
+    dimensions: dict = field(default_factory=dict)
+    signal_detail: str = ""
+    decision_id: int = None
 
 
 @dataclass
@@ -465,6 +475,33 @@ def fast_scan(
         sentiment_snap = prefetch_sentiment(codes)
     sentiment_scores = sentiment_snap.get("scores", {}) if sentiment_snap else {}
     logger.info(f"[快链路] 舆情覆盖: {len(sentiment_scores)}/{len(candidates)}只")
+    data_quality = {
+        "market_snapshot": {
+            "source": market_info.get("source", "unavailable"),
+            "fresh": bool(market_info.get("fresh")),
+            "age_seconds": market_info.get("age_seconds"),
+        },
+        "candidate_pool": {
+            "source": plan.candidate_pool.get("source", "unknown"),
+            "fresh": bool(plan.candidate_pool.get("fresh")),
+            "age_seconds": plan.candidate_pool.get("age_seconds"),
+        },
+        "sentiment": {
+            "available": bool(sentiment_scores),
+            "coverage": round(len(sentiment_scores) / len(candidates), 2) if candidates else 0,
+        },
+        "degraded": [],
+    }
+    if not market_info.get("fresh"):
+        data_quality["degraded"].append("市场涨跌停/资金快照过期或缺失")
+    if not plan.candidate_pool.get("fresh"):
+        data_quality["degraded"].append("候选池过期或使用回退数据")
+    if not sentiment_scores:
+        data_quality["degraded"].append("舆情数据缺失")
+    elif len(sentiment_scores) < len(candidates):
+        data_quality["degraded"].append("部分股票舆情未返回")
+    if data_quality["degraded"]:
+        logger.warning("[快链路] 数据降级进入LLM上下文: %s", data_quality["degraded"])
 
     scored = _parallel_score(candidates, sentiment_scores, timeout=remaining())
 
@@ -504,6 +541,28 @@ def fast_scan(
     top_k = params.get("top_k", 3)
     min_score = params.get("min_score", 58)
     max_weight = params.get("max_weight", 0.20)
+
+    # P2：影子A/B。真实计划仍按当前策略执行，实验组只在同一候选池上
+    # 记录“若门槛放宽3分”的信号，后续用真实卖出结果评估，不再保持空表。
+    ab_test_id = None
+    try:
+        from strategy.ab_test import ABTestManager
+        from data.database import Database
+        control_params = {"top_k": int(top_k), "min_score": float(min_score), "max_weight": float(max_weight)}
+        treatment_params = {"top_k": min(5, int(top_k) + 1), "min_score": max(45, float(min_score) - 3), "max_weight": float(max_weight)}
+        with Database() as _ab_db:
+            _ab = ABTestManager(_ab_db)
+            ab_test_id = _ab.get_or_create_shadow_test(control_params, treatment_params, regime)
+            if ab_test_id:
+                for _candidate in scored[:5]:
+                    _price = float(_candidate.get("latest_price") or 0)
+                    _control_action = "BUY" if _candidate.get("composite", 0) >= float(min_score) else "HOLD"
+                    _treatment_action = "BUY" if _candidate.get("composite", 0) >= float(treatment_params["min_score"]) else "HOLD"
+                    _ab.record_signal_once(ab_test_id, "control", _candidate["code"], _control_action, _price)
+                    _ab.record_signal_once(ab_test_id, "treatment", _candidate["code"], _treatment_action, _price)
+                logger.info("[A/B] 影子实验=%s 已记录候选信号", ab_test_id)
+    except Exception as e:
+        logger.debug(f"[A/B] 影子实验记录失败(非致命): {e}")
 
     # 动态TopK: 取前K只，但必须过最低质量线
     top_candidates = []
@@ -579,6 +638,7 @@ def fast_scan(
                     total_assets=_total_assets,
                     cash=_cash,
                     strategy_directive=directive,
+                    data_quality=data_quality,
                     llm_retries=0,
                     llm_timeout=FAST_SCAN_LLM_DECISION_TIMEOUT,
                 )
@@ -603,6 +663,7 @@ def fast_scan(
                         _s["llm_action"] = _decision.action
                         _s["llm_confidence"] = _decision.confidence
                         _s["llm_reason"] = _decision.reason
+                        _s["decision_id"] = _decision.decision_id
                         if _decision.confidence > 0:
                             _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
                             llm_count += 1
@@ -664,6 +725,10 @@ def fast_scan(
             reason=llm_reason or s.get("top_signal", ""),
             score=s["composite"],
             conviction=s.get("llm_confidence", s.get("avg_confidence", 0.5)),
+            market_regime=regime,
+            dimensions=s.get("dimensions", {}),
+            signal_detail=s.get("top_signal", ""),
+            decision_id=s.get("decision_id"),
         ))
 
     # === P1-5: 持仓股卖出信号 LLM 决策 ===
@@ -725,6 +790,7 @@ def fast_scan(
                             total_assets=_total_assets_sell,
                             cash=_cash_sell,
                             strategy_directive=directive,
+                            data_quality=data_quality,
                             memory=_sell_memory,
                             llm_retries=0,
                             llm_timeout=FAST_SCAN_SELL_LLM_TIMEOUT,
@@ -740,11 +806,17 @@ def fast_scan(
                                 action="SELL",
                                 priority=len(plan.orders) + 1,
                                 target_weight=0,  # 清仓
-                                max_price=0,
-                                reason=f"LLM卖出: {_sell_decision.reason[:80]}",
-                                score=_sell_decision.composite_score,
-                                conviction=_sell_decision.confidence,
-                            ))
+                            max_price=0,
+                            reason=f"LLM卖出: {_sell_decision.reason[:80]}",
+                            score=_sell_decision.composite_score,
+                            conviction=_sell_decision.confidence,
+                            market_regime=regime,
+                            dimensions={
+                                k: {"score": v.score, "confidence": v.confidence, "detail": v.detail}
+                                for k, v in (_sell_decision.dimensions or {}).items()
+                            },
+                            signal_detail=_sell_decision.reason,
+                        ))
                             _sell_signal_count += 1
                             logger.info(f"[快链路-卖出] LLM建议卖出: {_pos_code} {_pos_name} {_sell_decision.reason[:50]}")
                         elif _sell_decision and _sell_decision.action == "HOLD":
@@ -781,7 +853,32 @@ def fast_scan(
                     )
             plan.cb_opportunities = cb_results[:5]  # 保存Top5供报告展示
             if cb_buys:
-                logger.info(f"[快链路-可转债] {len(cb_buys)}只买入信号")
+                # 可转债是明确允许T+0的独立品种，必须生成可执行订单，
+                # 否则看板上的机会只是“展示信号”而不是交易计划。
+                existing_codes = {o.code for o in plan.orders}
+                for cb in cb_buys:
+                    cb_code = str(cb.get("cb_code", "")).strip()
+                    if not cb_code or cb_code in existing_codes:
+                        continue
+                    decision = should_buy(cb)
+                    plan.orders.append(TradeOrder(
+                        code=cb_code,
+                        name=cb.get("cb_name", cb_code),
+                        action="BUY",
+                        priority=len(plan.orders) + 1,
+                        target_weight=min(float(decision.get("position_pct", 0)), 0.20),
+                        max_price=float(cb.get("cb_price", 0) or 0) * 1.02,
+                        reason=f"可转债T+0: {decision.get('reason', '')}",
+                        score=float(cb.get("total_score", 0) or 0),
+                        conviction=min(1.0, float(cb.get("total_score", 0) or 0) / 100),
+                        allow_t0=True,
+                        trade_unit=10,
+                        market_regime=regime,
+                        dimensions={"convertible_bond": cb.get("details", {})},
+                        signal_detail=f"CB评分={cb.get('total_score', 0)} 溢价={cb.get('premium_rate', 0)}%",
+                    ))
+                    existing_codes.add(cb_code)
+                logger.info(f"[快链路-可转债] {len(cb_buys)}只买入信号, 已接入订单{len(plan.orders)}")
     except Exception as e:
         logger.warning(f"[快链路-可转债] 扫描失败(非致命): {e}")
 
@@ -1078,6 +1175,24 @@ def execute_trade_plan(
         except Exception as e:
             logger.error(f"更新TradePlan执行状态失败 {plan_id}: {e}")
 
+    def record_ab_sell(code: str, price: float, pnl_pct: float):
+        """将真实卖出结果回填到仍在运行的影子A/B实验。"""
+        try:
+            from strategy.ab_test import ABTestManager
+            from data.database import Database
+            with Database(db_path=getattr(account, "db_path", None)) as _ab_db:
+                _ab = ABTestManager(_ab_db)
+                for test in _ab.get_running_tests():
+                    for group in ("control", "treatment"):
+                        prior = _ab_db.conn.execute(
+                            "SELECT 1 FROM ab_test_trades WHERE test_id=? AND group_name=? AND code=? AND action='BUY' LIMIT 1",
+                            (test["test_id"], group, code),
+                        ).fetchone()
+                        if prior:
+                            _ab.record_trade(test["test_id"], group, code, "SELL", price, pnl_pct)
+        except Exception as e:
+            logger.debug(f"[A/B] 卖出结果回填失败(非致命): {e}")
+
     # 风控检查
     from risk.position import PositionManager
     from risk.drawdown import DrawdownController
@@ -1216,9 +1331,14 @@ def execute_trade_plan(
                 trade = broker.sell(
                     code, price, shares, reason=reason,
                     trade_date=plan_data["date"],
+                    market_regime=order.get("market_regime") or plan_data.get("regime", ""),
+                    signal_score=order.get("score"),
+                    signal_detail=order.get("signal_detail") or reason,
+                    dimensions=order.get("dimensions"),
                 )
                 if trade:
                     result.executed_orders.append(trade)
+                    record_ab_sell(code, price, trade.get("pnl_pct", 0))
                     _audit_order(
                         result, order, "filled", reason,
                         price=price, shares=trade.get("shares", 0),
@@ -1282,11 +1402,12 @@ def execute_trade_plan(
                 )
                 continue
 
-            # 计算可买股数(100股整数倍)
-            shares = int(buy_amount / current_price / 100) * 100
-            if shares < 100:
+            trade_unit = max(1, int(order.get("trade_unit", 100) or 100))
+            # 计算可买数量：普通A股100股一手，可转债等T+0品种10张一手。
+            shares = int(buy_amount / current_price / trade_unit) * trade_unit
+            if shares < trade_unit:
                 _audit_order(
-                    result, order, "blocked", "不足一手",
+                    result, order, "blocked", f"不足{trade_unit}单位",
                     price=current_price,
                     buy_amount=round(buy_amount, 2),
                     shares=shares,
@@ -1304,6 +1425,11 @@ def execute_trade_plan(
                     reason=execution_reason,
                     trade_date=plan_data["date"],
                     allow_t0=bool(order.get("allow_t0", False)),
+                    trade_unit=trade_unit,
+                    signal_score=order.get("score"),
+                    signal_detail=order.get("signal_detail") or execution_reason,
+                    market_regime=order.get("market_regime") or plan_data.get("regime", ""),
+                    dimensions=order.get("dimensions"),
                 )
                 if hasattr(broker, "account"):
                     om.account = broker.account
@@ -1317,6 +1443,11 @@ def execute_trade_plan(
                         reason=execution_reason,
                         trade_date=plan_data["date"],
                         allow_t0=bool(order.get("allow_t0", False)),
+                        trade_unit=trade_unit,
+                        market_regime=order.get("market_regime") or plan_data.get("regime", ""),
+                        signal_score=order.get("score"),
+                        signal_detail=order.get("signal_detail") or execution_reason,
+                        dimensions=order.get("dimensions"),
                     )
                     buy_order.status = "filled" if trade else "failed"
                 if buy_order.status == "filled":
@@ -1339,6 +1470,16 @@ def execute_trade_plan(
                     available_cash=round(available_cash, 2),
                 )
                 if buy_order.status == "filled":
+                    if order.get("decision_id") and buy_order.trade_id:
+                        try:
+                            from data.database import Database
+                            with Database(db_path=getattr(account, "db_path", None)) as db:
+                                db.update_llm_decision(
+                                    int(order["decision_id"]),
+                                    {"trade_id": int(buy_order.trade_id)},
+                                )
+                        except Exception as e:
+                            logger.warning(f"LLM决策关联成交失败 {code}: {e}")
                     logger.info(f"买入 {code} {shares}股 @ {current_price} ({execution_reason})")
                 else:
                     logger.info(f"买入未成交 {code} {shares}股 @ {current_price}")
@@ -1474,6 +1615,19 @@ def run_review() -> PipelineResult:
             ))
         except Exception as e:
             logger.warning(f"自适应分析失败(非致命): {e}")
+
+        try:
+            from strategy.ab_test import ABTestManager
+            from data.database import Database
+            with Database() as _ab_db:
+                concluded = ABTestManager(_ab_db).evaluate_all_running()
+            result.steps.append(StepResult(
+                name="A/B影子评估", success=True,
+                elapsed=time.time() - t0,
+                detail=f"本次完成{len(concluded)}个实验，未达样本的实验继续运行",
+            ))
+        except Exception as e:
+            logger.warning(f"A/B影子评估失败(非致命): {e}")
 
         try:
             from review.llm_review import (

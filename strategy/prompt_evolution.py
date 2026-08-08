@@ -89,6 +89,11 @@ def analyze_decision_accuracy(db, days: int = 7) -> dict:
     total = len(decisions)
     wins = [d for d in decisions if str(d[2]).lower() in ("win", "wins")]
     loses = [d for d in decisions if str(d[2]).lower() in ("lose", "loss", "losses")]
+    # risk_exit 是系统止损/止盈的归因，不代表选股逻辑失败，不纳入 prompt 进化胜负样本。
+    decisions = [d for d in decisions if str(d[2]).lower() in ("win", "wins", "lose", "loss", "losses")]
+    total = len(decisions)
+    wins = [d for d in decisions if str(d[2]).lower() in ("win", "wins")]
+    loses = [d for d in decisions if str(d[2]).lower() in ("lose", "loss", "losses")]
 
     win_rate = len(wins) / total if total > 0 else 0
     avg_win_pnl = (sum((d[3] or 0) / 100 for d in wins) / len(wins)) if wins else 0
@@ -102,7 +107,7 @@ def analyze_decision_accuracy(db, days: int = 7) -> dict:
             by_regime[regime] = {"wins": 0, "loses": 0}
         if str(d[2]).lower() in ("win", "wins"):
             by_regime[regime]["wins"] += 1
-        else:
+        elif str(d[2]).lower() in ("lose", "loss", "losses"):
             by_regime[regime]["loses"] += 1
 
     # 构建 LLM 分析 prompt
@@ -242,16 +247,24 @@ def apply_evolution_suggestions(db, analysis: dict) -> int:
             )
         """)
 
-        # 保存建议（替换旧的）
+        # 保存建议（替换旧的），按归一化文本去重，避免“加强风控”变体
+        # 无限堆积并反复污染决策上下文。
         db.conn.execute("UPDATE active_prompt_hints SET active = 0")
         applied = 0
-        for hint in suggestions[:3]:  # 最多3条
-            if hint and len(hint) > 10:
+        seen = set()
+        for hint in suggestions:
+            normalized = re.sub(r"\s+", "", str(hint or "")).lower()
+            if normalized in seen or len(normalized) < 10:
+                continue
+            seen.add(normalized)
+            if applied < 3:
                 db.conn.execute(
                     "INSERT INTO active_prompt_hints (hint, source, active, created_at) VALUES (?, 'evolution', 1, ?)",
-                    (hint, datetime.now().isoformat())
+                    (str(hint).strip(), datetime.now().isoformat())
                 )
                 applied += 1
+            else:
+                break
         db.conn.commit()
 
         # 标记为已应用

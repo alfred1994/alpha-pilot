@@ -330,6 +330,7 @@ def _build_decision_prompt(
     htsc_diagnosis: str = "",
     overnight_text: str = "",
     strategy_directive: dict = None,
+    data_quality: dict = None,
 ) -> str:
     """
     构建LLM决策prompt
@@ -429,6 +430,13 @@ def _build_decision_prompt(
         }
         strategy_section = json.dumps(strategy_payload, ensure_ascii=False)
 
+    quality_section = "数据源状态未提供"
+    if data_quality:
+        degraded = data_quality.get("degraded") or []
+        quality_section = json.dumps(data_quality, ensure_ascii=False)
+        if degraded:
+            quality_section = "⚠ 数据缺失/降级: " + ", ".join(str(x) for x in degraded) + "\n" + quality_section
+
     prompt = f"""请分析以下股票，做出交易决策。
 
 【股票信息】
@@ -439,6 +447,9 @@ def _build_decision_prompt(
 {overnight_section}
 【今日生效的 AI 策略】
 {strategy_section}
+
+【数据质量与降级状态】
+{quality_section}
 
 【5维信号】
 {signals_text}
@@ -494,6 +505,7 @@ def make_decision(
     htsc_diagnosis: str = "",
     overnight_text: str = "",
     strategy_directive: dict = None,
+    data_quality: dict = None,
     memory=None,  # P2-12: 外部传入的 TradeMemory 实例（连接复用）
     llm_retries: int = 2,
     llm_timeout: int = DEFAULT_HTTP_TIMEOUT,
@@ -583,6 +595,7 @@ def make_decision(
         htsc_diagnosis=htsc_diagnosis,
         overnight_text=overnight_text,
         strategy_directive=strategy_directive,
+        data_quality=data_quality,
     )
 
     # 调用LLM
@@ -605,10 +618,11 @@ def make_decision(
     )
 
     # P2-12: 保存到记忆系统（优先使用外部传入的实例，避免重复创建连接）
+    decision_id = None
     try:
         if memory is not None:
             # 外部传入的实例，由调用方管理生命周期
-            memory.save_decision(
+            decision_id = memory.save_decision(
                 code=code,
                 action=action,
                 prompt=prompt[:2000],
@@ -619,7 +633,7 @@ def make_decision(
         else:
             from strategy.memory import TradeMemory
             with TradeMemory() as _memory:
-                _memory.save_decision(
+                decision_id = _memory.save_decision(
                     code=code,
                     action=action,
                     prompt=prompt[:2000],
@@ -630,6 +644,7 @@ def make_decision(
     except Exception as e:
         logger.debug(f"保存LLM决策到记忆失败(可忽略): {e}")
 
+    decision.decision_id = decision_id if isinstance(decision_id, int) and decision_id > 0 else None
     logger.info(f"LLM决策: {decision} | {reasoning[:50]}")
     return decision
 

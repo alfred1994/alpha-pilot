@@ -185,7 +185,7 @@ class PaperAccount:
         except (TypeError, ValueError):
             return False
 
-    def _validate_trade_input(self, code: str, price, shares=None, amount=None, *, is_sell: bool = False) -> bool:
+    def _validate_trade_input(self, code: str, price, shares=None, amount=None, *, is_sell: bool = False, trade_unit: int = None) -> bool:
         """验证账户边界输入，买入必须整手；卖出允许一次性清空零股。"""
         if not isinstance(code, str) or not code.strip():
             logger.warning("交易代码不能为空")
@@ -202,9 +202,11 @@ class PaperAccount:
                 logger.warning(f"拒绝非法交易股数: {shares!r}")
                 return False
             shares = normalized_shares
+            stored_unit = self.positions.get(code, {}).get("trade_unit", MIN_TRADE_UNIT) if is_sell else MIN_TRADE_UNIT
+            unit = max(1, int(trade_unit or stored_unit or MIN_TRADE_UNIT))
             can_clear_odd_lot = is_sell and code in self.positions and shares == self.positions[code].get("shares")
-            if shares % MIN_TRADE_UNIT != 0 and not can_clear_odd_lot:
-                logger.warning(f"拒绝非整手交易股数: {shares}")
+            if shares % unit != 0 and not can_clear_odd_lot:
+                logger.warning(f"拒绝非整手交易股数: {shares} (交易单位={unit})")
                 return False
         if amount is not None and not self._is_positive_finite(amount):
             logger.warning(f"拒绝非法交易金额: {amount!r}")
@@ -220,7 +222,8 @@ class PaperAccount:
         }
         from data.database import Database
         with Database(db_path=self.db_path) as db:
-            db.record_account_transaction(state, trade)
+            trade_id = db.record_account_transaction(state, trade)
+            trade["id"] = trade_id
         try:
             self._write_json_snapshot(self._snapshot_data())
         except Exception as e:
@@ -314,6 +317,11 @@ class PaperAccount:
         atr: float = None,
         trade_date: str = None,
         allow_t0: bool = False,
+        trade_unit: int = None,
+        signal_score: float = None,
+        signal_detail: str = "",
+        market_regime: str = "",
+        dimensions: dict = None,
     ) -> Optional[dict]:
         """
         买入股票（加锁保证读-改-写的原子性）
@@ -336,7 +344,9 @@ class PaperAccount:
             effective_trade_date = self._normalize_trade_date(trade_date)
             if not effective_trade_date:
                 return None
-            if not self._validate_trade_input(code, price, shares=shares, amount=amount):
+            # T+0 只代表交收规则，不自动推断交易单位；可转债订单会显式传10。
+            unit = max(1, int(trade_unit or MIN_TRADE_UNIT))
+            if not self._validate_trade_input(code, price, shares=shares, amount=amount, trade_unit=unit):
                 return None
             if self.has_position(code):
                 logger.warning(f"已持有 {name}({code}), 不重复买入")
@@ -350,7 +360,7 @@ class PaperAccount:
                 amount = self.max_buy_amount()
 
             if shares is None:
-                shares = int(amount / price / MIN_TRADE_UNIT) * MIN_TRADE_UNIT
+                shares = int(amount / price / unit) * unit
 
             if shares <= 0:
                 logger.warning(f"资金不足以买入1手 {name}")
@@ -363,7 +373,7 @@ class PaperAccount:
 
             if total_cost > self.cash:
                 # 缩减排数
-                shares = int(self.cash / price / (1 + COMMISSION_RATE) / MIN_TRADE_UNIT) * MIN_TRADE_UNIT
+                shares = int(self.cash / price / (1 + COMMISSION_RATE) / unit) * unit
                 if shares <= 0:
                     logger.warning("可用资金不足")
                     return None
@@ -387,6 +397,7 @@ class PaperAccount:
                 "current_price": price,
                 "atr_at_buy": atr if atr and atr > 0 else 0.0,
                 "allow_t0": bool(allow_t0),
+                "trade_unit": unit,
             }
 
             trade = {
@@ -400,6 +411,10 @@ class PaperAccount:
                 "pnl": 0.0,
                 "pnl_pct": 0.0,
                 "reason": reason,
+                "signal_score": signal_score,
+                "signal_detail": signal_detail or reason,
+                "market_regime": market_regime,
+                "dimensions": json.dumps(dimensions or {}, ensure_ascii=False),
                 "timestamp": datetime.now().isoformat(),
                 "cash_after": self.cash,
             }
@@ -423,6 +438,10 @@ class PaperAccount:
         shares: int = None,
         reason: str = "信号卖出",
         trade_date: str = None,
+        signal_score: float = None,
+        signal_detail: str = "",
+        market_regime: str = "",
+        dimensions: dict = None,
     ) -> Optional[dict]:
         """
         卖出股票（加锁保证读-改-写的原子性）
@@ -442,10 +461,12 @@ class PaperAccount:
                 logger.warning(f"未持有 {code}, 无法卖出")
                 return None
 
-            if not self._validate_trade_input(code, price, shares=shares, is_sell=True):
-                return None
-
             pos = self.positions[code]
+            if not self._validate_trade_input(
+                code, price, shares=shares, is_sell=True,
+                trade_unit=pos.get("trade_unit", MIN_TRADE_UNIT),
+            ):
+                return None
             if shares is None:
                 shares = pos["shares"]
 
@@ -497,6 +518,10 @@ class PaperAccount:
                 "pnl": pnl_val,
                 "pnl_pct": pnl_pct_val,
                 "reason": reason,
+                "signal_score": signal_score,
+                "signal_detail": signal_detail or reason,
+                "market_regime": market_regime,
+                "dimensions": json.dumps(dimensions or {}, ensure_ascii=False),
                 "timestamp": datetime.now().isoformat(),
                 "cash_after": self.cash,
             }

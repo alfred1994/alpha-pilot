@@ -111,8 +111,8 @@ class ABTestManager:
                 "control_regime, treatment_regime, min_trades, min_days) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (test_id, datetime.now().isoformat(),
-                 json.dumps(control_params, ensure_ascii=False),
-                 json.dumps(treatment_params, ensure_ascii=False),
+                 self._encode_params(control_params),
+                 self._encode_params(treatment_params),
                  control_regime, treatment_regime, min_trades, min_days)
             )
             self.db.conn.commit()
@@ -122,6 +122,43 @@ class ABTestManager:
             logger.error(f"AB测试创建失败: {e}")
 
         return test_id
+
+    @staticmethod
+    def _encode_params(params: dict) -> str:
+        """以稳定顺序序列化参数，保证影子实验可复用而不会重复创建。"""
+        return json.dumps(params or {}, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+    def get_or_create_shadow_test(self, control_params: dict, treatment_params: dict,
+                                  regime: str = "") -> Optional[str]:
+        """获取当前同参数实验，否则创建一个影子A/B实验。
+
+        影子实验不改变真实下单参数，只记录同一候选在两套参数下的信号，
+        从而让原有 ``ab_test_trades=0`` 的框架真正获得可评估样本。
+        """
+        if not self.db or control_params == treatment_params:
+            return None
+        encoded_c = self._encode_params(control_params)
+        encoded_t = self._encode_params(treatment_params)
+        row = self.db.conn.execute(
+            "SELECT test_id FROM ab_tests WHERE status='running' AND control_params=? AND treatment_params=? ORDER BY id DESC LIMIT 1",
+            (encoded_c, encoded_t),
+        ).fetchone()
+        if row:
+            return row[0]
+        return self.create_test(control_params, treatment_params, regime, regime, min_trades=3, min_days=2)
+
+    def record_signal_once(self, test_id: str, group: str, code: str,
+                           action: str, price: float):
+        """按交易日去重记录影子信号，避免每轮盯盘重复灌样本。"""
+        if not self.db or not test_id:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        exists = self.db.conn.execute(
+            "SELECT 1 FROM ab_test_trades WHERE test_id=? AND group_name=? AND code=? AND action=? AND substr(timestamp,1,10)=? LIMIT 1",
+            (test_id, group, code, action, today),
+        ).fetchone()
+        if not exists:
+            self.record_trade(test_id, group, code, action, price)
 
     def record_trade(self, test_id: str, group: str, code: str,
                      action: str, price: float, pnl_pct: float = 0):
