@@ -14,7 +14,7 @@ from scheduler.market_calendar import _now_bj
 from typing import Callable, Dict, List, Optional, Any
 
 from data.database import Database
-from scheduler.auto_trader import run_auto_cycle
+from scheduler.auto_trader import AutoLoopLockError, run_locked_auto_cycle
 from scheduler.control import get_auto_control_state, pause_auto_trader, resume_auto_trader
 from scheduler.market_calendar import get_market_status, is_trading_day
 from scheduler.watchdog import (
@@ -173,23 +173,34 @@ def run_auto_doctor(
         actions.append("发现不可自愈critical，保持人工介入")
     else:
         actions.append(f"发现critical: {', '.join(before_critical)}")
-        recovery_result = run_auto_cycle(
-            force_scan=force_scan or status == "盘中",
-            status_override=status,
-            trading_day_override=trading_day,
-            today_override=today,
-            now_override=now,
-            services=services,
-            persist_state=True,
-            record_event=True,
-            db_path=db_path,
-            state_file=state_file,
-            control_file=control_file,
-            notify=notify,
-        )
-        actions.append(
-            f"已触发自愈循环: {status} 动作{len(recovery_result.get('actions', []))}项"
-        )
+        try:
+            recovery_result = run_locked_auto_cycle(
+                lock_file=lock_file,
+                force_scan=force_scan or status == "盘中",
+                status_override=status,
+                trading_day_override=trading_day,
+                today_override=today,
+                now_override=now,
+                services=services,
+                persist_state=True,
+                record_event=True,
+                db_path=db_path,
+                state_file=state_file,
+                control_file=control_file,
+                notify=notify,
+            )
+            actions.append(
+                f"已触发自愈循环: {status} 动作{len(recovery_result.get('actions', []))}项"
+            )
+        except AutoLoopLockError as exc:
+            # 锁冲突表示常驻自动盘正在执行；绝不能再启动第二轮，交给下一次
+            # Doctor 巡检重试，并保留当前 critical 以维持安全暂停语义。
+            recovery_result = {
+                "status": "skipped_lock_conflict",
+                "lock_conflict": True,
+                "error": str(exc),
+            }
+            actions.append("自动循环已占用单实例锁，跳过并发自愈，等待下一次巡检")
 
     after_items = run_auto_watchdog(**watchdog_kwargs)
     after_critical = _critical_names(after_items)

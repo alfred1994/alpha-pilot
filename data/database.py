@@ -747,7 +747,10 @@ class Database:
 
     def get_llm_decisions(self, code: str = None, start_date: str = None,
                           end_date: str = None, limit: int = 50) -> List[Dict]:
-        """查询LLM决策记录"""
+        """查询LLM决策记录。
+
+        ``limit=None`` 表示不截断，适用于按日期生成完整交易事实。
+        """
         conditions, params = [], []
         if code:
             conditions.append("code = ?")
@@ -760,12 +763,14 @@ class Database:
             params.append(end_date)
         where = " AND ".join(conditions) if conditions else "1=1"
 
+        limit_sql = " LIMIT ?" if limit is not None else ""
+        query_params = params + ([limit] if limit is not None else [])
         c = self.conn.cursor()
         c.execute(f"""
             SELECT * FROM llm_decisions
             WHERE {where}
-            ORDER BY created_at DESC LIMIT ?
-        """, params + [limit])
+            ORDER BY created_at DESC{limit_sql}
+        """, query_params)
         return [dict(row) for row in c.fetchall()]
 
     # llm_decisions表允许更新的列名白名单
@@ -1585,7 +1590,7 @@ class Database:
         Args:
             date: 日期过滤，None=不限
             event_type: 事件类型过滤，None=不限
-            limit: 返回条数
+            limit: 返回条数；None=不截断
         Returns:
             事件列表
         """
@@ -1598,13 +1603,14 @@ class Database:
             params.append(event_type)
         where = " AND ".join(conditions) if conditions else "1=1"
 
+        limit_sql = " LIMIT ?" if limit is not None else ""
+        query_params = params + ([limit] if limit is not None else [])
         c = self.conn.cursor()
         c.execute(f"""
             SELECT * FROM auto_events
             WHERE {where}
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, params + [limit])
+            ORDER BY created_at DESC{limit_sql}
+        """, query_params)
 
         events = []
         for row in c.fetchall():

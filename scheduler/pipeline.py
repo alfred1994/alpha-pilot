@@ -69,6 +69,8 @@ class TradePlan:
     hold_reasons: dict = field(default_factory=dict)  # code → reason_code
     raw_scores: list = field(default_factory=list)    # 所有候选的打分结果
     cb_opportunities: list = field(default_factory=list)  # 可转债T+0机会
+    candidate_pool: dict = field(default_factory=dict)  # 候选池版本/生成时间
+    market_snapshot: dict = field(default_factory=dict)  # 市场数据来源/新鲜度
     elapsed: float = 0.0
     errors: list = field(default_factory=list)
 
@@ -98,6 +100,8 @@ class TradePlan:
             "hold_reasons": self.hold_reasons,
             "raw_scores": self.raw_scores,
             "cb_opportunities": self.cb_opportunities,
+            "candidate_pool": self.candidate_pool,
+            "market_snapshot": self.market_snapshot,
             "elapsed": self.elapsed,
             "errors": self.errors,
         }
@@ -205,8 +209,8 @@ def fast_scan(
     """
     global _llm_timeout_count
     from data.snapshot import (
-        get_market_snapshot, get_sentiment_snapshot,
-        get_candidate_pool, with_timeout,
+        get_market_snapshot_status, get_sentiment_snapshot,
+        get_candidate_pool_status, save_candidate_pool, with_timeout,
     )
 
     plan = TradePlan(date=_now_bj().strftime("%Y-%m-%d"))
@@ -243,24 +247,58 @@ def fast_scan(
                 source=c.get("source") or ["盘中观察池"],
                 score=float(c.get("score") or 0),
             ))
+        plan.candidate_pool = {
+            "source": "external_items",
+            "fresh": True,
+            "age_seconds": 0.0,
+            "version": "",
+            "generated_at": "",
+            "candidate_count": len(candidates),
+            "refresh_attempted": False,
+            "refresh_error": "",
+        }
         logger.info(f"[快链路] 使用外部候选白名单: {len(candidates)}只")
     else:
-        pool = get_candidate_pool(max_age=14400)  # 4小时内有效
-        if pool and pool.get("candidates"):
-            for c in pool["candidates"]:
-                from strategy.stock_picker import Candidate
+        pool_status = get_candidate_pool_status(max_age=1800)
+        pool = pool_status.get("snapshot") or {}
+        pool_is_fresh = bool(pool_status.get("fresh") and pool.get("candidates"))
+
+        def _load_pool_rows(pool_data):
+            loaded = []
+            from strategy.stock_picker import Candidate
+            for c in pool_data.get("candidates") or []:
                 _code = str(c.get("code", "")).strip()
                 # 防御: 过滤北交所/科创板(缓存可能含脏数据)
-                if _code.startswith(("8", "4", "920", "688")):
+                if not _code or _code.startswith(("8", "4", "920", "688")):
                     continue
-                candidates.append(Candidate(
+                loaded.append(Candidate(
                     code=_code, name=c.get("name", _code),
                     source=c.get("source", []), score=c.get("score", 0),
                 ))
-            logger.info(f"[快链路] 从缓存加载候选池: {len(candidates)}只")
+            return loaded
+
+        if pool_is_fresh:
+            candidates = _load_pool_rows(pool)
+            plan.candidate_pool = {
+                key: pool_status.get(key)
+                for key in (
+                    "source", "fresh", "age_seconds", "max_age_seconds",
+                    "refresh_attempted", "refresh_error", "version",
+                    "generated_at", "candidate_count",
+                )
+            }
+            logger.info(
+                "[快链路] 从候选池缓存加载: %s只 | 版本=%s 生成=%s 年龄=%ss",
+                len(candidates), pool_status.get("version", "legacy"),
+                pool_status.get("generated_at", "unknown"), pool_status.get("age_seconds"),
+            )
         else:
-            # 没有缓存，快速选股(带超时)
-            logger.info("[快链路] 无候选池缓存，快速选股...")
+            # 缓存过期或不存在时刷新候选池；刷新失败再显式回退到旧池。
+            logger.info(
+                "[快链路] 候选池需要刷新: source=%s age=%ss version=%s",
+                pool_status.get("source"), pool_status.get("age_seconds"),
+                pool_status.get("version", "legacy"),
+            )
             # 低位潜力股选股 (多维数据源：龙虎榜/北向资金/业绩预增/机构调研/回撤反弹)
             from strategy.stock_picker import pick_stocks
             from strategy.stock_picker import get_sentiment_boost
@@ -288,18 +326,58 @@ def fast_scan(
                 fallback=[],
                 desc="多维选股",
             )
-            if not candidates:
-                logger.warning("[快链路] 选股失败/超时，无候选")
+            if candidates:
+                saved_pool = save_candidate_pool(candidates) or {}
+                plan.candidate_pool = {
+                    "source": "refreshed",
+                    "fresh": True,
+                    "age_seconds": 0.0,
+                    "max_age_seconds": 1800,
+                    "refresh_attempted": True,
+                    "refresh_error": "",
+                    "version": saved_pool.get("version", ""),
+                    "generated_at": saved_pool.get("generated_at", ""),
+                    "candidate_count": len(saved_pool.get("candidates") or candidates),
+                }
+                logger.info(
+                    "[快链路] 候选池刷新完成: %s只 | 版本=%s",
+                    len(candidates), plan.candidate_pool.get("version", ""),
+                )
+            elif pool.get("candidates"):
+                candidates = _load_pool_rows(pool)
+                plan.candidate_pool = {
+                    key: pool_status.get(key)
+                    for key in (
+                        "source", "fresh", "age_seconds", "max_age_seconds",
+                        "refresh_attempted", "refresh_error", "version",
+                        "generated_at", "candidate_count",
+                    )
+                }
+                plan.candidate_pool.update({
+                    "source": "stale_fallback",
+                    "refresh_attempted": True,
+                    "refresh_error": "refresh_failed_or_timeout",
+                })
+                plan.errors.append(
+                    "候选池刷新失败，使用过期候选池"
+                    f"({pool_status.get('age_seconds')}s)"
+                )
+                logger.warning("[快链路] 候选池刷新失败，回退过期缓存: %s只", len(candidates))
+            else:
+                logger.warning("[快链路] 候选池刷新失败且无旧缓存")
+                plan.candidate_pool = {
+                    key: pool_status.get(key)
+                    for key in (
+                        "source", "fresh", "age_seconds", "max_age_seconds",
+                        "refresh_attempted", "refresh_error", "version",
+                        "generated_at", "candidate_count",
+                    )
+                }
+                plan.candidate_pool["refresh_attempted"] = True
                 plan.errors.append("选股失败，无候选股票")
                 plan.elapsed = elapsed()
                 _save_trade_plan(plan)
                 return plan
-            # 缓存候选池
-            try:
-                from data.snapshot import save_candidate_pool
-                save_candidate_pool(candidates)
-            except Exception:
-                pass
 
     if candidate_filter:
         before_filter = len(candidates)
@@ -324,13 +402,38 @@ def fast_scan(
     # 市场环境(读缓存，不重新计算)
     regime = "sideways"
     regime_conf = 0.5
-    market_snap = get_market_snapshot(max_age=1800)  # 30分钟有效
+    market_info = get_market_snapshot_status(
+        max_age=1800,
+        refresh=True,
+        refresh_timeout=min(20, max(1, int(remaining()))),
+    )
+    market_snap = market_info.get("snapshot")
+    plan.market_snapshot = {
+        key: value for key, value in market_info.items() if key != "snapshot"
+    }
     if market_snap:
         limit_up_count = len(market_snap.get("limit_up", []))
         limit_down_count = len(market_snap.get("limit_down", []))
-        logger.info(f"[快链路] 市场快照: 涨停{limit_up_count} 跌停{limit_down_count}")
+        logger.info(
+            "[快链路] 市场快照: 涨停%s 跌停%s | 来源=%s 新鲜=%s 年龄=%ss",
+            limit_up_count,
+            limit_down_count,
+            market_info.get("source", "unknown"),
+            market_info.get("fresh", False),
+            market_info.get("age_seconds"),
+        )
+        if not market_info.get("fresh"):
+            plan.errors.append(
+                "市场快照刷新失败，当前使用过期缓存"
+                f"({market_info.get('age_seconds')}s)"
+            )
     else:
-        logger.info("[快链路] 无市场快照，用默认值")
+        logger.warning(
+            "[快链路] 市场快照不可用，市场级字段保持未知，不伪装为空列表；来源=%s 错误=%s",
+            market_info.get("source", "unavailable"),
+            market_info.get("refresh_error", ""),
+        )
+        plan.errors.append("市场快照不可用，市场级数据未知，使用中性环境")
 
     # 尝试读取已有的市场环境
     try:
@@ -703,7 +806,7 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
     Returns:
         打分结果列表
     """
-    from strategy.decision import compute_dimension_scores
+    from strategy.decision import compute_dimension_scores, get_effective_signal_weights
     from data.history import get_daily
     from config import SIGNAL_WEIGHTS
 
@@ -733,16 +836,30 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
                 )
 
             # 计算综合分
-            total_w = sum(SIGNAL_WEIGHTS.get(k, 0) for k in dims)
+            effective_weights = get_effective_signal_weights(dims, SIGNAL_WEIGHTS)
+            total_w = sum(effective_weights.values())
             if total_w == 0:
                 total_w = 1
-            composite = sum(d.score * SIGNAL_WEIGHTS.get(dn, 0) for dn, d in dims.items()) / total_w
+            composite = sum(
+                d.score * effective_weights.get(dn, 0)
+                for dn, d in dims.items()
+            ) / total_w
+            degraded_dimensions = [
+                name for name in dims
+                if SIGNAL_WEIGHTS.get(name, 0) > 0 and name not in effective_weights
+            ]
 
             # 找最强信号
-            top_dim = max(dims.items(), key=lambda x: x[1].score) if dims else None
+            active_dims = [
+                item for item in dims.items() if item[0] in effective_weights
+            ]
+            top_dim = max(active_dims, key=lambda x: x[1].score) if active_dims else None
             top_signal = f"{top_dim[0]}={top_dim[1].score:.0f}" if top_dim else ""
 
-            avg_conf = sum(d.confidence for d in dims.values()) / len(dims) if dims else 0
+            avg_conf = sum(
+                dim.confidence * effective_weights.get(name, 0)
+                for name, dim in dims.items()
+            ) / total_w
 
             return {
                 "code": code,
@@ -751,6 +868,13 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
                 "dimensions": {dn: {"score": d.score, "confidence": d.confidence, "detail": d.detail} for dn, d in dims.items()},
                 "top_signal": top_signal,
                 "avg_confidence": round(avg_conf, 2),
+                "signal_coverage": {
+                    "effective_weights": {
+                        name: round(weight / total_w, 4)
+                        for name, weight in effective_weights.items()
+                    },
+                    "degraded_dimensions": degraded_dimensions,
+                },
                 "latest_price": df["close"].iloc[-1] if df is not None and "close" in df.columns and len(df) > 0 else 0,
             }
         finally:
@@ -1528,6 +1652,28 @@ def format_trade_plan_report(plan_data: dict) -> str:
         f"耗时: {plan_data.get('elapsed', 0):.1f}s",
         "",
     ]
+
+    market_snapshot = plan_data.get("market_snapshot") or {}
+    if market_snapshot:
+        age = market_snapshot.get("age_seconds")
+        age_text = f"{age:.0f}s" if isinstance(age, (int, float)) else "未知"
+        lines.append(
+            "市场数据: "
+            f"来源={market_snapshot.get('source', 'unknown')} "
+            f"新鲜={market_snapshot.get('fresh', False)} 年龄={age_text}"
+        )
+
+    candidate_pool = plan_data.get("candidate_pool") or {}
+    if candidate_pool:
+        pool_age = candidate_pool.get("age_seconds")
+        pool_age_text = f"{pool_age:.0f}s" if isinstance(pool_age, (int, float)) else "未知"
+        lines.append(
+            "候选池: "
+            f"版本={candidate_pool.get('version') or 'legacy'} "
+            f"来源={candidate_pool.get('source', 'unknown')} "
+            f"数量={candidate_pool.get('candidate_count', '未知')} "
+            f"年龄={pool_age_text}"
+        )
 
     orders = plan_data.get("orders", [])
     if orders:

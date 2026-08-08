@@ -88,6 +88,40 @@ def test_rescue_filter_allows_only_confirmed_watchlist():
     assert_true(filtered["hold_reasons"]["000001"] == "HOLD_RESCUE_NOT_CONFIRMED", "未确认BUY写入拒绝原因")
 
 
+def test_default_candidate_pool_prefers_latest_composite_scores():
+    import json
+    import data.snapshot as snapshot
+    import scheduler.intraday_watch as intraday_watch
+
+    cache_file = tempfile.NamedTemporaryFile(suffix="_signal_cache.json", delete=False)
+    cache_path = cache_file.name
+    cache_file.close()
+    original_cache_file = intraday_watch.SIGNAL_CACHE_FILE
+    original_loader = snapshot.get_candidate_pool
+    try:
+        with open(cache_path, "w", encoding="utf-8") as f:
+            json.dump({
+                "date": intraday_watch._today(),
+                "raw_scores": [{
+                    "code": "600519",
+                    "name": "贵州茅台",
+                    "composite": 68,
+                }],
+            }, f, ensure_ascii=False)
+        intraday_watch.SIGNAL_CACHE_FILE = cache_path
+        snapshot.get_candidate_pool = lambda max_age=1200: {
+            "candidates": [{"code": "600519", "name": "贵州茅台", "score": 35}],
+        }
+        candidates = intraday_watch._load_default_candidate_pool()
+        assert_true(candidates[0]["score"] == 68, "观察池读取综合评分而不是原始候选分")
+        assert_true(candidates[0]["source"] == ["盘中综合评分"], "观察池记录综合评分来源")
+    finally:
+        intraday_watch.SIGNAL_CACHE_FILE = original_cache_file
+        snapshot.get_candidate_pool = original_loader
+        if os.path.exists(cache_path):
+            os.unlink(cache_path)
+
+
 def test_watchlist_after_cutoff_and_cooling_no_buy():
     watch_file = tempfile.NamedTemporaryFile(suffix="_watchlist.json", delete=False)
     watch_path = watch_file.name
@@ -160,7 +194,7 @@ def test_rescue_scan_whitelist_and_llm_hold_no_buy():
 
     old_env = os.environ.get("USE_LLM_IN_FAST")
     originals = {
-        "get_market_snapshot": snapshot.get_market_snapshot,
+        "get_market_snapshot_status": snapshot.get_market_snapshot_status,
         "get_sentiment_snapshot": snapshot.get_sentiment_snapshot,
         "get_candidate_pool": snapshot.get_candidate_pool,
         "parallel_score": pipeline._parallel_score,
@@ -198,7 +232,14 @@ def test_rescue_scan_whitelist_and_llm_hold_no_buy():
 
     try:
         os.environ["USE_LLM_IN_FAST"] = "1"
-        snapshot.get_market_snapshot = lambda max_age=1800: {"limit_up": [], "limit_down": []}
+        snapshot.get_market_snapshot_status = lambda max_age=1800, **kwargs: {
+            "snapshot": {"limit_up": [], "limit_down": []},
+            "source": "test",
+            "fresh": True,
+            "age_seconds": 0,
+            "refresh_attempted": False,
+            "refresh_error": "",
+        }
         snapshot.get_sentiment_snapshot = lambda max_age=3600: {"scores": {}}
         snapshot.get_candidate_pool = lambda max_age=14400: {"candidates": []}
         pipeline._parallel_score = fake_score
@@ -229,7 +270,7 @@ def test_rescue_scan_whitelist_and_llm_hold_no_buy():
             os.environ.pop("USE_LLM_IN_FAST", None)
         else:
             os.environ["USE_LLM_IN_FAST"] = old_env
-        snapshot.get_market_snapshot = originals["get_market_snapshot"]
+        snapshot.get_market_snapshot_status = originals["get_market_snapshot_status"]
         snapshot.get_sentiment_snapshot = originals["get_sentiment_snapshot"]
         snapshot.get_candidate_pool = originals["get_candidate_pool"]
         pipeline._parallel_score = originals["parallel_score"]
@@ -298,6 +339,7 @@ def main():
     print("=" * 60)
     test_watch_cycle_keeps_working_without_trade()
     test_rescue_filter_allows_only_confirmed_watchlist()
+    test_default_candidate_pool_prefers_latest_composite_scores()
     test_watchlist_after_cutoff_and_cooling_no_buy()
     test_rescue_scan_whitelist_and_llm_hold_no_buy()
     test_auto_cycle_records_watch_and_rescue()

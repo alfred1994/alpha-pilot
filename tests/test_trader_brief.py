@@ -125,6 +125,34 @@ def main():
         assert len(same_day) == 1
         assert same_day[0]["version"] == "directive-next-revised"
         ok("同一复盘日重复运行只保留一个权威策略版本")
+
+        # 日终事实不能被最近500条事件截断；模拟501个扫描事件，
+        # 验证候选与扫描周期仍能完整聚合。
+        with Database(db_path=db_path) as db:
+            for index in range(501):
+                db.insert_auto_event({
+                    "date": "2026-08-01",
+                    "event_type": "auto_cycle",
+                    "status": "盘中",
+                    "details": {
+                        "scan_journey": {
+                            "candidate_count": 1,
+                            "scored_count": 1,
+                        },
+                    },
+                    "created_at": f"2026-08-01T09:{index // 60:02d}:{index % 60:02d}",
+                })
+        complete_facts = build_daily_facts(
+            date="2026-08-01",
+            db_path=db_path,
+            now=datetime(2026, 8, 1, 15, 10),
+            market_status="盘后",
+            trading_day=True,
+        )
+        assert complete_facts["funnel"]["scan_cycles"] == 501
+        assert complete_facts["funnel"]["candidates"] == 501
+        assert complete_facts["funnel"]["scored"] == 501
+        ok("日终事实按日期完整读取事件，不受500条窗口影响")
     finally:
         for candidate in (db_path, f"{db_path}-wal", f"{db_path}-shm"):
             if os.path.exists(candidate):

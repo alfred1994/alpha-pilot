@@ -23,6 +23,7 @@ from scheduler import logger
 
 
 WATCHLIST_FILE = os.path.join(DATA_DIR, "intraday_watchlist.json")
+SIGNAL_CACHE_FILE = os.path.join(DATA_DIR, "signal_cache.json")
 WATCHLIST_MIN_SCORE = 50
 RESCUE_CONFIRMATIONS = 2
 RESCUE_CUTOFF_HHMM = (14, 30)
@@ -106,11 +107,64 @@ def _load_default_market_snapshot() -> Dict:
         return {}
 
 
+def _load_signal_cache_candidates(now: datetime = None) -> List[Dict]:
+    """读取最近一轮综合评分，作为盘中观察池的统一分数口径。"""
+    try:
+        now = now or datetime.now()
+        with open(SIGNAL_CACHE_FILE, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if payload.get("date") != _today(now):
+            return []
+        candidates = []
+        for row in payload.get("raw_scores") or []:
+            code = str(row.get("code") or "").strip()
+            if not code:
+                continue
+            composite = _safe_float(row.get("composite"), 0)
+            if composite <= 0:
+                continue
+            candidates.append({
+                "code": code,
+                "name": str(row.get("name") or code),
+                "score": composite,
+                "composite": composite,
+                "source": ["盘中综合评分"],
+                "pool_version": (payload.get("candidate_pool") or {}).get("version", ""),
+                "pool_generated_at": (payload.get("candidate_pool") or {}).get("generated_at", ""),
+                "pool_source": (payload.get("candidate_pool") or {}).get("source", "signal_cache"),
+            })
+        return candidates
+    except Exception as e:
+        logger.debug(f"轻量看盘读取综合评分缓存失败: {e}")
+        return []
+
+
 def _load_default_candidate_pool() -> List[Dict]:
     try:
-        from data.snapshot import get_candidate_pool
-        pool = get_candidate_pool(max_age=1200) or {}
-        return pool.get("candidates") or []
+        from data.snapshot import get_candidate_pool_status
+        pool_status = get_candidate_pool_status(max_age=1800)
+        pool = pool_status.get("snapshot") or {}
+        # 主扫描完成后，优先使用同一轮的综合评分，避免把选股原始分
+        # 与交易综合分混用，导致原始分<50时观察池永远为空。
+        scored = _load_signal_cache_candidates()
+        if scored:
+            logger.info(f"轻量看盘使用最近综合评分: {len(scored)}只")
+            return scored
+        candidates = []
+        for row in pool.get("candidates") or []:
+            item = dict(row)
+            item.update({
+                "pool_version": pool_status.get("version", ""),
+                "pool_generated_at": pool_status.get("generated_at", ""),
+                "pool_source": pool_status.get("source", "unknown"),
+            })
+            candidates.append(item)
+        if candidates and not pool_status.get("fresh"):
+            logger.warning(
+                "轻量看盘使用过期候选池: 版本=%s 年龄=%ss",
+                pool_status.get("version", "legacy"), pool_status.get("age_seconds"),
+            )
+        return candidates
     except Exception as e:
         logger.debug(f"轻量看盘读取候选池失败: {e}")
         return []
@@ -224,6 +278,15 @@ def run_watch_cycle(
     candidates = candidate_loader() or []
     account = account_loader() or {}
     allow_new = _allow_new_entries(now)
+    pool_meta = {}
+    for candidate in candidates:
+        if candidate.get("pool_version") or candidate.get("pool_source"):
+            pool_meta = {
+                "version": candidate.get("pool_version", ""),
+                "generated_at": candidate.get("pool_generated_at", ""),
+                "source": candidate.get("pool_source", "unknown"),
+            }
+            break
 
     baseline = state.morning_baseline or {}
     if not baseline:
@@ -263,6 +326,10 @@ def run_watch_cycle(
         actions.append("疑似踏空: 市场转强/高现金/观察池确认，等待救援确认")
     if not allow_new:
         actions.append("14:30后不新增追入机会，仅刷新观察池")
+    if pool_meta.get("source") in ("stale_cache", "stale_fallback"):
+        actions.append(
+            f"候选池过期: 版本{pool_meta.get('version') or 'legacy'}，仍以旧池观察并等待刷新"
+        )
 
     return {
         "actions": actions,
@@ -279,6 +346,7 @@ def run_watch_cycle(
             "allow_new_entries": allow_new,
             "confirmed_count": len(confirmed),
             "top_watch": top_watch,
+            "candidate_pool": pool_meta,
         },
         "watchlist": watchlist,
         "missed_opportunity": missed,

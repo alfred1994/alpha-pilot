@@ -115,6 +115,27 @@ def main():
         assert_true(any(c[0] == "review" for c in calls), "盘后缺复盘触发复盘")
         assert_true(review_repaired["after"]["overall"]["level"] == "ok", "复盘后闭环等级改善")
 
+        # 即使复盘后仍缺少教训，也不能在同一天反复调用完整LLM复盘。
+        def review_gap_always(**kwargs):
+            return before_review
+
+        def fake_review_once():
+            calls.append(("review", {}))
+            return {"status": "ok"}
+
+        second_attempt = run_closure_repair(
+            date="2026-06-09",
+            now=datetime(2026, 6, 9, 15, 20, 0),
+            db_path=db_path,
+            closure_func=review_gap_always,
+            review_func=fake_review_once,
+        )
+        assert_true(len([c for c in calls if c[0] == "review"]) == 1, "同日复盘最多执行一次")
+        assert_true(
+            any("不重复调用LLM" in action for action in second_attempt["actions"]),
+            "重复闭环检查只等待新样本",
+        )
+
         calls = []
         wait_closure = _closure("盘后", "盘中扫描", "warn")
 

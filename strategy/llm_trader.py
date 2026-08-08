@@ -522,14 +522,16 @@ def make_decision(
 
     # 计算综合分（先算，用于判断是否值得拉华泰诊断）
     from config import SIGNAL_WEIGHTS
-    total_weight = sum(weights.get(k, 0) for k in dimensions) if weights else sum(SIGNAL_WEIGHTS.get(k, 0) for k in dimensions)
+    from strategy.decision import get_effective_signal_weights
+    w = weights or SIGNAL_WEIGHTS
+    effective_weights = get_effective_signal_weights(dimensions, w)
+    total_weight = sum(effective_weights.values())
     if total_weight == 0:
         total_weight = 1
 
     composite = 0.0
-    w = weights or SIGNAL_WEIGHTS
     for dim_name, dim in dimensions.items():
-        composite += dim.score * w.get(dim_name, 0)
+        composite += dim.score * effective_weights.get(dim_name, 0)
     composite /= total_weight
 
     # 获取华泰专业诊断（仅对高分top股票，避免每只都拉太慢）
@@ -655,7 +657,7 @@ def batch_decide(
         按置信度降序排列的决策列表
     """
     import time
-    from strategy.decision import compute_dimension_scores
+    from strategy.decision import compute_dimension_scores, get_effective_signal_weights
 
     t0 = time.time()
     logger.info(f"LLM批量决策开始: {len(candidates)}只候选, 市场环境={regime}")
@@ -735,10 +737,14 @@ def batch_decide(
             )
 
         # 计算综合分
-        total_w = sum(SIGNAL_WEIGHTS.get(k, 0) for k in dims)
+        effective_weights = get_effective_signal_weights(dims, SIGNAL_WEIGHTS)
+        total_w = sum(effective_weights.values())
         if total_w == 0:
             total_w = 1
-        composite = sum(d.score * SIGNAL_WEIGHTS.get(d_name, 0) for d_name, d in dims.items()) / total_w
+        composite = sum(
+            d.score * effective_weights.get(d_name, 0)
+            for d_name, d in dims.items()
+        ) / total_w
 
         # 记忆上下文
         ctx = ""
@@ -779,10 +785,14 @@ def batch_decide(
                         confidence=mood_result.confidence,
                         detail=mood_result.detail,
                     )
-                pos_total_w = sum(SIGNAL_WEIGHTS.get(k, 0) for k in pos_dims)
+                pos_effective_weights = get_effective_signal_weights(pos_dims, SIGNAL_WEIGHTS)
+                pos_total_w = sum(pos_effective_weights.values())
                 if pos_total_w == 0:
                     pos_total_w = 1
-                pos_composite = sum(d.score * SIGNAL_WEIGHTS.get(d_name, 0) for d_name, d in pos_dims.items()) / pos_total_w
+                pos_composite = sum(
+                    d.score * pos_effective_weights.get(d_name, 0)
+                    for d_name, d in pos_dims.items()
+                ) / pos_total_w
                 pos_ctx = ""
                 if memory:
                     try:

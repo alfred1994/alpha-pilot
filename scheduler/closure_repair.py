@@ -68,6 +68,25 @@ def _insert_repair_event(date: str, status: str, actions: list,
         pass
 
 
+def _review_attempted_today(date: str, db_path: str = None) -> bool:
+    """判断当天是否已经执行过盘后复盘，避免Doctor重复调用LLM。"""
+    try:
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            events = db.get_auto_events(
+                date=date,
+                event_type="closure_repair",
+                limit=None,
+            )
+        return any(
+            any("已触发盘后复盘" in str(action) for action in (event.get("actions") or []))
+            for event in events
+        )
+    except Exception:
+        # 诊断读取失败时不阻断原有闭环流程，交由后续检查报告异常。
+        return False
+
+
 def run_closure_repair(
     *,
     date: str = None,
@@ -128,12 +147,28 @@ def run_closure_repair(
     elif gap.get("name") in ("盘后复盘", "教训沉淀"):
         if status != "盘后":
             actions.append(f"缺口 {gap.get('name')} 需要盘后窗口，当前{status}，等待盘后")
+        elif _review_attempted_today(target_date, db_path=db_path):
+            repair_result = {
+                "status": "skipped_daily_review",
+                "review_attempted": True,
+            }
+            actions.append("今日盘后复盘已执行，教训缺口等待新样本，不重复调用LLM")
         else:
             if review_func is None:
                 from scheduler.pipeline import run_review
                 review_func = run_review
-            repair_result = review_func()
-            actions.append(f"已触发盘后复盘: {gap.get('name')}")
+            try:
+                # 盘后复盘会写入策略、教训和复盘快照，同样属于自动盘
+                # 的单实例写操作，不能与常驻循环并发执行。
+                from scheduler.auto_trader import AutoLoopLockError, run_locked_action
+                repair_result = run_locked_action(review_func, lock_file=lock_file)
+                actions.append(f"已触发盘后复盘: {gap.get('name')}")
+            except AutoLoopLockError:
+                repair_result = {
+                    "status": "skipped_lock_conflict",
+                    "lock_conflict": True,
+                }
+                actions.append("自动循环已占用单实例锁，跳过并发盘后复盘，等待下一次巡检")
     elif gap.get("name") == "盘前准备":
         if status not in ("盘前", "集合竞价"):
             actions.append(f"缺口盘前准备需要盘前窗口，当前{status}，等待下一交易日")

@@ -65,16 +65,38 @@ def _load_signal_degradations() -> List[Dict]:
         return []
 
     found = {}
+    market_snapshot = cache.get("market_snapshot") or {}
+    market_source = market_snapshot.get("source")
+    if market_source == "stale_cache":
+        age = market_snapshot.get("age_seconds")
+        age_text = f"{age:.0f}秒" if isinstance(age, (int, float)) else "未知时长"
+        found["market_data"] = {
+            "key": "market_data",
+            "label": "市场数据",
+            "summary": f"市场快照刷新失败，使用过期缓存（{age_text}）",
+        }
+    elif market_source == "unavailable":
+        found["market_data"] = {
+            "key": "market_data",
+            "label": "市场数据",
+            "summary": "市场快照不可用，市场级信号使用中性默认",
+        }
     for score in (cache.get("raw_scores") or [])[:20]:
+        for name in (score.get("signal_coverage") or {}).get("degraded_dimensions", []) or []:
+            found[name] = {
+                "key": name,
+                "label": _DIMENSION_LABELS.get(name, name),
+                "summary": f"{_DIMENSION_LABELS.get(name, name)}不可用，已从本轮综合评分剔除并归一化剩余权重",
+            }
         for name, dimension in (score.get("dimensions") or {}).items():
             detail = str((dimension or {}).get("detail") or "")
             lowered = detail.lower()
             if any(marker in lowered for marker in ("异常", "超时", "不可用", "error", "cannot", "failed")):
-                found[name] = {
+                found.setdefault(name, {
                     "key": name,
                     "label": _DIMENSION_LABELS.get(name, name),
                     "summary": f"{_DIMENSION_LABELS.get(name, name)}当前处于降级状态",
-                }
+                })
     return list(found.values())
 
 
@@ -123,9 +145,11 @@ def build_daily_facts(date: str = None, db_path: str = None,
     current_directive = None
     pending_directive = None
     with Database(db_path=db_path) as db:
-        events = db.get_auto_events(date=date, limit=500)
+        # 日终事实必须覆盖当天全部事件；固定取最近500条会让早盘扫描
+        # 被后续Doctor/心跳事件挤出窗口，进而污染AI复盘和次日策略。
+        events = db.get_auto_events(date=date, limit=None)
         decisions = [
-            item for item in db.get_llm_decisions(start_date=date, end_date=date, limit=500)
+            item for item in db.get_llm_decisions(start_date=date, end_date=date, limit=None)
             if _valid_llm_decision(item)
         ]
         trades = [

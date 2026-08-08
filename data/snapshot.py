@@ -18,6 +18,8 @@ import json
 import os
 import time
 import logging
+import threading
+import hashlib
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -27,6 +29,10 @@ SNAPSHOT_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "data", "snapshots",
 )
+
+# 同一进程内只允许一个市场快照刷新任务，避免多个盘中扫描同时触发
+# 涨跌停/资金接口，造成重复请求和后台线程堆积。
+_MARKET_REFRESH_LOCK = threading.Lock()
 
 
 def _snapshot_path(name: str, date: str = None) -> str:
@@ -70,6 +76,34 @@ def _load_snapshot(name: str, date: str = None, max_age: int = 7200) -> Optional
     except Exception as e:
         logger.warning(f"加载快照失败 {name}: {e}")
         return None
+
+
+def _read_snapshot_file(name: str, date: str = None) -> tuple:
+    """读取快照原始文件并返回 ``(data, age_seconds, error)``。"""
+    path = _snapshot_path(name, date)
+    if not os.path.exists(path):
+        return None, None, "not_found"
+    try:
+        mtime = os.path.getmtime(path)
+        age = max(0.0, time.time() - mtime)
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f), age, ""
+    except Exception as e:
+        logger.warning(f"读取快照原始文件失败 {name}: {e}")
+        return None, None, "read_error"
+
+
+def _snapshot_status(name: str, date: str = None, max_age: int = 7200) -> Dict[str, Any]:
+    """返回快照文件的新鲜度元数据，不读取业务字段。"""
+    _, age, error = _read_snapshot_file(name, date)
+    return {
+        "source": "cache" if not error else "unavailable",
+        "fresh": bool(age is not None and age <= max_age),
+        "age_seconds": round(age, 1) if age is not None else None,
+        "max_age_seconds": max_age,
+        "refresh_attempted": False,
+        "refresh_error": error or "",
+    }
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -250,6 +284,75 @@ def get_market_snapshot(max_age: int = 1800) -> Optional[dict]:
     return _load_snapshot("market", max_age=max_age)
 
 
+def get_market_snapshot_status(
+    max_age: int = 1800,
+    *,
+    refresh: bool = True,
+    refresh_timeout: int = 20,
+) -> Dict[str, Any]:
+    """获取市场快照及可观测的新鲜度状态。
+
+    快照过期时先尝试一次有界刷新；刷新失败仍返回过期缓存，但会明确标记
+    ``fresh=False`` 和 ``source=stale_cache``。完全没有可用缓存时返回
+    ``source=unavailable``，调用方不得把它伪装成空的涨跌停列表。
+    """
+    status = _snapshot_status("market", max_age=max_age)
+    fresh_snapshot = _load_snapshot("market", max_age=max_age)
+    if fresh_snapshot is not None:
+        status.update({
+            "source": "fresh_cache",
+            "fresh": True,
+            "refresh_error": "",
+        })
+        status["snapshot"] = fresh_snapshot
+        return status
+
+    status["refresh_attempted"] = bool(refresh)
+    if refresh:
+        def _refresh_once():
+            if not _MARKET_REFRESH_LOCK.acquire(blocking=False):
+                return None
+            try:
+                return prefetch_market_data()
+            finally:
+                _MARKET_REFRESH_LOCK.release()
+
+        refreshed = with_timeout(
+            _refresh_once,
+            timeout=max(1, int(refresh_timeout or 1)),
+            fallback=None,
+            desc="刷新市场快照",
+        )
+        if refreshed:
+            status.update({
+                "source": "refreshed",
+                "fresh": True,
+                "age_seconds": 0.0,
+                "refresh_error": "",
+                "snapshot": refreshed,
+            })
+            return status
+        status["refresh_error"] = "refresh_failed_or_timeout"
+
+    stale_snapshot, age, read_error = _read_snapshot_file("market")
+    if stale_snapshot is not None:
+        status.update({
+            "source": "stale_cache",
+            "fresh": False,
+            "age_seconds": round(age, 1) if age is not None else status.get("age_seconds"),
+            "snapshot": stale_snapshot,
+        })
+        return status
+
+    status.update({
+        "source": "unavailable",
+        "fresh": False,
+        "snapshot": None,
+        "refresh_error": status.get("refresh_error") or read_error or "unavailable",
+    })
+    return status
+
+
 def get_stock_snapshot(max_age: int = 7200) -> Optional[dict]:
     """获取股票快照(2小时有效期)"""
     return _load_snapshot("stock", max_age=max_age)
@@ -265,22 +368,85 @@ def get_candidate_pool(max_age: int = 7200) -> Optional[dict]:
     return _load_snapshot("candidate_pool", max_age=max_age)
 
 
+def get_candidate_pool_status(max_age: int = 1800) -> Dict[str, Any]:
+    """获取候选池及版本、新鲜度状态，不触发外部选股接口。"""
+    status = _snapshot_status("candidate_pool", max_age=max_age)
+    fresh = _load_snapshot("candidate_pool", max_age=max_age)
+    if fresh is not None:
+        status.update({
+            "source": "fresh_cache",
+            "fresh": True,
+            "snapshot": fresh,
+            "version": fresh.get("version", ""),
+            "generated_at": fresh.get("generated_at", ""),
+            "candidate_count": len(fresh.get("candidates") or []),
+            "refresh_error": "",
+        })
+        return status
+
+    stale, age, read_error = _read_snapshot_file("candidate_pool")
+    if stale is not None:
+        status.update({
+            "source": "stale_cache",
+            "fresh": False,
+            "age_seconds": round(age, 1) if age is not None else status.get("age_seconds"),
+            "snapshot": stale,
+            "version": stale.get("version", ""),
+            "generated_at": stale.get("generated_at", ""),
+            "candidate_count": len(stale.get("candidates") or []),
+            "refresh_error": "expired",
+        })
+        return status
+
+    status.update({
+        "source": "unavailable",
+        "fresh": False,
+        "snapshot": None,
+        "version": "",
+        "generated_at": "",
+        "candidate_count": 0,
+        "refresh_error": read_error or "unavailable",
+    })
+    return status
+
+
 def save_candidate_pool(candidates: list):
     """保存候选池"""
+    rows = []
+    for candidate in candidates:
+        if hasattr(candidate, "code"):
+            row = {
+                "code": candidate.code,
+                "name": candidate.name,
+                "source": candidate.source,
+                "score": candidate.score,
+            }
+        else:
+            row = {
+                "code": candidate.get("code", ""),
+                "name": candidate.get("name", candidate.get("code", "")),
+                "source": candidate.get("source", []),
+                "score": candidate.get("score", 0),
+            }
+        code = str(row.get("code") or "").strip()
+        if not code:
+            continue
+        row["code"] = code
+        rows.append(row)
+
+    canonical = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    version = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    generated_at = datetime.now().isoformat()
     data = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "timestamp": time.time(),
-        "candidates": [
-            {
-                "code": c.code,
-                "name": c.name,
-                "source": c.source,
-                "score": c.score,
-            }
-            for c in candidates
-        ],
+        "generated_at": generated_at,
+        "version": version,
+        "candidate_count": len(rows),
+        "candidates": rows,
     }
     _save_snapshot("candidate_pool", data)
+    return data
 
 
 # ═══════════════════════════════════════════════════════════════════

@@ -54,6 +54,8 @@ class AutoTraderState:
     watchlist_count: int = 0
     missed_opportunity_count: int = 0
     rescue_scan_count: int = 0
+    last_candidate_pool_version: str = ""
+    candidate_pool_change_count: int = 0
     loop_count: int = 0
     last_status: str = ""
     last_error: str = ""
@@ -297,6 +299,8 @@ def _build_scan_journey(scan_result, exec_result=None) -> dict:
     llm_actions = [action for action in actions if action in ("BUY", "SELL", "HOLD")]
     orders = plan.get("orders") or []
     audit = getattr(exec_result, "order_audit", []) or [] if exec_result is not None else []
+    market_snapshot = plan.get("market_snapshot") or {}
+    candidate_pool = plan.get("candidate_pool") or {}
     return {
         "candidate_count": len(getattr(scan_result, "candidates", []) or scores),
         "scored_count": len(scores),
@@ -307,6 +311,23 @@ def _build_scan_journey(scan_result, exec_result=None) -> dict:
         "planned_orders": len(orders),
         "strategy_version": plan.get("strategy_version", ""),
         "strategy_intent": plan.get("strategy_intent", ""),
+        "market_data": {
+            "source": market_snapshot.get("source", "unknown"),
+            "fresh": market_snapshot.get("fresh"),
+            "age_seconds": market_snapshot.get("age_seconds"),
+            "refresh_attempted": bool(market_snapshot.get("refresh_attempted")),
+            "refresh_error": market_snapshot.get("refresh_error", ""),
+        },
+        "candidate_pool": {
+            "source": candidate_pool.get("source", "unknown"),
+            "fresh": candidate_pool.get("fresh"),
+            "age_seconds": candidate_pool.get("age_seconds"),
+            "version": candidate_pool.get("version", ""),
+            "generated_at": candidate_pool.get("generated_at", ""),
+            "candidate_count": candidate_pool.get("candidate_count"),
+            "refresh_attempted": bool(candidate_pool.get("refresh_attempted")),
+            "refresh_error": candidate_pool.get("refresh_error", ""),
+        },
         "hold_reasons": len(plan.get("hold_reasons") or {}),
         "execution": {
             "filled": sum(1 for item in audit if item.get("status") == "filled"),
@@ -430,6 +451,24 @@ def run_auto_cycle(
     extra_events = []
     rescue_ran = False
 
+    def _record_candidate_pool_change(scan_result):
+        """记录候选池版本变化，避免看板只显示“扫描过”而看不到池是否更新。"""
+        if scan_result is None:
+            return
+        plan = getattr(scan_result, "trade_plan", {}) or {}
+        pool = plan.get("candidate_pool") or {}
+        version = str(pool.get("version") or "").strip()
+        if not version or version == state.last_candidate_pool_version:
+            return
+        previous = state.last_candidate_pool_version or "首次"
+        state.last_candidate_pool_version = version
+        state.candidate_pool_change_count += 1
+        actions.append(
+            "候选池版本变化: "
+            f"{previous}->{version} "
+            f"({pool.get('candidate_count', len(getattr(scan_result, 'candidates', []) or []))}只)"
+        )
+
     try:
         if not is_today_trading:
             actions.append("休市: 跳过交易动作")
@@ -535,6 +574,7 @@ def run_auto_cycle(
                 state.rescue_scan_count += 1
                 scan_result = rescue.get("scan_result") if isinstance(rescue, dict) else None
                 exec_result = rescue.get("exec_result") if isinstance(rescue, dict) else None
+                _record_candidate_pool_change(scan_result)
                 if exec_result is not None:
                     state.last_execute_at = now_ts
                 executed_count = len(getattr(exec_result, "executed_orders", []) or []) if exec_result else 0
@@ -562,6 +602,7 @@ def run_auto_cycle(
             if should_scan and not rescue_ran:
                 scan_result = run_scan_func()
                 state.last_scan_at = now_ts
+                _record_candidate_pool_change(scan_result)
                 actions.append(f"盘中扫描: 候选{len(scan_result.candidates)}只 决策{len(scan_result.decisions)}条")
 
                 # 推送选股结果通知
@@ -693,6 +734,43 @@ def run_auto_cycle(
         "report": report,
         "notified": notified,
     }
+
+
+def run_locked_action(action: Callable[[], Any], *, lock_file: str = None) -> Any:
+    """在自动盘单实例锁内执行一个可能耗时的独立动作。"""
+    loop_lock = AutoLoopLock(lock_file=lock_file).acquire()
+    heartbeat_stop = threading.Event()
+
+    def _heartbeat_loop():
+        while not heartbeat_stop.wait(30):
+            if loop_lock.acquired:
+                loop_lock.heartbeat()
+
+    heartbeat_thread = threading.Thread(
+        target=_heartbeat_loop,
+        name="auto-action-lock-heartbeat",
+        daemon=True,
+    )
+    heartbeat_thread.start()
+    try:
+        return action()
+    finally:
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
+        loop_lock.release()
+
+
+def run_locked_auto_cycle(*, lock_file: str = None, **kwargs) -> dict:
+    """在自动盘单实例锁内执行一轮自动循环。
+
+    常驻 ``--auto`` 进程会在外层持有锁，因此不能在 ``run_auto_loop``
+    内再次调用本函数。Doctor、闭环修复等独立入口必须通过本函数进入
+    自动循环，避免绕过锁与常驻进程并发读写同一账本。
+    """
+    return run_locked_action(
+        lambda: run_auto_cycle(**kwargs),
+        lock_file=lock_file,
+    )
 
 
 def run_auto_loop(loop_interval: int = None, scan_interval: int = None,

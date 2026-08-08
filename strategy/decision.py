@@ -3,6 +3,7 @@
 综合5维信号（技术/资金/舆情/情绪/基本面）输出 BUY/SELL/HOLD 决策
 """
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 from datetime import datetime
@@ -39,6 +40,37 @@ class DimensionScore:
     score: float        # 0-100
     confidence: float   # 0-1
     detail: str = ""
+
+
+def get_effective_signal_weights(
+    dimensions: Dict[str, DimensionScore],
+    weights: Dict[str, float] = None,
+) -> Dict[str, float]:
+    """过滤不可用维度，返回本轮实际参与融合的权重。
+
+    ML 服务异常时会保留维度详情供审计，但其 ``confidence=0`` 不应再用
+    伪造的 50 分占据固定权重；分母由剩余可用维度重新归一化。
+    """
+    weights = weights or SIGNAL_WEIGHTS
+    effective = {}
+    for name, dimension in (dimensions or {}).items():
+        weight = float(weights.get(name, 0) or 0)
+        if weight <= 0:
+            continue
+        if name == "ml":
+            try:
+                raw_confidence = (
+                    dimension.confidence
+                    if hasattr(dimension, "confidence")
+                    else (dimension or {}).get("confidence", 0)
+                )
+                confidence = float(raw_confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            if not math.isfinite(confidence) or confidence <= 0:
+                continue
+        effective[name] = weight
+    return effective
 
 
 @dataclass
@@ -293,14 +325,15 @@ def make_decision(
     dimensions = compute_dimension_scores(code, df, weibo_posts, news_list)
 
     # 加权融合
-    total_weight = sum(weights.get(k, 0) for k in dimensions)
+    effective_weights = get_effective_signal_weights(dimensions, weights)
+    total_weight = sum(effective_weights.values())
     if total_weight == 0:
         total_weight = 1
 
     composite = 0.0
     weighted_conf = 0.0
     for dim_name, dim in dimensions.items():
-        w = weights.get(dim_name, 0)
+        w = effective_weights.get(dim_name, 0)
         composite += dim.score * w
         weighted_conf += dim.confidence * w
 
@@ -436,14 +469,15 @@ def make_decision_with_cache(
         dims["ml"] = DimensionScore("ml", 50, 0.0, f"ML信号异常: {e}")
 
     # 加权融合
-    total_weight = sum(weights.get(k, 0) for k in dims)
+    effective_weights = get_effective_signal_weights(dims, weights)
+    total_weight = sum(effective_weights.values())
     if total_weight == 0:
         total_weight = 1
 
     composite = 0.0
     weighted_conf = 0.0
     for dim_name, dim in dims.items():
-        w = weights.get(dim_name, 0)
+        w = effective_weights.get(dim_name, 0)
         composite += dim.score * w
         weighted_conf += dim.confidence * w
 

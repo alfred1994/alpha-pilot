@@ -12,6 +12,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import scheduler.auto_trader as auto_trader
 from scheduler.auto_trader import AutoLoopLock, AutoLoopLockError
 
 
@@ -52,6 +53,28 @@ def main():
         assert_true(os.path.exists(lock_path), "过期锁会被新实例回收")
         recovered.release()
         assert_true(not os.path.exists(lock_path), "回收后的锁可正常释放")
+
+        # 独立入口（如Doctor）必须通过带锁包装器进入自动循环。
+        calls = []
+        original_run_auto_cycle = auto_trader.run_auto_cycle
+        auto_trader.run_auto_cycle = lambda **kwargs: calls.append(kwargs) or {"ok": True}
+        try:
+            wrapped = auto_trader.run_locked_auto_cycle(lock_file=lock_path, marker="wrapped")
+            assert_true(wrapped == {"ok": True}, "带锁自动循环返回底层结果")
+            assert_true(calls == [{"marker": "wrapped"}], "带锁入口调用一次底层自动循环")
+            assert_true(not os.path.exists(lock_path), "带锁自动循环结束后释放锁")
+
+            held = AutoLoopLock(lock_file=lock_path, stale_after=60).acquire()
+            blocked_wrapper = False
+            try:
+                auto_trader.run_locked_auto_cycle(lock_file=lock_path)
+            except AutoLoopLockError:
+                blocked_wrapper = True
+            finally:
+                held.release()
+            assert_true(blocked_wrapper, "带锁入口会阻止并发自动循环")
+        finally:
+            auto_trader.run_auto_cycle = original_run_auto_cycle
 
         print("自动盯盘单实例锁测试通过")
 
