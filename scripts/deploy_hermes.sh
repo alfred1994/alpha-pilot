@@ -22,6 +22,14 @@ log() {
   printf '[deploy-hermes] %s\n' "$*"
 }
 
+on_error() {
+  status="$?"
+  log "ERROR line=${BASH_LINENO[0]:-unknown} status=$status command=${BASH_COMMAND:-unknown}"
+  exit "$status"
+}
+
+trap on_error ERR
+
 git_auth() {
   if [ -n "$REPO_TOKEN" ] && [ -n "$REPO_URL" ]; then
     auth="$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')"
@@ -264,7 +272,12 @@ else
 fi
 
 log "install python dependencies"
-"$VENV_PY" -m pip install -r requirements.txt
+"$VENV_PY" -m pip install \
+  --disable-pip-version-check \
+  --no-input \
+  --retries 3 \
+  --timeout 30 \
+  -r requirements.txt
 
 log "compile python modules"
 "$VENV_PY" -m compileall -q main.py config.py data execution review risk scheduler signals strategy web

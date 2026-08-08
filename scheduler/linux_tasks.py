@@ -175,7 +175,7 @@ cd "$PROJECT_DIR"
 if [ -f "$LOG_FILE" ]; then
   log_size=$(wc -c < "$LOG_FILE" 2>/dev/null || echo 0)
   if [ "$log_size" -gt 20971520 ]; then
-    mv -f "$LOG_FILE" "${LOG_FILE}.1"
+    mv -f "$LOG_FILE" "${{LOG_FILE}}.1"
   fi
 fi
 
