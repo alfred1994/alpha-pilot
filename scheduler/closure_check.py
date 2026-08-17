@@ -59,6 +59,7 @@ def _build_items(row: Dict, status: str, is_trade_day: bool,
     execute_count = int(row.get("execute_count") or 0)
     trade_count = int(row.get("trade_count") or 0)
     decision_count = int(row.get("decision_count") or 0)
+    actionable_decision_count = int(row.get("actionable_decision_count") or 0)
     review_count = int(row.get("review_count") or 0)
     lesson_count = int(row.get("lesson_count") or 0)
     closed_loop = bool(row.get("closed_loop"))
@@ -159,20 +160,20 @@ def _build_items(row: Dict, status: str, is_trade_day: bool,
         ))
 
     has_decision_or_trade = trade_count > 0 or decision_count > 0
+    has_actionable_sample = trade_count > 0 or actionable_decision_count > 0
 
     if lesson_count > 0:
         items.append(_ok_item("教训沉淀", f"已沉淀{lesson_count}条教训"))
     elif review_count > 0:
-        items.append(_gap_item(
-            "教训沉淀",
-            "critical" if has_decision_or_trade else "warn",
-            "已有复盘但未沉淀教训",
-            (
-                "检查 review.llm_review 的教训提取和降级逻辑。"
-                if has_decision_or_trade
-                else "当前缺少交易/决策样本，继续积累盘中观察。"
-            ),
-        ))
+        if has_actionable_sample:
+            items.append(_gap_item(
+                "教训沉淀",
+                "critical",
+                "已有可交易决策或成交样本，但未沉淀教训",
+                "检查 review.llm_review 的教训提取和降级逻辑。",
+            ))
+        else:
+            items.append(_ok_item("教训沉淀", "本日仅HOLD观察，无可验证交易样本"))
     else:
         items.append(_gap_item(
             "教训沉淀",

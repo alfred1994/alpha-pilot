@@ -663,7 +663,7 @@ def fast_scan(
                         _s["llm_action"] = _decision.action
                         _s["llm_confidence"] = _decision.confidence
                         _s["llm_reason"] = _decision.reason
-                        _s["decision_id"] = _decision.decision_id
+                        _s["decision_id"] = getattr(_decision, "decision_id", None)
                         if _decision.confidence > 0:
                             _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
                             llm_count += 1

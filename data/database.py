@@ -887,7 +887,8 @@ class Database:
 
     def get_memory_items(self, layer: str = None, scope: str = None,
                          key: str = None, category: str = None,
-                         active: bool = True, limit: int = 20) -> List[Dict]:
+                         active: bool = True, limit: int = 20,
+                         exclude_categories: List[str] = None) -> List[Dict]:
         """查询分层记忆"""
         conditions, params = [], []
         if layer:
@@ -902,6 +903,10 @@ class Database:
         if category:
             conditions.append("category = ?")
             params.append(category)
+        if exclude_categories:
+            placeholders = ",".join("?" for _ in exclude_categories)
+            conditions.append(f"category NOT IN ({placeholders})")
+            params.extend(exclude_categories)
         if active is not None:
             conditions.append("active = ?")
             params.append(1 if active else 0)

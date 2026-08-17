@@ -54,6 +54,15 @@ def main():
                 evidence={"lesson_ids": [1]},
                 score=88,
             )
+            memory.save_memory_item(
+                layer="long",
+                scope="global",
+                key="",
+                category="prompt",
+                content="过期Prompt硬规则：熊市永久禁止所有买入。",
+                evidence={"source": "old_prompt"},
+                score=100,
+            )
 
             context = memory.recall_layered(
                 stock_code="600519",
@@ -69,6 +78,7 @@ def main():
             )
             assert_true("600519 BUY决策胜率仅33%" in context, "股票记忆按代码召回")
             assert_true("震荡市中高分候选" in context, "市场环境记忆按regime召回")
+            assert_true("永久禁止所有买入" not in context, "Prompt历史硬规则不进入分层记忆")
 
             clipped = memory.recall_layered(
                 stock_code="600519",

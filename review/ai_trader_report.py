@@ -244,6 +244,9 @@ def _build_daily_rows(dates: List[str], events: List[Dict], trades: List[Dict],
             "buy_count": sum(1 for t in day_trades if t.get("action") == "BUY"),
             "sell_count": sum(1 for t in day_trades if t.get("action") == "SELL"),
             "decision_count": len(day_decisions),
+            "actionable_decision_count": sum(
+                1 for d in day_decisions if d.get("action") in ("BUY", "SELL")
+            ),
             "lesson_count": len(day_lessons),
             "error_count": action_summary["error_count"],
             "diagnosis": diagnosis,
@@ -337,7 +340,8 @@ def _summarise_layered_memory(db: Database, limit: int = 3) -> Dict:
 
 
 def _summarise_next_trade_params(adaptive_state: Optional[Dict],
-                                 latest_regime: Dict) -> Dict:
+                                 latest_regime: Dict,
+                                 effective_directive: Optional[Dict] = None) -> Dict:
     """计算自适应状态对下一轮交易参数的实际影响"""
     from strategy.regime_config import get_trade_params
 
@@ -347,11 +351,22 @@ def _summarise_next_trade_params(adaptive_state: Optional[Dict],
     for regime in regimes:
         by_regime[regime] = get_trade_params(regime, adaptive_state=adaptive_state or {})
 
-    return {
+    result = {
         "current_regime": current_regime,
         "current": by_regime.get(current_regime, by_regime["sideways"]),
         "by_regime": by_regime,
+        "source": "adaptive_fallback",
     }
+    if effective_directive:
+        result.update({
+            "current_regime": effective_directive.get("regime") or current_regime,
+            "current": dict(effective_directive.get("params") or result["current"]),
+            "source": "ai_directive",
+            "directive_version": effective_directive.get("version", ""),
+            "effective_date": effective_directive.get("effective_date", ""),
+            "intent": effective_directive.get("intent", ""),
+        })
+    return result
 
 
 def _summarise_metrics(daily_rows: List[Dict], events: List[Dict],
@@ -473,6 +488,8 @@ def format_ai_trader_report(report: Dict) -> str:
         "## 纠偏应用",
         "",
         f"- 最新市场环境: {current_regime} ({latest_regime.get('date', '无记录')})",
+        f"- 参数来源: {next_params.get('source', 'adaptive_fallback')}"
+        + (f"，策略版本{next_params.get('directive_version')}" if next_params.get('directive_version') else ""),
         f"- 下一轮参数: Top{current_params.get('top_k', '-')}，最低分{min_score_text}，单票仓位上限{float(current_params.get('max_weight') or 0):.1%}",
         f"- Prompt进化建议: {len(prompt_hints)}条生效",
         f"- 分层记忆: 共{memory.get('total', 0)}条，短期{memory.get('layers', {}).get('short', 0)}条，中期{memory.get('layers', {}).get('medium', 0)}条，长期{memory.get('layers', {}).get('long', 0)}条",
@@ -523,7 +540,10 @@ def format_ai_trader_report(report: Dict) -> str:
     if metrics["no_trade_signal_days"]:
         lines.append("- 有扫描但无可交易决策，属于策略观望，需要结合候选分数和LLM理由判断是否过于保守。")
     if metrics["lesson_count"] == 0:
-        lines.append("- 复盘暂未沉淀教训，需要检查LLM复盘或降级教训提取是否运行。")
+        if metrics.get("llm_actionable_count", 0) == 0 and metrics.get("trade_count", 0) == 0:
+            lines.append("- 当前只有HOLD观察或无交易样本，暂不生成教训属于正常状态。")
+        else:
+            lines.append("- 复盘暂未沉淀教训，需要检查LLM复盘或降级教训提取是否运行。")
     if not adaptive["available"]:
         lines.append("- 自适应状态尚未形成，需要至少3笔已复盘卖出样本。")
     if metrics["error_events"]:
@@ -575,6 +595,15 @@ def generate_ai_trader_report(days: int = 5, end_date: str = None,
         adaptive_state = db.get_adaptive_state()
         account = db.get_account_state() or {}
         latest_regime = _load_latest_regime(db, end_date)
+        try:
+            from strategy.directive import get_effective_trade_policy
+            effective_strategy = get_effective_trade_policy(
+                end_date,
+                latest_regime.get("regime") or "sideways",
+                db_path=db_path,
+            ) or {}
+        except Exception:
+            effective_strategy = {}
         prompt_hints = _load_active_prompt_hints(db)
         memory = _summarise_layered_memory(db)
 
@@ -586,7 +615,10 @@ def generate_ai_trader_report(days: int = 5, end_date: str = None,
         "daily": daily_rows,
         "adaptive": _summarise_adaptive_state(adaptive_state),
         "latest_regime": latest_regime,
-        "next_trade_params": _summarise_next_trade_params(adaptive_state, latest_regime),
+        "next_trade_params": _summarise_next_trade_params(
+            adaptive_state, latest_regime, effective_strategy,
+        ),
+        "effective_strategy": effective_strategy,
         "prompt_hints": prompt_hints,
         "memory": memory,
         "account": account,

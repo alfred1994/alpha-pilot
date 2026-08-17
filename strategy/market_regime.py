@@ -370,12 +370,14 @@ def _classify_regime_llm(indicators: Dict) -> Optional[tuple]:
         return None
 
 
-def _apply_regime_hysteresis(today: str, candidate: str, confidence: float, reasoning: str, db_path: str = None):
+def _apply_regime_hysteresis(today: str, candidate: str, confidence: float,
+                             reasoning: str, db_path: str = None,
+                             indicators: Dict = None):
     """对环境标签做置信度迟滞，避免单日模型抖动直接驱动清仓/建仓。
 
-    只使用上一交易日的已落库标签；当新标签置信度不足 0.75 时沿用旧标签，
-    并把原始判断写入指标供审计。这里不依赖“连续几天”计数，模型有足够把握时
-    仍可在一天内切换环境。
+    只使用上一交易日的已落库标签；低置信度反转只有在缺少当日证据时才沿用。
+    当市场广度和择时投票对新标签形成一致支持时，即使 LLM 置信度一般，也允许
+    当天切换，避免历史标签永久锁死。这里不依赖连续天数计数。
     """
     try:
         from data.database import Database
@@ -387,11 +389,29 @@ def _apply_regime_hysteresis(today: str, candidate: str, confidence: float, reas
         if not row:
             return candidate, confidence, reasoning, False, ""
         previous = row["regime"]
-        if previous and previous != candidate and float(confidence or 0) < 0.75:
+        raw_confidence = float(confidence or 0)
+        evidence = indicators or {}
+        timing_signal = int(evidence.get("timing_final_signal") or 0)
+        limit_ratio = float(evidence.get("limit_ratio") or 0)
+        limit_up = int(evidence.get("limit_up_count") or 0)
+        limit_down = int(evidence.get("limit_down_count") or 0)
+
+        # 强广度/择时证据可覆盖模型的低置信度标签，尤其是当前市场从
+        # bear 恢复到 sideways/bull 时，不能因为前一天的 bear 永久锁死。
+        breadth_support = (
+            limit_ratio >= 0.70 and limit_up >= 30 and limit_down <= max(5, limit_up // 20)
+        )
+        timing_support = (
+            (candidate in ("bull", "sideways") and timing_signal >= 0)
+            or (candidate == "bear" and timing_signal <= 0)
+        )
+        evidence_supports_switch = breadth_support and timing_support
+
+        if previous and previous != candidate and raw_confidence < 0.75 and not evidence_supports_switch:
             return (
                 previous,
-                round(min(float(row["confidence"] or 0.5), float(confidence or 0.5)), 2),
-                f"迟滞沿用前日{previous}: 今日原始判断{candidate}置信度{float(confidence or 0):.0%}不足",
+                round(min(float(row["confidence"] or 0.5), raw_confidence), 2),
+                f"迟滞沿用前日{previous}: 今日原始判断{candidate}置信度{raw_confidence:.0%}且缺少广度/择时确认",
                 True,
                 candidate,
             )
@@ -452,8 +472,10 @@ def detect_regime(use_llm: bool = True) -> MarketRegime:
         llm_reasoning = f"规则判断: {reasoning}"
 
     raw_regime, raw_confidence = regime, confidence
+    indicators["raw_regime"] = raw_regime
+    indicators["raw_confidence"] = raw_confidence
     regime, confidence, hysteresis_reason, hysteresis_applied, raw_label = _apply_regime_hysteresis(
-        today, regime, confidence, llm_reasoning,
+        today, regime, confidence, llm_reasoning, indicators=indicators,
     )
     if hysteresis_applied:
         indicators["raw_regime"] = raw_label or raw_regime

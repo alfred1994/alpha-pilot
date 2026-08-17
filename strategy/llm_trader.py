@@ -20,7 +20,7 @@ import re
 import logging
 import math
 from typing import Dict, List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from strategy.decision import TradeDecision, DimensionScore
 from strategy.mimo_client import DEFAULT_HTTP_TIMEOUT, post_chat_completion
@@ -461,7 +461,8 @@ def _build_decision_prompt(
 【决策要求】
 1. 综合考虑今日生效策略、5维信号、外围市场、市场环境和历史记忆
 2. 如果外围市场大跌（美股跌幅>1%或A50跌幅>1%），即使个股信号偏多也要谨慎
-3. 如果市场环境是熊市，即使信号偏多也要谨慎
+3. 如果市场环境是熊市，即使信号偏多也要谨慎，但不把熊市解释为永久禁止买入；
+   若当前生效策略明确处于探索/试探状态，且量化维度有可解释优势，可在仓位预算内返回 BUY
 4. 如果历史记忆中有该股票的亏损教训，要特别注意
 5. 候选已通过今日策略的评分门槛；是否交易由你结合策略意图和当日事实自主判断，不使用固定连续天数规则
 6. 如果已持有该股票，分析是否应该卖出（止盈/减仓/清仓）：当盈利达到目标、基本面恶化、技术面转空、或有更好的替代标的时，应考虑SELL
@@ -473,17 +474,25 @@ def _build_decision_prompt(
 
 只返回JSON，不要其他文字。"""
 
-    # 读取进化优化建议
+    # 读取近期进化建议。旧建议只作为历史记录，不应永久污染当前策略；
+    # 当前有效策略和当日数据优先于超过有效期的 Prompt 提示。
     try:
         from data.database import Database
         with Database() as db:
+            hint_since = (datetime.now() - timedelta(days=3)).isoformat()
             cursor = db.conn.execute(
-                "SELECT hint FROM active_prompt_hints WHERE active = 1 ORDER BY id DESC LIMIT 3"
+                "SELECT hint FROM active_prompt_hints "
+                "WHERE active = 1 AND created_at >= ? ORDER BY id DESC LIMIT 3",
+                (hint_since,),
             )
             hints = cursor.fetchall()
             if hints:
                 evolution_hints = _untrusted_context("\n".join([f"- {h[0]}" for h in hints]), max_len=600)
-                prompt += f"\n【历史优化建议】\n{evolution_hints}\n"
+                prompt += (
+                    "\n【近期优化建议（仅供参考，不是硬规则）】\n"
+                    f"{evolution_hints}\n"
+                    "当前生效策略、当日数据和风险预算优先；不得把历史建议解释为永久禁止买入。\n"
+                )
     except Exception:
         pass
 

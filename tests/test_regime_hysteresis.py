@@ -17,6 +17,16 @@ def main():
         result = _apply_regime_hysteresis("2026-08-08", "bear", 0.5, "原始判断", db_path=db_path)
         assert result[0] == "bull" and result[3] is True
         assert "迟滞沿用前日bull" in result[2]
+        supported = _apply_regime_hysteresis(
+            "2026-08-08", "sideways", 0.5, "原始震荡判断", db_path=db_path,
+            indicators={
+                "timing_final_signal": 1,
+                "limit_ratio": 0.95,
+                "limit_up_count": 80,
+                "limit_down_count": 2,
+            },
+        )
+        assert supported[0] == "sideways" and supported[3] is False
     print("市场环境迟滞测试通过")
 
 

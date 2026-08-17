@@ -60,12 +60,25 @@ def test_watch_cycle_keeps_working_without_trade():
                 "watch_account_snapshot": lambda: _account(),
             },
         )
+        third = run_watch_cycle(
+            state=state,
+            now=datetime(2026, 6, 9, 10, 10),
+            now_ts=1600,
+            watchlist_path=watch_path,
+            services={
+                "watch_market_snapshot": lambda: _market(35),
+                "watch_candidate_pool": lambda: [{"code": "600519", "name": "贵州茅台", "score": 56, "source": ["接近门槛"]}],
+                "watch_account_snapshot": lambda: _account(),
+            },
+        )
 
         assert_true(any("轻量看盘" in a for a in first["actions"]), "无交易时仍输出轻量看盘动作")
         assert_true(first["rescue_requested"] is False, "首次观察不触发救援扫描")
         assert_true(second["missed_opportunity"] is True, "市场转强且高现金生成疑似踏空")
         assert_true(second["rescue_requested"] is True, "二次确认后允许救援扫描")
         assert_true(second["eligible_codes"] == ["600519"], "只有二次确认代码进入救援白名单")
+        assert_true(third["rescue_requested"] is False, "同一观察证据不会重复触发救援扫描")
+        assert_true(third["details"]["rescue_suppressed_duplicate"] is True, "重复救援会记录抑制原因")
     finally:
         if os.path.exists(watch_path):
             os.unlink(watch_path)

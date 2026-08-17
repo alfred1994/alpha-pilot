@@ -100,7 +100,7 @@ class LongbridgeDataSource:
     """
 
     def get_daily_kline(self, code: str, start_date: str = None,
-                        end_date: str = None) -> pd.DataFrame:
+                        end_date: str = None, use_cache: bool = True) -> pd.DataFrame:
         """获取日K线，自动存入SQLite"""
         if not start_date:
             start_date = (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
@@ -110,20 +110,22 @@ class LongbridgeDataSource:
         end_date = _normalize_date(end_date)
         system_code = from_longport_code(code)
 
-        # 1. 先查SQLite缓存
-        try:
-            from data.database import Database
-            with Database() as db:
-                cached = db.get_k_daily(system_code, start_date, end_date)
-                if cached:
-                    df = pd.DataFrame(cached)
-                    for col in ["source"]:
-                        if col in df.columns:
-                            df = df.drop(columns=[col])
-                    logger.info(f"日K线命中缓存: {system_code} {len(df)}条")
-                    return df
-        except Exception as e:
-            logger.debug(f"缓存查询失败: {e}")
+        # 1. 先查SQLite缓存。调用方明确要求刷新时必须绕过缓存，
+        # 否则历史K线缺少最新尾部时会被旧数据永久遮蔽。
+        if use_cache:
+            try:
+                from data.database import Database
+                with Database() as db:
+                    cached = db.get_k_daily(system_code, start_date, end_date)
+                    if cached:
+                        df = pd.DataFrame(cached)
+                        for col in ["source"]:
+                            if col in df.columns:
+                                df = df.drop(columns=[col])
+                        logger.info(f"日K线命中缓存: {system_code} {len(df)}条")
+                        return df
+            except Exception as e:
+                logger.debug(f"缓存查询失败: {e}")
 
         # 2. SDK 获取
         df = self._fetch_daily(code, start_date, end_date)
@@ -349,7 +351,7 @@ def _get_default_source():
 
 
 def get_daily_kline(code, start_date=None, end_date=None, adjust="qfq", use_cache=True):
-    return _get_default_source().get_daily_kline(code, start_date, end_date)
+    return _get_default_source().get_daily_kline(code, start_date, end_date, use_cache=use_cache)
 
 
 def get_minute_kline(code, period="5m", count=200, use_cache=True):

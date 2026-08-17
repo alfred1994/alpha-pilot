@@ -71,15 +71,15 @@ def load_watchlist(now: datetime = None, now_ts: float = None,
     ttl = ttl or AUTO_WATCHLIST_TTL
     today = _today(now)
     if not os.path.exists(path):
-        return {"date": today, "items": {}}
+        return {"date": today, "items": {}, "last_rescue_signature": ""}
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except Exception:
-        return {"date": today, "items": {}}
+        return {"date": today, "items": {}, "last_rescue_signature": ""}
 
     if data.get("date") != today:
-        return {"date": today, "items": {}}
+        return {"date": today, "items": {}, "last_rescue_signature": ""}
 
     now_ts = now_ts if now_ts is not None else time.time()
     items = {}
@@ -87,7 +87,11 @@ def load_watchlist(now: datetime = None, now_ts: float = None,
         last_seen = _safe_float(item.get("last_seen"), 0)
         if last_seen and now_ts - last_seen <= ttl:
             items[code] = item
-    return {"date": today, "items": items}
+    return {
+        "date": today,
+        "items": items,
+        "last_rescue_signature": str(data.get("last_rescue_signature") or ""),
+    }
 
 
 def save_watchlist(data: Dict, path: str = None):
@@ -252,7 +256,11 @@ def _update_watchlist(
         if code not in seen and item.get("status") == "confirmed":
             item["status"] = "cooling"
 
-    return {"date": _today(now), "items": items}
+    return {
+        "date": _today(now),
+        "items": items,
+        "last_rescue_signature": str(watchlist.get("last_rescue_signature") or ""),
+    }
 
 
 def run_watch_cycle(
@@ -294,8 +302,13 @@ def run_watch_cycle(
         state.morning_baseline = baseline
 
     watchlist = load_watchlist(now=now, now_ts=now_ts, path=watchlist_path)
+    previous_confirmed = {
+        str(item.get("code") or "")
+        for item in watchlist.get("items", {}).values()
+        if item.get("status") == "confirmed"
+    }
+    previous_rescue_signature = str(watchlist.get("last_rescue_signature") or "")
     watchlist = _update_watchlist(watchlist, candidates, now, now_ts, allow_new)
-    save_watchlist(watchlist, path=watchlist_path)
 
     total_assets = _safe_float(account.get("total_assets"))
     cash = _safe_float(account.get("cash"))
@@ -308,9 +321,28 @@ def run_watch_cycle(
         if int(item.get("confirmations") or 0) >= RESCUE_CONFIRMATIONS
         and item.get("status") == "confirmed"
     ]
+    newly_confirmed = [
+        str(item.get("code") or "")
+        for item in confirmed
+        if str(item.get("code") or "") not in previous_confirmed
+    ]
 
-    missed = bool(high_cash and (market_stronger or confirmed))
-    rescue_requested = bool(missed and confirmed and allow_new)
+    eligible_codes = [item["code"] for item in confirmed[:AUTO_RESCUE_MAX_TOPK]]
+    pool_version = str(pool_meta.get("version") or "")
+    rescue_signature = ":".join([
+        pool_version,
+        str(len(market.get("limit_up", []) or [])),
+        ",".join(sorted(eligible_codes)),
+    ])
+    # 空仓+已确认观察标的并不等于每轮都“踏空”。只有市场真正转强或
+    # 本轮首次完成二次确认时才触发一次救援；同一证据不重复调用 LLM。
+    missed = bool(high_cash and (market_stronger or newly_confirmed))
+    rescue_requested = bool(
+        missed and confirmed and allow_new and rescue_signature != previous_rescue_signature
+    )
+    if rescue_requested:
+        watchlist["last_rescue_signature"] = rescue_signature
+    save_watchlist(watchlist, path=watchlist_path)
 
     top_watch = sorted(
         watchlist["items"].values(),
@@ -345,13 +377,18 @@ def run_watch_cycle(
             "high_cash": high_cash,
             "allow_new_entries": allow_new,
             "confirmed_count": len(confirmed),
+            "newly_confirmed": newly_confirmed,
+            "rescue_signature": rescue_signature,
+            "rescue_suppressed_duplicate": bool(
+                missed and rescue_signature == previous_rescue_signature
+            ),
             "top_watch": top_watch,
             "candidate_pool": pool_meta,
         },
         "watchlist": watchlist,
         "missed_opportunity": missed,
         "rescue_requested": rescue_requested,
-        "eligible_codes": [item["code"] for item in confirmed[:AUTO_RESCUE_MAX_TOPK]],
+        "eligible_codes": eligible_codes,
     }
 
 

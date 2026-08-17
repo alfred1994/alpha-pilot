@@ -137,7 +137,7 @@ class TradeMemory:
                 for scope, key in queries:
                     rows = db.get_memory_items(
                         layer=layer, scope=scope, key=key,
-                        active=True, limit=5,
+                        active=True, limit=5, exclude_categories=["prompt"],
                     )
                     for row in rows:
                         row_id = row.get("id")

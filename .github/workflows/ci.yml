@@ -54,6 +54,10 @@ jobs:
           python tests/test_agent_driver_contract.py
           python tests/test_timeout_budgets.py
           python tests/test_runtime_recovery.py
+          python tests/test_history_cache_freshness.py
+          python tests/test_regime_hysteresis.py
+          python tests/test_intraday_watch.py
+          python tests/test_layered_memory.py
           python tests/test_auto_control.py
           python tests/test_auto_watchdog.py
           python tests/test_auto_doctor.py

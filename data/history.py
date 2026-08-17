@@ -20,6 +20,10 @@ from config import BAOSTOCK_TIMEOUT
 
 logger = logging.getLogger("data.history")
 
+# 日线缓存允许覆盖到最近一个已完成交易日；超过该窗口则必须尝试补拉，
+# 不能因为区间内存在旧记录就永久复用整段旧数据。
+HISTORY_CACHE_MAX_STALE_DAYS = int(os.environ.get("HISTORY_CACHE_MAX_STALE_DAYS", "3"))
+
 # 字段映射
 DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
 DAILY_SIMPLE_FIELDS = "date,code,open,high,low,close,volume,amount,turn,pctChg"
@@ -167,7 +171,7 @@ def _to_system_code(code: str) -> str:
 
 
 def _try_cache(code: str, start_date: str, end_date: str,
-               adjust: str = "qfq") -> Optional[pd.DataFrame]:
+               adjust: str = "qfq", allow_stale: bool = False) -> Optional[pd.DataFrame]:
     """
     尝试从SQLite缓存获取数据
 
@@ -185,8 +189,29 @@ def _try_cache(code: str, start_date: str, end_date: str,
                 for col in ["source"]:
                     if col in df.columns:
                         df = df.drop(columns=[col])
-                logger.info(f"缓存命中: {system_code} {len(df)}条")
-                return df
+                latest_date = str(df["date"].max()) if "date" in df.columns else ""
+                try:
+                    requested_end = datetime.strptime(end_date, "%Y-%m-%d")
+                    cached_end = datetime.strptime(latest_date[:10], "%Y-%m-%d")
+                    stale_days = max(0, (requested_end - cached_end).days)
+                except (TypeError, ValueError):
+                    stale_days = HISTORY_CACHE_MAX_STALE_DAYS + 1
+
+                if stale_days <= HISTORY_CACHE_MAX_STALE_DAYS:
+                    logger.info(
+                        f"缓存命中: {system_code} {len(df)}条 latest={latest_date} "
+                        f"gap={stale_days}d"
+                    )
+                    return df
+
+                logger.warning(
+                    f"历史缓存过期: {system_code} latest={latest_date} "
+                    f"requested_end={end_date} gap={stale_days}d"
+                )
+                if allow_stale:
+                    df.attrs["stale_cache_days"] = stale_days
+                    df.attrs["stale_cache_latest"] = latest_date
+                    return df
     except Exception as e:
         logger.debug(f"缓存查询失败: {e}")
     return None
@@ -260,11 +285,14 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
     end_date = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
 
     # 简单字段模式才走缓存和长桥（完整字段需要PE/PB等，长桥不一定有）
+    stale_cache = None
     if simple:
         # 1. 先查SQLite缓存
         df = _try_cache(code, start_date, end_date, adjust)
         if df is not None:
             return df
+        # 外部源失败时保留旧缓存作为明确降级结果，但不把它当作新鲜数据。
+        stale_cache = _try_cache(code, start_date, end_date, adjust, allow_stale=True)
 
         # 2. 尝试长桥API
         df = _try_longbridge(code, start_date, end_date, adjust)
@@ -278,6 +306,14 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
     # 保存到缓存（仅简单字段模式）
     if simple and df is not None and not df.empty:
         _save_to_cache(code, df, adjust, source="baostock")
+
+    if (df is None or df.empty) and stale_cache is not None:
+        logger.warning(
+            f"历史数据源不可用，回退过期缓存: {code} "
+            f"latest={stale_cache.attrs.get('stale_cache_latest', '')} "
+            f"stale_days={stale_cache.attrs.get('stale_cache_days', '?')}"
+        )
+        return stale_cache
 
     return df
 
