@@ -60,6 +60,14 @@ def _calc_trend_indicators() -> Dict:
         from data.history import get_daily
 
         df = get_daily("000300.SH", start_date="20240101")
+        stale_days = int(getattr(df, "attrs", {}).get("stale_cache_days") or 0)
+        if stale_days > 0:
+            # 过期指数数据不能继续参与趋势分类，否则会把数周前的熊市
+            # 状态持续投射到今天；保留滞后信息供健康检查和审计。
+            indicators["trend_data_stale_days"] = stale_days
+            indicators["trend_data_source"] = "stale_cache"
+            logger.warning("沪深300趋势数据过期%d天，本轮不使用趋势指标", stale_days)
+            return indicators
         if df is None or len(df) < 60:
             return indicators
 

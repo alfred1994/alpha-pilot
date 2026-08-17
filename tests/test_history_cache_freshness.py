@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import data.database as database
 from data.database import Database
 from data.history import _to_bs_code, _to_system_code, _try_cache
+from strategy.market_regime import _calc_trend_indicators
 
 
 def main():
@@ -43,6 +44,16 @@ def main():
         stale = _try_cache("000300", "20240101", "2026-08-18", allow_stale=True)
         assert stale is not None, "外部数据源失败时仍可回退到过期缓存"
         assert stale.attrs["stale_cache_days"] > 3, "过期缓存必须标记滞后天数"
+
+        import data.history as history
+        original_daily = history.get_daily
+        history.get_daily = lambda *args, **kwargs: stale
+        try:
+            indicators = _calc_trend_indicators()
+            assert indicators.get("trend_data_source") == "stale_cache"
+            assert "hs300_pct_5d" not in indicators
+        finally:
+            history.get_daily = original_daily
         print("历史K线缓存新鲜度测试通过")
     finally:
         database.DB_PATH = old_db_path
