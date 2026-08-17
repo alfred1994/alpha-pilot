@@ -8,10 +8,15 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import data.database as database
 from data.database import Database
-from data.history import _try_cache
+from data.history import _to_bs_code, _to_system_code, _try_cache
 
 
 def main():
+    assert _to_bs_code("000300.SH") == "sh.000300"
+    assert _to_bs_code("sh.000300") == "sh.000300"
+    assert _to_system_code("000300.SH") == "000300"
+    assert _to_system_code("sh.000300") == "000300"
+
     tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
     db_path = tmp.name
     tmp.close()

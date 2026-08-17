@@ -156,6 +156,11 @@ def _to_bs_code(code: str) -> str:
     """转换为baostock格式: 600519 → sh.600519"""
     code = code.strip()
     if "." in code:
+        left, right = (part.strip() for part in code.split(".", 1))
+        if right.lower() in ("sh", "sz") and left:
+            return f"{right.lower()}.{left}"
+        if left.lower() in ("sh", "sz") and right:
+            return f"{left.lower()}.{right}"
         return code
     if code.startswith(("6", "5")):
         return f"sh.{code}"
@@ -166,7 +171,12 @@ def _to_system_code(code: str) -> str:
     """转换为系统格式（纯数字）"""
     code = code.strip()
     if "." in code:
-        return code.split(".")[-1]
+        left, right = (part.strip() for part in code.split(".", 1))
+        if right.lower() in ("sh", "sz"):
+            return left
+        if left.lower() in ("sh", "sz"):
+            return right
+        return right or left
     return code.lstrip("shszSHSZ")
 
 
