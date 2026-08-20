@@ -45,6 +45,11 @@ def main():
         result2 = sync_research_universe(batch_size=2, workers=1, history_days=730, path=path)
         assert_true(result2["requested"] == 2, "研究股票池按游标持续轮转")
 
+        with open(f"{path}.lock", "w", encoding="utf-8") as file:
+            file.write("busy")
+        assert_true(sync_research_universe(path=path)["status"] == "locked", "研究同步拒绝并发重复运行")
+        os.unlink(f"{path}.lock")
+
         stock_picker._get_active_stocks = lambda min_amount, limit: {}
         snapshot.get_candidate_pool_status = lambda max_age: {
             "snapshot": {"candidates": [{"code": "000001", "name": "平安银行"}]},
@@ -60,6 +65,8 @@ def main():
         snapshot.get_candidate_pool_status = original_pool_status
         if os.path.exists(path):
             os.unlink(path)
+        if os.path.exists(f"{path}.lock"):
+            os.unlink(f"{path}.lock")
 
 
 if __name__ == "__main__":
