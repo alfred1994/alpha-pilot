@@ -8,3 +8,5 @@ cloakbrowser>=0.2
 fastapi>=0.100.0
 uvicorn>=0.22.0
 httpx>=0.27.0
+lightgbm>=4.0
+scikit-learn>=1.4

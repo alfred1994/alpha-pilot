@@ -3,6 +3,7 @@
 import os
 import sys
 from types import SimpleNamespace
+import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -11,7 +12,7 @@ import strategy.decision as decision
 import data.history as history
 from scheduler.pipeline import _parallel_score
 from strategy.decision import DimensionScore, _compute_ml_dimension, get_effective_signal_weights
-from strategy.qlib_signal import MLPrediction
+from strategy.qlib_signal import MLPrediction, build_target
 
 
 def test_ml_prediction_contract():
@@ -38,6 +39,14 @@ def test_unavailable_ml_is_removed_and_remaining_weights_are_normalized():
     }, {"technical": 0.35, "ml": 0.17})
     assert weights == {"technical": 0.35}
     print("  OK 不可用ML维度从综合评分权重中剔除")
+
+
+def test_last_bar_is_not_a_fake_down_label():
+    target = build_target(pd.DataFrame({"close": [10, 11, 10]}))
+    assert target.iloc[0] == 1
+    assert target.iloc[1] == 0
+    assert pd.isna(target.iloc[-1])
+    print("  OK 最后一根K线不会被伪标为下跌样本")
 
 
 def test_pipeline_records_ml_degradation_and_effective_weights():
@@ -67,6 +76,7 @@ def test_pipeline_records_ml_degradation_and_effective_weights():
 def main():
     test_ml_prediction_contract()
     test_unavailable_ml_is_removed_and_remaining_weights_are_normalized()
+    test_last_bar_is_not_a_fake_down_label()
     test_pipeline_records_ml_degradation_and_effective_weights()
 
 

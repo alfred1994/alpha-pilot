@@ -81,22 +81,36 @@ def _load_signal_degradations() -> List[Dict]:
             "label": "市场数据",
             "summary": "市场快照不可用，市场级信号使用中性默认",
         }
-    for score in (cache.get("raw_scores") or [])[:20]:
-        for name in (score.get("signal_coverage") or {}).get("degraded_dimensions", []) or []:
+    scores = (cache.get("raw_scores") or [])[:20]
+    degraded_counts = {}
+    for score in scores:
+        coverage = score.get("signal_coverage") or {}
+        for name in set(coverage.get("degraded_dimensions", []) or []):
+            degraded_counts[name] = degraded_counts.get(name, 0) + 1
+
+    # 单个标的可能因上市时间短或历史数据缺失无法计算 ML，不应把整轮能力
+    # 误报为不可用；只有所有候选都降级时才提升为全局能力告警。
+    total_scores = len(scores)
+    for name, count in degraded_counts.items():
+        if total_scores and count == total_scores:
             found[name] = {
                 "key": name,
                 "label": _DIMENSION_LABELS.get(name, name),
                 "summary": f"{_DIMENSION_LABELS.get(name, name)}不可用，已从本轮综合评分剔除并归一化剩余权重",
             }
-        for name, dimension in (score.get("dimensions") or {}).items():
-            detail = str((dimension or {}).get("detail") or "")
-            lowered = detail.lower()
-            if any(marker in lowered for marker in ("异常", "超时", "不可用", "error", "cannot", "failed")):
-                found.setdefault(name, {
-                    "key": name,
-                    "label": _DIMENSION_LABELS.get(name, name),
-                    "summary": f"{_DIMENSION_LABELS.get(name, name)}当前处于降级状态",
-                })
+
+    # 兼容没有 signal_coverage 的历史缓存，仍按维度详情识别降级。
+    if not degraded_counts:
+        for score in scores:
+            for name, dimension in (score.get("dimensions") or {}).items():
+                detail = str((dimension or {}).get("detail") or "")
+                lowered = detail.lower()
+                if any(marker in lowered for marker in ("异常", "超时", "不可用", "error", "cannot", "failed")):
+                    found.setdefault(name, {
+                        "key": name,
+                        "label": _DIMENSION_LABELS.get(name, name),
+                        "summary": f"{_DIMENSION_LABELS.get(name, name)}当前处于降级状态",
+                    })
     return list(found.values())
 
 
@@ -144,6 +158,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
     reviewed = False
     current_directive = None
     pending_directive = None
+    counterfactual = {}
     with Database(db_path=db_path) as db:
         # 日终事实必须覆盖当天全部事件；固定取最近500条会让早盘扫描
         # 被后续Doctor/心跳事件挤出窗口，进而污染AI复盘和次日策略。
@@ -161,6 +176,14 @@ def build_daily_facts(date: str = None, db_path: str = None,
         reviewed = db.get_review_snapshot(date) is not None
         current_directive = db.get_effective_strategy_directive(date)
         pending_directive = db.get_next_strategy_directive(date)
+        rows = db.conn.execute("""
+            SELECT outcome_label, COUNT(*) AS count
+            FROM candidate_outcomes
+            WHERE outcome_label <> ''
+              AND observation_date >= date(?, '-30 days')
+            GROUP BY outcome_label
+        """, (date,)).fetchall()
+        counterfactual = {str(row["outcome_label"]): int(row["count"]) for row in rows}
 
     scan_journeys = []
     order_audit = []
@@ -171,7 +194,13 @@ def build_daily_facts(date: str = None, db_path: str = None,
         if isinstance(journey, dict) and journey:
             scan_journeys.append(journey)
         order_audit.extend(details.get("order_audit") or [])
-        if event.get("error"):
+        # Doctor事件是巡检审计，不代表自动主循环仍有执行错误；Watchdog
+        # 已按同一规则排除它们，简报也应避免把历史诊断累计成维护告警。
+        if event.get("error") and event.get("event_type") not in (
+            "auto_doctor",
+            "closure_repair",
+            "ops_status",
+        ):
             event_errors.append(str(event.get("error")))
 
     order_audit = _dedupe_order_audit(order_audit)
@@ -270,6 +299,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
         "order_audit": order_audit,
         "event_error_count": len(event_errors),
         "llm_no_response_count": no_response_count,
+        "counterfactual": counterfactual,
         "degradations": degradations,
         "reviewed": reviewed,
         "latest_scan": latest_scan,

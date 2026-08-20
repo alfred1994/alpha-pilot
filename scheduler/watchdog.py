@@ -207,7 +207,9 @@ def run_auto_watchdog(
     lock_state = _load_lock(lock_file)
     control_state = get_auto_control_state(control_file=control_file)
     paused = bool(control_state.get("paused"))
-    max_loop_lag_sec = max_loop_lag_sec or max(300, AUTO_LOOP_INTERVAL * 5)
+    # 自动快链路预算可达480秒；与自动盘锁的600秒失效窗口保持一致，
+    # 避免正常长循环在落盘前被重启。
+    max_loop_lag_sec = max_loop_lag_sec or max(600, AUTO_LOOP_INTERVAL * 5)
     max_scan_lag_sec = max_scan_lag_sec or max(AUTO_SCAN_INTERVAL + 300, int(AUTO_SCAN_INTERVAL * 1.5))
     max_stop_lag_sec = max_stop_lag_sec or max(180, AUTO_STOP_INTERVAL * 3)
 
@@ -249,6 +251,7 @@ def run_auto_watchdog(
             "自动盘长驻进程锁已过期，检查进程并重启 --auto。",
         ))
 
+    state_lag = _stale_seconds(state.get("updated_at", ""), now) if state else None
     if not state:
         severity = "critical" if is_today_trading and _status_is_active(status) else "warn"
         items.append(_make_item(
@@ -259,7 +262,7 @@ def run_auto_watchdog(
             "先运行 python main.py --auto-once 或启动 --auto。",
         ))
     else:
-        lag = _stale_seconds(state.get("updated_at", ""), now)
+        lag = state_lag
         if lag is None:
             items.append(_make_item(
                 "自动循环新鲜度",
@@ -351,9 +354,15 @@ def run_auto_watchdog(
             execute_lag = now_ts - last_execute_at if last_execute_at else None
             stop_lag = now_ts - last_stop_at if last_stop_at else None
 
-            scan_ok = scan_lag is not None and scan_lag <= max_scan_lag_sec
-            execute_ok = execute_lag is not None and execute_lag <= max_scan_lag_sec
-            stop_ok = stop_lag is not None and stop_lag <= max_stop_lag_sec
+            cycle_active = (
+                lock_lag is not None
+                and lock_lag <= max_loop_lag_sec
+                and state_lag is not None
+                and state_lag <= max_loop_lag_sec
+            )
+            scan_ok = cycle_active or (scan_lag is not None and scan_lag <= max_scan_lag_sec)
+            execute_ok = cycle_active or (execute_lag is not None and execute_lag <= max_scan_lag_sec)
+            stop_ok = cycle_active or (stop_lag is not None and stop_lag <= max_stop_lag_sec)
             items.append(_make_item(
                 "盘中扫描",
                 scan_ok,

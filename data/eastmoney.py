@@ -14,6 +14,7 @@ logger = logging.getLogger("data.eastmoney")
 # ═══ 线程本地存储（每个线程独立的事件循环+浏览器实例） ═══
 # 解决 ThreadPoolExecutor 并发打分时多线程竞争同一事件循环的问题
 _thread_local = threading.local()
+EASTMONEY_ASYNC_TIMEOUT = 45
 
 
 def cleanup_eastmoney():
@@ -23,7 +24,7 @@ def cleanup_eastmoney():
         try:
             loop = getattr(_thread_local, "loop", None)
             if loop and not loop.is_closed():
-                loop.run_until_complete(browser.close())
+                loop.run_until_complete(asyncio.wait_for(browser.close(), timeout=10))
         except Exception:
             pass
         _thread_local.browser = None
@@ -48,6 +49,9 @@ def _get_thread_loop():
 def _run_async(coro):
     """运行异步函数（线程安全，每个线程独立事件循环）"""
     try:
+        async def _bounded():
+            return await asyncio.wait_for(coro, timeout=EASTMONEY_ASYNC_TIMEOUT)
+
         # 检查是否有正在运行的循环
         try:
             running_loop = asyncio.get_running_loop()
@@ -58,10 +62,14 @@ def _run_async(coro):
             # 已有循环在跑，用新线程执行
             import concurrent.futures
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, coro).result(timeout=60)
+                return pool.submit(asyncio.run, _bounded()).result(timeout=EASTMONEY_ASYNC_TIMEOUT + 5)
         else:
             loop = _get_thread_loop()
-            return loop.run_until_complete(coro)
+            return loop.run_until_complete(_bounded())
+    except asyncio.TimeoutError:
+        logger.warning("东方财富浏览器请求超时(%ss)，将释放本线程资源", EASTMONEY_ASYNC_TIMEOUT)
+        cleanup_eastmoney()
+        return None
     except Exception as e:
         logger.error(f"异步执行失败: {e}")
         return None

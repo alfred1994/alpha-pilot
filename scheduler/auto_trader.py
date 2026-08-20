@@ -458,6 +458,11 @@ def run_auto_cycle(
     extra_events = []
     rescue_ran = False
 
+    def _checkpoint_state():
+        """在耗时阶段之间刷新状态，让Watchdog看到仍在运行的循环。"""
+        if persist_state:
+            _save_state(state, state_file)
+
     def _record_candidate_pool_change(scan_result):
         """记录候选池版本变化，避免看板只显示“扫描过”而看不到池是否更新。"""
         if scan_result is None:
@@ -476,6 +481,9 @@ def run_auto_cycle(
             f"({pool.get('candidate_count', len(getattr(scan_result, 'candidates', []) or []))}只)"
         )
 
+    state.last_error = ""
+    _checkpoint_state()
+
     try:
         if not is_today_trading:
             actions.append("休市: 跳过交易动作")
@@ -484,6 +492,7 @@ def run_auto_cycle(
             if state.last_prefetch_date != today:
                 prefetch_func()
                 state.last_prefetch_date = today
+                _checkpoint_state()
                 actions.append("盘前数据预热完成")
                 
                 # 盘前舆情分析
@@ -521,6 +530,7 @@ def run_auto_cycle(
             if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
                 stop_result = check_stops_func()
                 state.last_stop_check_at = now_ts
+                _checkpoint_state()
                 actions.append(
                     f"止损巡检: 持仓{stop_result.get('checked', 0)}只 "
                     f"卖出{stop_result.get('sold', 0)}笔"
@@ -535,6 +545,7 @@ def run_auto_cycle(
                     services=services,
                 )
                 state.last_watch_at = now_ts
+                _checkpoint_state()
                 watchlist_items = (watch_result.get("watchlist") or {}).get("items") or {}
                 state.watchlist_count = len(watchlist_items)
                 if watch_result.get("missed_opportunity"):
@@ -578,6 +589,7 @@ def run_auto_cycle(
                 rescue_ran = True
                 state.last_rescue_scan_at = now_ts
                 state.last_scan_at = now_ts
+                _checkpoint_state()
                 state.rescue_scan_count += 1
                 scan_result = rescue.get("scan_result") if isinstance(rescue, dict) else None
                 exec_result = rescue.get("exec_result") if isinstance(rescue, dict) else None
@@ -609,6 +621,7 @@ def run_auto_cycle(
             if should_scan and not rescue_ran:
                 scan_result = run_scan_func()
                 state.last_scan_at = now_ts
+                _checkpoint_state()
                 _record_candidate_pool_change(scan_result)
                 actions.append(f"盘中扫描: 候选{len(scan_result.candidates)}只 决策{len(scan_result.decisions)}条")
 
@@ -622,6 +635,7 @@ def run_auto_cycle(
 
                 exec_result = execute_trades_func()
                 state.last_execute_at = now_ts if now_ts_override is not None else time.time()
+                _checkpoint_state()
                 actions.append(
                     f"模拟执行: 成交{len(exec_result.executed_orders)}笔 "
                     f"风控{len(exec_result.risk_triggered)}项 错误{len(exec_result.errors)}项"
@@ -654,6 +668,7 @@ def run_auto_cycle(
             if after_review_time and state.last_review_date != today:
                 review_result = run_review_func()
                 state.last_review_date = today
+                _checkpoint_state()
                 actions.append(
                     f"盘后复盘进化: 步骤{len(review_result.steps)}项 "
                     f"错误{len(review_result.errors)}项"
@@ -759,6 +774,7 @@ def run_locked_action(action: Callable[[], Any], *, lock_file: str = None) -> An
         daemon=True,
     )
     heartbeat_thread.start()
+
     try:
         return action()
     finally:

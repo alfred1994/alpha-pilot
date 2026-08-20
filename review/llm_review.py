@@ -196,6 +196,12 @@ def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None
             )
         for item in (daily_facts.get("degradations") or [])[:10]:
             prompt_parts.append(f"  - 能力降级: {item.get('summary')}")
+        counterfactual = daily_facts.get("counterfactual") or {}
+        if counterfactual:
+            prompt_parts.append(
+                "- 近期候选反事实结果: "
+                + "，".join(f"{key}={value}" for key, value in sorted(counterfactual.items()))
+            )
         prompt_parts.append("")
 
     # 8. 分析要求

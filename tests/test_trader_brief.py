@@ -153,6 +153,29 @@ def main():
         assert complete_facts["funnel"]["candidates"] == 501
         assert complete_facts["funnel"]["scored"] == 501
         ok("日终事实按日期完整读取事件，不受500条窗口影响")
+
+        # Doctor和闭环修复是诊断审计；只有主循环错误应进入用户简报。
+        with Database(db_path=db_path) as db:
+            for event_type, error in (
+                ("auto_doctor", "盘中止损巡检"),
+                ("closure_repair", "盘后复盘"),
+                ("auto_cycle", "行情源失败"),
+            ):
+                db.insert_auto_event({
+                    "date": "2026-08-02",
+                    "event_type": event_type,
+                    "status": "盘后",
+                    "error": error,
+                })
+        filtered_facts = build_daily_facts(
+            date="2026-08-02",
+            db_path=db_path,
+            market_status="盘后",
+            trading_day=True,
+        )
+        assert filtered_facts["event_error_count"] == 1
+        assert filtered_facts["state"] == "attention"
+        ok("诊断审计不会被累计为用户执行异常")
     finally:
         for candidate in (db_path, f"{db_path}-wal", f"{db_path}-shm"):
             if os.path.exists(candidate):

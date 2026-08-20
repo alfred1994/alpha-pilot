@@ -1596,6 +1596,21 @@ def run_review() -> PipelineResult:
 
         adaptive_data = {}
         try:
+            from strategy.counterfactual import evaluate_candidate_outcomes
+            counterfactual = evaluate_candidate_outcomes()
+            result.steps.append(StepResult(
+                name="候选反事实评估", success=True,
+                elapsed=time.time() - t0,
+                detail=(
+                    f"检查{counterfactual.get('checked', 0)}条 "
+                    f"回填{counterfactual.get('updated', 0)}条 "
+                    f"成熟{counterfactual.get('matured', 0)}条"
+                ),
+            ))
+        except Exception as e:
+            logger.warning(f"候选反事实评估失败(非致命): {e}")
+
+        try:
             from strategy.adaptive import AdaptiveEngine
             adaptive = AdaptiveEngine()
             # 固定规则只负责生成绩效分析，不再直接调整明日参数；明日策略
@@ -1930,6 +1945,14 @@ def run_scan(
     result.trade_plan = plan.to_dict()
     result.candidates = plan.raw_scores
     result.errors.extend(plan.errors)
+
+    try:
+        from strategy.counterfactual import record_trade_plan_candidates
+        captured = record_trade_plan_candidates(plan)
+        if captured:
+            logger.info("候选反事实观察已记录: %s只", captured)
+    except Exception as e:
+        logger.debug("候选反事实观察记录失败(非致命): %s", e)
 
     from strategy.decision import TradeDecision, DimensionScore
     for s in plan.raw_scores:

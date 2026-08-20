@@ -28,7 +28,7 @@ logger = logging.getLogger("strategy.qlib_signal")
 
 # ── 默认参数 ──
 DEFAULT_TRAIN_DAYS = 120   # 训练窗口天数
-DEFAULT_LOOKBACK = 250     # 回溯天数（获取数据量）
+DEFAULT_LOOKBACK = 365     # 回溯自然日，覆盖约250个交易日（含指标预热和训练窗口）
 FEATURE_COLS = [
     "ma5", "ma10", "ma20", "ma60",
     "rsi14",
@@ -142,6 +142,9 @@ def build_target(df: pd.DataFrame) -> pd.Series:
     """
     close = pd.to_numeric(df["close"], errors="coerce")
     target = (close.shift(-1) > close).astype(int)
+    # 最后一根K线没有“下一日”可作为标签，不能被隐式标成下跌样本。
+    if len(target):
+        target.iloc[-1] = np.nan
     return target
 
 
@@ -163,7 +166,7 @@ class QlibPredictor:
         self._model = None
         self._accuracy = 0.0
 
-    def train(self, df: pd.DataFrame) -> float:
+    def train(self, df: pd.DataFrame, train_days: int = None) -> float:
         """
         训练模型
 
@@ -179,8 +182,9 @@ class QlibPredictor:
             logger.error("lightgbm 未安装，请执行: pip install lightgbm")
             return 0.0
 
-        if df is None or len(df) < self.train_days + 30:
-            logger.warning(f"数据不足: 需要至少 {self.train_days + 30} 行，实际 {len(df) if df is not None else 0}")
+        train_days = int(train_days or self.train_days)
+        if df is None or len(df) < train_days + 30:
+            logger.warning(f"数据不足: 需要至少 {train_days + 30} 行，实际 {len(df) if df is not None else 0}")
             return 0.0
 
         # 构建特征和标签
@@ -197,7 +201,7 @@ class QlibPredictor:
             return 0.0
 
         # 使用最近 train_days 天的数据训练
-        train_df = feat_df.tail(self.train_days)
+        train_df = feat_df.tail(train_days)
         train_target = target.loc[train_df.index]
 
         X = train_df[FEATURE_COLS].values
@@ -218,13 +222,19 @@ class QlibPredictor:
             random_state=42,
         )
 
-        model.fit(X, y)
+        # 用时间顺序保留末段作为样本外校准，禁止把训练准确率伪装成置信度。
+        split = max(45, int(len(X) * 0.75))
+        split = min(split, len(X) - 12)
+        if split > 0 and len(np.unique(y[:split])) > 1:
+            model.fit(X[:split], y[:split])
+            validation_pred = model.predict(X[split:])
+            self._accuracy = float(np.mean(validation_pred == y[split:]))
+            model.fit(X, y)
+        else:
+            model.fit(X, y)
+            self._accuracy = 0.5
         self._model = model
-
-        # 计算训练集准确率
-        pred = model.predict(X)
-        self._accuracy = float(np.mean(pred == y))
-        logger.info(f"模型训练完成: 样本数={len(X)}, 准确率={self._accuracy:.2%}")
+        logger.info(f"模型训练完成: 样本数={len(X)}, 样本外准确率={self._accuracy:.2%}")
 
         return self._accuracy
 
@@ -261,18 +271,23 @@ class QlibPredictor:
         valid_mask = feat_df[FEATURE_COLS].notna().all(axis=1)
         feat_df = feat_df.loc[valid_mask]
 
-        if len(feat_df) < self.train_days:
-            logger.warning(f"有效特征不足 {code}: {len(feat_df)} 行")
+        if len(feat_df) < 60:
+            logger.warning(f"有效特征不足 {code}: {len(feat_df)} 行（需至少60）")
+            return 50.0, 0.0
+
+        effective_train_days = min(self.train_days, len(feat_df) - 10)
+        if effective_train_days < 60:
+            logger.warning(f"训练窗口不足 {code}: {effective_train_days} 天")
             return 50.0, 0.0
 
         # 检查缓存（同一股票5分钟内复用模型）
-        cache_key = (code, self.train_days)
+        cache_key = (code, effective_train_days)
         cached = _model_cache.get(cache_key)
         if cached and time.time() - cached[1] < 300:
             model, _, train_acc = cached
         else:
             # 训练模型
-            train_acc = self.train(df)
+            train_acc = self.train(df, train_days=effective_train_days)
             if self._model is None:
                 return 50.0, 0.0
             model = self._model

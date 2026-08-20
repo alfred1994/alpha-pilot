@@ -6,7 +6,9 @@
 真实行情API和真实LLM的情况下稳定演练。
 """
 import os
+import json
 import sys
+import tempfile
 from datetime import datetime
 from types import SimpleNamespace
 
@@ -145,6 +147,62 @@ def test_after_market_cycle():
     assert_true(result["state"]["last_review_date"] == today, "盘后复盘日期会写入状态")
 
 
+def test_state_checkpoint_after_stop_check():
+    """长扫描开始前，Watchdog应能读到刚完成的止损巡检时间。"""
+    state_path = os.path.join(
+        tempfile.gettempdir(),
+        f"alpha-pilot-auto-state-{os.getpid()}.json",
+    )
+    observed_stop_at = []
+
+    def fake_check_stops_once():
+        return {"checked": 0, "sold": 0}
+
+    def fake_run_watch_cycle(**kwargs):
+        return {
+            "actions": [],
+            "details": {"top_watch": []},
+            "watchlist": {"items": {}},
+            "missed_opportunity": False,
+            "rescue_requested": False,
+            "eligible_codes": [],
+        }
+
+    def fake_run_scan():
+        with open(state_path, "r", encoding="utf-8") as file:
+            observed_stop_at.append(json.load(file)["last_stop_check_at"])
+        return SimpleNamespace(candidates=[], decisions=[])
+
+    def fake_execute_trades():
+        return SimpleNamespace(executed_orders=[], risk_triggered=[], errors=[])
+
+    try:
+        run_auto_cycle(
+            state=AutoTraderState(date="2026-06-09"),
+            force_scan=True,
+            status_override="盘中",
+            trading_day_override=True,
+            today_override="2026-06-09",
+            now_override=datetime(2026, 6, 9, 10, 0),
+            now_ts_override=2000,
+            services={
+                "check_stops_once": fake_check_stops_once,
+                "run_watch_cycle": fake_run_watch_cycle,
+                "run_scan": fake_run_scan,
+                "execute_trades": fake_execute_trades,
+            },
+            persist_state=True,
+            record_event=False,
+            state_file=state_path,
+            notify=False,
+        )
+    finally:
+        if os.path.exists(state_path):
+            os.remove(state_path)
+
+    assert_true(observed_stop_at == [2000], "长扫描前已持久化最近止损巡检时间")
+
+
 def test_notification_filter():
     from scheduler.notifier import format_auto_cycle_message, should_notify_auto_cycle
 
@@ -181,6 +239,7 @@ def main():
     test_premarket_cycle()
     test_intraday_cycle()
     test_after_market_cycle()
+    test_state_checkpoint_after_stop_check()
     test_notification_filter()
     print("=" * 60)
     print("全部通过")

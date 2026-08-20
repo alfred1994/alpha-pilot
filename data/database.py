@@ -287,6 +287,40 @@ class Database:
             )
         """)
 
+        # 候选反事实结果。记录每轮被扫描、被拒绝或被买入的候选，盘后再
+        # 用后续行情评价“正确观望/错过机会/错误买入”，避免学习系统只看
+        # 少量实际成交而长期偏向 HOLD。
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS candidate_outcomes (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation_date  TEXT NOT NULL,
+                observed_at       TEXT NOT NULL,
+                code              TEXT NOT NULL,
+                name              TEXT,
+                strategy_version  TEXT NOT NULL DEFAULT '',
+                regime            TEXT,
+                action            TEXT,
+                llm_action        TEXT,
+                llm_confidence    REAL,
+                score             REAL,
+                entry_price       REAL,
+                hold_reason       TEXT,
+                dimensions        TEXT,
+                source            TEXT,
+                return_1d         REAL,
+                return_3d         REAL,
+                return_5d         REAL,
+                return_10d        REAL,
+                mfe_5d            REAL,
+                mae_5d            REAL,
+                outcome_label     TEXT,
+                evaluated_at      TEXT,
+                created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at        TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(observation_date, code, strategy_version)
+            )
+        """)
+
         # ── 索引 ──
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_code ON k_daily(code)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_date ON k_daily(date)")
@@ -302,6 +336,9 @@ class Database:
         c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_date ON auto_events(date)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_auto_events_type ON auto_events(event_type)")
         c.execute("CREATE INDEX IF NOT EXISTS idx_trade_plan_executions_date ON trade_plan_executions(plan_date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_candidate_outcomes_date ON candidate_outcomes(observation_date)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_candidate_outcomes_code ON candidate_outcomes(code)")
+        c.execute("CREATE INDEX IF NOT EXISTS idx_candidate_outcomes_label ON candidate_outcomes(outcome_label)")
 
         # ── 复盘快照（统一存储） ──
         c.execute("""
@@ -402,6 +439,90 @@ class Database:
                       (code, start_date, end_date))
         else:
             c.execute("DELETE FROM k_daily WHERE code=?", (code,))
+        self.conn.commit()
+
+    # ════════════════════════════════════════════════════════════════
+    # candidate_outcomes 候选反事实结果
+    # ════════════════════════════════════════════════════════════════
+
+    def upsert_candidate_outcome(self, observation: Dict) -> int:
+        """记录一只候选的首个日内观察，重复扫描只更新最新上下文。"""
+        now = datetime.now().isoformat()
+        c = self.conn.cursor()
+        c.execute("""
+            INSERT INTO candidate_outcomes
+            (observation_date, observed_at, code, name, strategy_version, regime,
+             action, llm_action, llm_confidence, score, entry_price, hold_reason,
+             dimensions, source, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(observation_date, code, strategy_version) DO UPDATE SET
+              name=excluded.name,
+              regime=excluded.regime,
+              action=excluded.action,
+              llm_action=excluded.llm_action,
+              llm_confidence=excluded.llm_confidence,
+              score=MAX(candidate_outcomes.score, excluded.score),
+              entry_price=COALESCE(candidate_outcomes.entry_price, excluded.entry_price),
+              hold_reason=excluded.hold_reason,
+              dimensions=excluded.dimensions,
+              source=excluded.source,
+              updated_at=excluded.updated_at
+        """, (
+            observation.get("observation_date", ""),
+            observation.get("observed_at", now),
+            observation.get("code", ""),
+            observation.get("name", ""),
+            observation.get("strategy_version", ""),
+            observation.get("regime", ""),
+            observation.get("action", "HOLD"),
+            observation.get("llm_action", ""),
+            observation.get("llm_confidence"),
+            observation.get("score"),
+            observation.get("entry_price"),
+            observation.get("hold_reason", ""),
+            observation.get("dimensions", "{}"),
+            observation.get("source", "scan"),
+            now,
+            now,
+        ))
+        self.conn.commit()
+        row = c.execute("""
+            SELECT id FROM candidate_outcomes
+            WHERE observation_date=? AND code=? AND strategy_version=?
+        """, (
+            observation.get("observation_date", ""),
+            observation.get("code", ""),
+            observation.get("strategy_version", ""),
+        )).fetchone()
+        return int(row["id"]) if row else 0
+
+    def get_candidate_outcomes(self, pending_only: bool = False,
+                               limit: int = 1000) -> List[Dict]:
+        """读取候选反事实结果，供盘后评估和看板使用。"""
+        where = "WHERE return_5d IS NULL" if pending_only else ""
+        rows = self.conn.execute(f"""
+            SELECT * FROM candidate_outcomes
+            {where}
+            ORDER BY observation_date ASC, id ASC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_candidate_outcome(self, outcome_id: int, updates: Dict):
+        """回填已观察到的后续行情结果。"""
+        allowed = {
+            "return_1d", "return_3d", "return_5d", "return_10d",
+            "mfe_5d", "mae_5d", "outcome_label", "evaluated_at",
+        }
+        safe = {key: value for key, value in updates.items() if key in allowed}
+        if not safe:
+            return
+        safe["updated_at"] = datetime.now().isoformat()
+        sets = ", ".join(f"{key}=?" for key in safe)
+        self.conn.execute(
+            f"UPDATE candidate_outcomes SET {sets} WHERE id=?",
+            list(safe.values()) + [outcome_id],
+        )
         self.conn.commit()
 
     # ════════════════════════════════════════════════════════════════
@@ -1125,7 +1246,8 @@ class Database:
 
         for table in ["k_daily", "k_minute", "trades", "positions", "account_state",
                        "daily_snapshots", "market_regimes", "llm_decisions", "lessons",
-                       "memory_items", "review_snapshots", "adaptive_state", "auto_events"]:
+                       "memory_items", "review_snapshots", "adaptive_state", "auto_events",
+                       "candidate_outcomes"]:
             c.execute(f"SELECT COUNT(*) as cnt FROM {table}")
             stats[table] = c.fetchone()["cnt"]
 

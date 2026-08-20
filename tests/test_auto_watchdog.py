@@ -133,6 +133,29 @@ def main():
         assert_true(named["盘中模拟执行"].ok, "盘中模拟执行新鲜度正常")
         assert_true(named["盘中止损巡检"].ok, "盘中止损巡检新鲜度正常")
 
+        long_cycle_state = dict(fresh_state)
+        long_cycle_state.update({
+            "last_scan_at": now_ts - 2000,
+            "last_execute_at": now_ts - 2000,
+            "last_stop_check_at": now_ts - 500,
+            "updated_at": "2026-06-09T10:04:50",
+        })
+        _write_state(state_path, long_cycle_state)
+        long_cycle_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            max_loop_lag_sec=600,
+            max_scan_lag_sec=300,
+            max_stop_lag_sec=120,
+        )
+        long_cycle_named = _by_name(long_cycle_items)
+        assert_true(not _has_critical(long_cycle_items), "新鲜长循环不会误触发动作critical")
+        assert_true(long_cycle_named["盘中止损巡检"].ok, "长循环期间止损巡检沿用运行心跳")
+
         stale_state = dict(fresh_state)
         stale_state.update({
             "last_scan_at": now_ts - 2000,
