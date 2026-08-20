@@ -230,6 +230,26 @@ def cmd_research_sync(args):
     return {"errors": ["research_sync"] if result.get("error", 0) >= result.get("requested", 1) else []}
 
 
+def cmd_train_pooled_model(args):
+    """训练宽股票池 pooled ML 影子模型，不参与交易执行。"""
+    from strategy.pooled_ml import train_pooled_model
+
+    result = train_pooled_model(
+        min_symbols=args.pooled_min_symbols,
+        min_rows=args.pooled_min_rows,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return {"errors": ["pooled_ml"] if result.get("status") != "ready" else []}
+
+
+def cmd_pooled_ml_status():
+    """查看 pooled ML 影子模型状态。"""
+    from strategy.pooled_ml import get_pooled_model_status
+
+    print(json.dumps(get_pooled_model_status(), ensure_ascii=False, indent=2))
+    return {"errors": []}
+
+
 def cmd_auto(args):
     """自动盯盘交易员"""
     from scheduler.auto_trader import run_auto_loop
@@ -785,6 +805,8 @@ def main():
     group.add_argument("--optimize", action="store_true", help="策略优化模式")
     group.add_argument("--after-market", action="store_true", help="收盘后分析（外围市场+新闻）")
     group.add_argument("--research-sync", action="store_true", help="盘后增量同步宽股票池研究数据，不参与交易")
+    group.add_argument("--train-pooled-model", action="store_true", help="盘后训练 pooled ML 影子模型，不参与交易")
+    group.add_argument("--pooled-ml-status", action="store_true", help="查看 pooled ML 影子模型状态")
     group.add_argument("--stop-check", action="store_true", help="盘中止损巡检")
     group.add_argument("--auto", action="store_true", help="自动盯盘交易员（循环运行，默认模拟盘）")
     group.add_argument("--auto-once", action="store_true", help="自动盯盘交易员（只运行一轮，用于测试）")
@@ -822,6 +844,8 @@ def main():
     parser.add_argument("--research-batch-size", type=int, default=None, help="单次研究K线同步数量，默认40")
     parser.add_argument("--research-workers", type=int, default=None, help="研究K线同步并发数，最大2")
     parser.add_argument("--research-history-days", type=int, default=None, help="研究K线补齐自然日范围，默认730")
+    parser.add_argument("--pooled-min-symbols", type=int, default=5, help="pooled ML最少股票数")
+    parser.add_argument("--pooled-min-rows", type=int, default=500, help="pooled ML最少特征样本数")
     parser.add_argument("--loop-interval", type=int, default=None, help="自动盯盘主循环间隔秒数")
     parser.add_argument("--scan-interval", type=int, default=None, help="自动盯盘盘中扫描间隔秒数")
     parser.add_argument("--force-scan", action="store_true", help="自动盯盘单轮中强制执行盘中扫描")
@@ -883,6 +907,10 @@ def main():
         result = cmd_after_market()
     elif args.research_sync:
         result = cmd_research_sync(args)
+    elif args.train_pooled_model:
+        result = cmd_train_pooled_model(args)
+    elif args.pooled_ml_status:
+        result = cmd_pooled_ml_status()
     elif args.review:
         result = cmd_review()
     elif args.account:

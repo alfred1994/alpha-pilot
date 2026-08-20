@@ -58,6 +58,7 @@ def main():
             "run_status",
             "run_closure_repair",
             "run_research_sync",
+            "run_pooled_ml",
             "install",
             "uninstall",
         ]:
@@ -70,6 +71,7 @@ def main():
         run_status = _read(paths["run_status"])
         run_closure_repair = _read(paths["run_closure_repair"])
         run_research_sync = _read(paths["run_research_sync"])
+        run_pooled_ml = _read(paths["run_pooled_ml"])
         install = _read(paths["install"])
         auto_service = _read(paths["auto_service"])
         auto_restart_service = _read(paths["auto_restart_service"])
@@ -97,9 +99,11 @@ def main():
         assert_true("exit 0" in run_status, "状态脚本报告critical时不标记systemd失败")
         assert_true("main.py --closure-repair" in run_closure_repair, "闭环修复脚本已生成")
         assert_true("main.py --research-sync" in run_research_sync, "研究数据同步脚本已生成")
+        assert_true("main.py --train-pooled-model" in run_pooled_ml, "pooled ML训练脚本已生成")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto.service" in install, "安装脚本启用Auto服务")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto-restart.timer" in install, "安装脚本启用Auto-Restart timer")
         assert_true("systemctl --user enable --now alpha-pilot-test-research.timer" in install, "安装脚本启用研究同步timer")
+        assert_true("systemctl --user enable --now alpha-pilot-test-pooled-ml.timer" in install, "安装脚本启用pooled ML timer")
         assert_true("Restart=always" in auto_service, "Auto服务带常驻重启保护")
         assert_true("TimeoutStartSec=240" in auto_restart_service, "Auto-Restart服务带systemd超时保护")
         assert_true("TimeoutStartSec=300" in doctor_service, "Doctor服务带systemd超时保护")
@@ -114,6 +118,7 @@ def main():
             ("ai_report.log", "--ai-report --report-days 7"),
             ("ops_status.log", "--ops-status --report-days 7"),
             ("research_sync.log", "--research-sync"),
+            ("pooled_ml.log", "--train-pooled-model"),
         ]:
             with open(os.path.join(log_dir, log_name), "w", encoding="utf-8") as f:
                 f.write(f"===== 2026-06-09 09:00:00 START {args} =====\n")
@@ -161,6 +166,13 @@ def main():
                     "Result": "success",
                 },
                 f"{prefix}-research.timer": {
+                    "LoadState": "loaded",
+                    "ActiveState": "active",
+                    "SubState": "waiting",
+                    "UnitFileState": "enabled",
+                    "Result": "success",
+                },
+                f"{prefix}-pooled-ml.timer": {
                     "LoadState": "loaded",
                     "ActiveState": "active",
                     "SubState": "waiting",
