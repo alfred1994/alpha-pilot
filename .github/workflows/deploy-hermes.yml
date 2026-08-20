@@ -41,7 +41,7 @@ jobs:
 
     steps:
       - name: Checkout deploy script
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Validate required secrets
         shell: bash
