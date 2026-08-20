@@ -181,7 +181,8 @@ def _to_system_code(code: str) -> str:
 
 
 def _try_cache(code: str, start_date: str, end_date: str,
-               adjust: str = "qfq", allow_stale: bool = False) -> Optional[pd.DataFrame]:
+               adjust: str = "qfq", allow_stale: bool = False,
+               require_full_range: bool = False) -> Optional[pd.DataFrame]:
     """
     尝试从SQLite缓存获取数据
 
@@ -200,6 +201,7 @@ def _try_cache(code: str, start_date: str, end_date: str,
                     if col in df.columns:
                         df = df.drop(columns=[col])
                 latest_date = str(df["date"].max()) if "date" in df.columns else ""
+                earliest_date = str(df["date"].min()) if "date" in df.columns else ""
                 try:
                     requested_end = datetime.strptime(end_date, "%Y-%m-%d")
                     cached_end = datetime.strptime(latest_date[:10], "%Y-%m-%d")
@@ -207,7 +209,16 @@ def _try_cache(code: str, start_date: str, end_date: str,
                 except (TypeError, ValueError):
                     stale_days = HISTORY_CACHE_MAX_STALE_DAYS + 1
 
-                if stale_days <= HISTORY_CACHE_MAX_STALE_DAYS:
+                try:
+                    requested_start = datetime.strptime(start_date, "%Y-%m-%d")
+                    cached_start = datetime.strptime(earliest_date[:10], "%Y-%m-%d")
+                    missing_start_days = max(0, (cached_start - requested_start).days)
+                except (TypeError, ValueError):
+                    missing_start_days = 0
+
+                if stale_days <= HISTORY_CACHE_MAX_STALE_DAYS and (
+                    not require_full_range or missing_start_days <= 3
+                ):
                     logger.info(
                         f"缓存命中: {system_code} {len(df)}条 latest={latest_date} "
                         f"gap={stale_days}d"
@@ -216,7 +227,8 @@ def _try_cache(code: str, start_date: str, end_date: str,
 
                 logger.warning(
                     f"历史缓存过期: {system_code} latest={latest_date} "
-                    f"requested_end={end_date} gap={stale_days}d"
+                    f"requested_end={end_date} gap={stale_days}d "
+                    f"start_gap={missing_start_days}d"
                 )
                 if allow_stale:
                     df.attrs["stale_cache_days"] = stale_days
@@ -264,7 +276,8 @@ def _try_longbridge(code: str, start_date: str, end_date: str,
 
 
 def get_daily(code: str, start_date: str = None, end_date: str = None,
-              adjust: str = "qfq", simple: bool = True) -> pd.DataFrame:
+              adjust: str = "qfq", simple: bool = True,
+              require_full_range: bool = False) -> pd.DataFrame:
     """
     获取日线数据（带缓存 + 长桥优先）
 
@@ -279,6 +292,7 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
         end_date: 结束日期, 默认今天
         adjust: "qfq"前复权 / "hfq"后复权 / ""不复权
         simple: True=简单字段(快), False=完整字段(含PE/PB等)
+        require_full_range: True时缓存必须覆盖起始日期，供研究数据补齐使用
 
     Returns:
         DataFrame: date, open, high, low, close, volume, amount, turn, pctChg
@@ -298,11 +312,14 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
     stale_cache = None
     if simple:
         # 1. 先查SQLite缓存
-        df = _try_cache(code, start_date, end_date, adjust)
+        df = _try_cache(code, start_date, end_date, adjust,
+                        require_full_range=require_full_range)
         if df is not None:
             return df
         # 外部源失败时保留旧缓存作为明确降级结果，但不把它当作新鲜数据。
-        stale_cache = _try_cache(code, start_date, end_date, adjust, allow_stale=True)
+        stale_cache = _try_cache(code, start_date, end_date, adjust,
+                                 allow_stale=True,
+                                 require_full_range=require_full_range)
 
         # 2. 尝试长桥API
         df = _try_longbridge(code, start_date, end_date, adjust)

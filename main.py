@@ -215,6 +215,21 @@ def cmd_full():
     return result
 
 
+def cmd_research_sync(args):
+    """盘后宽股票池研究数据增量同步，不参与交易执行。"""
+    from data.research_universe import refresh_research_universe, sync_research_universe
+
+    universe = refresh_research_universe(limit=args.research_universe_size)
+    result = sync_research_universe(
+        batch_size=args.research_batch_size,
+        workers=args.research_workers,
+        history_days=args.research_history_days,
+    )
+    result["universe_size"] = len(universe.get("codes") or [])
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return {"errors": ["research_sync"] if result.get("error", 0) >= result.get("requested", 1) else []}
+
+
 def cmd_auto(args):
     """自动盯盘交易员"""
     from scheduler.auto_trader import run_auto_loop
@@ -769,6 +784,7 @@ def main():
     group.add_argument("--backtest", action="store_true", help="运行回测")
     group.add_argument("--optimize", action="store_true", help="策略优化模式")
     group.add_argument("--after-market", action="store_true", help="收盘后分析（外围市场+新闻）")
+    group.add_argument("--research-sync", action="store_true", help="盘后增量同步宽股票池研究数据，不参与交易")
     group.add_argument("--stop-check", action="store_true", help="盘中止损巡检")
     group.add_argument("--auto", action="store_true", help="自动盯盘交易员（循环运行，默认模拟盘）")
     group.add_argument("--auto-once", action="store_true", help="自动盯盘交易员（只运行一轮，用于测试）")
@@ -802,6 +818,10 @@ def main():
     parser.add_argument("--stocks", nargs="+", help="回测股票列表")
     parser.add_argument("--strategy", default="zt_reversal", help="策略名称（用于 strategy 模式）")
     parser.add_argument("--rounds", type=int, default=3, help="优化轮数（用于 optimize 模式）")
+    parser.add_argument("--research-universe-size", type=int, default=None, help="研究股票池上限，默认300")
+    parser.add_argument("--research-batch-size", type=int, default=None, help="单次研究K线同步数量，默认40")
+    parser.add_argument("--research-workers", type=int, default=None, help="研究K线同步并发数，最大2")
+    parser.add_argument("--research-history-days", type=int, default=None, help="研究K线补齐自然日范围，默认730")
     parser.add_argument("--loop-interval", type=int, default=None, help="自动盯盘主循环间隔秒数")
     parser.add_argument("--scan-interval", type=int, default=None, help="自动盯盘盘中扫描间隔秒数")
     parser.add_argument("--force-scan", action="store_true", help="自动盯盘单轮中强制执行盘中扫描")
@@ -861,6 +881,8 @@ def main():
         result = cmd_execute()
     elif args.after_market:
         result = cmd_after_market()
+    elif args.research_sync:
+        result = cmd_research_sync(args)
     elif args.review:
         result = cmd_review()
     elif args.account:

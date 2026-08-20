@@ -7,6 +7,7 @@ Linux/Hermes无人值守任务脚本生成器
   - run_doctor.sh: 执行Watchdog巡检、自愈和闭环修复
   - run_report.sh: 生成最近N天试运行报告
   - run_status.sh: 生成一页式运维状态
+  - run_research_sync.sh: 盘后宽股票池研究数据增量同步
   - install_systemd_user.sh: 安装并启用用户级systemd服务/定时器
   - uninstall_systemd_user.sh: 停用并删除用户级systemd服务/定时器
 
@@ -34,6 +35,7 @@ SCRIPT_KEYS = [
     "run_report",
     "run_status",
     "run_closure_repair",
+    "run_research_sync",
     "install",
     "uninstall",
 ]
@@ -47,6 +49,8 @@ SERVICE_KEYS = [
     "report_timer",
     "status_service",
     "status_timer",
+    "research_service",
+    "research_timer",
 ]
 LOG_NAMES = {
     "Auto": "auto.log",
@@ -54,6 +58,7 @@ LOG_NAMES = {
     "Doctor": "doctor.log",
     "Report": "ai_report.log",
     "Status": "ops_status.log",
+    "Research": "research_sync.log",
 }
 
 
@@ -338,6 +343,7 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "run_report": join(output_dir, "run_report.sh"),
         "run_status": join(output_dir, "run_status.sh"),
         "run_closure_repair": join(output_dir, "run_closure_repair.sh"),
+        "run_research_sync": join(output_dir, "run_research_sync.sh"),
         "install": join(output_dir, "install_systemd_user.sh"),
         "uninstall": join(output_dir, "uninstall_systemd_user.sh"),
         "units_dir": units_dir,
@@ -352,6 +358,8 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "report_timer": join(units_dir, _unit_name(service_prefix, "report", "timer")),
         "status_service": join(units_dir, _unit_name(service_prefix, "status")),
         "status_timer": join(units_dir, _unit_name(service_prefix, "status", "timer")),
+        "research_service": join(units_dir, _unit_name(service_prefix, "research")),
+        "research_timer": join(units_dir, _unit_name(service_prefix, "research", "timer")),
     })
     return paths
 
@@ -368,6 +376,8 @@ def _install_script(config: LinuxTaskConfig, paths: Dict[str, str]) -> str:
         os.path.basename(paths["report_timer"]),
         os.path.basename(paths["status_service"]),
         os.path.basename(paths["status_timer"]),
+        os.path.basename(paths["research_service"]),
+        os.path.basename(paths["research_timer"]),
     ]
     unit_lines = "\n".join(
         f"install -m 0644 { _sh_quote(_join_target_path(paths['units_dir'], unit)) } \"$SYSTEMD_USER_DIR/{unit}\""
@@ -379,7 +389,7 @@ set -euo pipefail
 SYSTEMD_USER_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 
-chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])}
+chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])}
 {unit_lines}
 
 systemctl --user daemon-reload
@@ -388,6 +398,7 @@ systemctl --user enable --now {os.path.basename(paths['auto_restart_timer'])}
 systemctl --user enable --now {os.path.basename(paths['doctor_timer'])}
 systemctl --user enable --now {os.path.basename(paths['report_timer'])}
 systemctl --user enable --now {os.path.basename(paths['status_timer'])}
+systemctl --user enable --now {os.path.basename(paths['research_timer'])}
 
 cat <<'EOF'
 AlphaPilot systemd --user tasks installed.
@@ -415,6 +426,8 @@ def _uninstall_script(service_prefix: str) -> str:
         _unit_name(service_prefix, "report", "timer"),
         _unit_name(service_prefix, "status"),
         _unit_name(service_prefix, "status", "timer"),
+        _unit_name(service_prefix, "research"),
+        _unit_name(service_prefix, "research", "timer"),
     ]
     units_text = " ".join(units)
     return f"""#!/usr/bin/env bash
@@ -480,6 +493,7 @@ def generate_linux_task_scripts(
         paths["run_report"]: _runner_script(project_dir, python_cmd, f"--ai-report --report-days {report_days}", "ai_report.log", hermes_env_file),
         paths["run_status"]: _runner_script(project_dir, python_cmd, f"--ops-status --report-days {report_days}", "ops_status.log", hermes_env_file, tolerate_failure=True),
         paths["run_closure_repair"]: _runner_script(project_dir, python_cmd, "--closure-repair", "closure_repair.log", hermes_env_file),
+        paths["run_research_sync"]: _runner_script(project_dir, python_cmd, "--research-sync", "research_sync.log", hermes_env_file, timeout_seconds=900),
         paths["install"]: _install_script(config, target_paths),
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
@@ -498,6 +512,8 @@ def generate_linux_task_scripts(
         paths["report_timer"]: _calendar_timer_unit("AlphaPilot 盘后AI报告", os.path.basename(paths["report_service"]), f"Mon..Fri *-*-* {config.report_time}:00"),
         paths["status_service"]: _oneshot_service_unit("AlphaPilot 自动盯盘运维状态", target_paths["run_status"]),
         paths["status_timer"]: _calendar_timer_unit("AlphaPilot 盘后运维状态", os.path.basename(paths["status_service"]), f"Mon..Fri *-*-* {config.status_time}:00"),
+        paths["research_service"]: _oneshot_service_unit("AlphaPilot 盘后研究数据同步", target_paths["run_research_sync"], timeout_start_sec=900),
+        paths["research_timer"]: _calendar_timer_unit("AlphaPilot 盘后宽股票池研究同步", os.path.basename(paths["research_service"]), "Mon..Fri *-*-* 19:10:00"),
     }
     for path, content in {**scripts, **units}.items():
         with open(path, "w", encoding="utf-8", newline="\n") as f:
@@ -562,6 +578,7 @@ def _query_systemd_units(service_prefix: str) -> Dict[str, Dict]:
         _unit_name(service_prefix, "doctor", "timer"),
         _unit_name(service_prefix, "report", "timer"),
         _unit_name(service_prefix, "status", "timer"),
+        _unit_name(service_prefix, "research", "timer"),
     ]
     result = {}
     for unit in units:
