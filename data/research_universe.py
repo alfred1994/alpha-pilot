@@ -58,6 +58,39 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
             continue
         seen.add(code)
         ordered.append({"code": code, "name": name, "source": "active_liquidity"})
+
+    # 供应商临时返回异常时不能让研究池归零。优先复用当天盘中已验证的
+    # 候选，再从已有K线库续跑；这些来源均只作为研究数据种子，不下单。
+    if not ordered:
+        try:
+            from data.snapshot import get_candidate_pool_status
+            snapshot = get_candidate_pool_status(max_age=24 * 3600).get("snapshot") or {}
+            for item in snapshot.get("candidates") or []:
+                code = str(item.get("code") or "").strip()
+                if code and code not in seen:
+                    seen.add(code)
+                    ordered.append({"code": code, "name": item.get("name", code), "source": "candidate_pool_fallback"})
+        except Exception:
+            pass
+    if not ordered:
+        try:
+            from data.database import Database
+            with Database() as db:
+                rows = db.conn.execute("""
+                    SELECT code, MAX(date) AS latest_date, COUNT(*) AS row_count
+                    FROM k_daily
+                    WHERE code GLOB '[0-9]*' AND length(code)=6
+                    GROUP BY code
+                    ORDER BY latest_date DESC, row_count DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
+            for row in rows:
+                code = str(row["code"])
+                if code not in seen:
+                    seen.add(code)
+                    ordered.append({"code": code, "name": code, "source": "kline_cache_fallback"})
+        except Exception:
+            pass
     for item in current.get("codes") or []:
         code = str(item.get("code") or "")
         if code and code not in seen and len(ordered) < limit:
@@ -67,6 +100,7 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
     payload = {
         "version": 1,
         "generated_at": datetime.now().isoformat(),
+        "source": ordered[0].get("source", "none") if ordered else "none",
         "codes": ordered[:limit],
         "cursor": min(int(current.get("cursor") or 0), max(0, len(ordered) - 1)),
         "last_sync": current.get("last_sync") or {},
