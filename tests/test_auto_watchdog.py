@@ -17,6 +17,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
+from scheduler.auto_trader import AUTO_STAGE_BUDGET_SECONDS
 from scheduler.watchdog import run_auto_watchdog
 
 
@@ -133,12 +134,67 @@ def main():
         assert_true(named["盘中模拟执行"].ok, "盘中模拟执行新鲜度正常")
         assert_true(named["盘中止损巡检"].ok, "盘中止损巡检新鲜度正常")
 
+        browser_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            browser_process_probe=lambda: {
+                "available": True,
+                "instance_count": 3,
+                "process_count": 12,
+                "oldest_age_seconds": 8000,
+            },
+        )
+        browser_item = _by_name(browser_items)["无头浏览器"]
+        assert_true(browser_item.severity == "critical", "浏览器数量超过上限只触发只读critical")
+        assert_true("不会误杀进程" in browser_item.suggestion, "浏览器Watchdog明确不终止进程")
+
+        heartbeat_only_state = dict(fresh_state)
+        heartbeat_only_state.update({
+            "last_scan_at": now_ts - 2000,
+            "last_execute_at": now_ts - 2000,
+            "last_stop_check_at": now_ts - 500,
+            "updated_at": "2026-06-09T10:04:50",
+        })
+        _write_state(state_path, heartbeat_only_state)
+        heartbeat_only_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            max_loop_lag_sec=600,
+            max_scan_lag_sec=300,
+            max_stop_lag_sec=120,
+        )
+        heartbeat_only_named = _by_name(heartbeat_only_items)
+        assert_true(heartbeat_only_named["自动循环新鲜度"].ok, "通用循环心跳仍可证明进程存活")
+        assert_true(
+            heartbeat_only_named["盘中扫描"].severity == "critical",
+            "没有活跃阶段时通用心跳不能豁免过期扫描",
+        )
+        assert_true(
+            heartbeat_only_named["盘中模拟执行"].severity == "critical",
+            "没有活跃阶段时通用心跳不能豁免过期执行",
+        )
+        assert_true(
+            heartbeat_only_named["盘中止损巡检"].severity == "critical",
+            "没有活跃阶段时通用心跳不能豁免过期止损",
+        )
+
         long_cycle_state = dict(fresh_state)
         long_cycle_state.update({
             "last_scan_at": now_ts - 2000,
             "last_execute_at": now_ts - 2000,
             "last_stop_check_at": now_ts - 500,
             "updated_at": "2026-06-09T10:04:50",
+            "active_stage": "scan",
+            "stage_started_at": now_ts - 100,
+            "stage_budget_seconds": 180,
         })
         _write_state(state_path, long_cycle_state)
         long_cycle_items = run_auto_watchdog(
@@ -153,8 +209,106 @@ def main():
             max_stop_lag_sec=120,
         )
         long_cycle_named = _by_name(long_cycle_items)
-        assert_true(not _has_critical(long_cycle_items), "新鲜长循环不会误触发动作critical")
-        assert_true(long_cycle_named["盘中止损巡检"].ok, "长循环期间止损巡检沿用运行心跳")
+        assert_true(long_cycle_named["自动循环新鲜度"].ok, "长阶段期间循环状态保持新鲜")
+        assert_true(long_cycle_named["盘中扫描"].ok, "预算内扫描阶段可临时豁免扫描新鲜度")
+        assert_true(
+            long_cycle_named["盘中模拟执行"].severity == "critical",
+            "扫描阶段不能同时豁免模拟执行",
+        )
+        assert_true(
+            long_cycle_named["盘中止损巡检"].severity == "critical",
+            "扫描阶段不能同时豁免止损巡检",
+        )
+
+        execute_stage_state = dict(long_cycle_state)
+        execute_stage_state.update({
+            "active_stage": "execute_trades",
+            "stage_started_at": now_ts - 100,
+            "stage_budget_seconds": 180,
+        })
+        _write_state(state_path, execute_stage_state)
+        execute_stage_named = _by_name(run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            max_loop_lag_sec=600,
+            max_scan_lag_sec=300,
+            max_stop_lag_sec=120,
+        ))
+        assert_true(execute_stage_named["盘中模拟执行"].ok, "预算内执行阶段只豁免模拟执行")
+        assert_true(execute_stage_named["盘中扫描"].severity == "critical", "执行阶段不能豁免扫描")
+        assert_true(execute_stage_named["盘中止损巡检"].severity == "critical", "执行阶段不能豁免止损")
+
+        stop_stage_state = dict(long_cycle_state)
+        stop_stage_state.update({
+            "active_stage": "stop_check",
+            "stage_started_at": now_ts - 100,
+            "stage_budget_seconds": 180,
+        })
+        _write_state(state_path, stop_stage_state)
+        stop_stage_named = _by_name(run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            max_loop_lag_sec=600,
+            max_scan_lag_sec=300,
+            max_stop_lag_sec=120,
+        ))
+        assert_true(stop_stage_named["盘中止损巡检"].ok, "预算内止损阶段只豁免止损巡检")
+        assert_true(stop_stage_named["盘中扫描"].severity == "critical", "止损阶段不能豁免扫描")
+        assert_true(stop_stage_named["盘中模拟执行"].severity == "critical", "止损阶段不能豁免执行")
+
+        expired_stage_state = dict(long_cycle_state)
+        expired_stage_state.update({
+            "stage_started_at": now_ts - 181,
+            "stage_budget_seconds": 180,
+        })
+        _write_state(state_path, expired_stage_state)
+        expired_stage_items = run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            max_loop_lag_sec=600,
+            max_scan_lag_sec=300,
+            max_stop_lag_sec=120,
+        )
+        expired_stage_scan = _by_name(expired_stage_items)["盘中扫描"]
+        assert_true(
+            expired_stage_scan.severity == "critical",
+            "扫描阶段超过自身预算后立即恢复严格新鲜度检查",
+        )
+        assert_true("已超预算" in expired_stage_scan.detail, "超预算原因会在Watchdog中可见")
+
+        expanded_budget_state = dict(long_cycle_state)
+        expanded_budget_state.update({
+            "stage_started_at": now_ts - AUTO_STAGE_BUDGET_SECONDS["scan"] - 1,
+            "stage_budget_seconds": AUTO_STAGE_BUDGET_SECONDS["scan"] * 10,
+        })
+        _write_state(state_path, expanded_budget_state)
+        expanded_budget_scan = _by_name(run_auto_watchdog(
+            now=now,
+            status_override="盘中",
+            trading_day_override=True,
+            state_file=state_path,
+            lock_file=lock_path,
+            db_path=db_path,
+            max_loop_lag_sec=600,
+            max_scan_lag_sec=300,
+            max_stop_lag_sec=120,
+        ))["盘中扫描"]
+        assert_true(
+            expanded_budget_scan.severity == "critical",
+            "状态文件不能自行扩大代码定义的阶段预算",
+        )
 
         stale_state = dict(fresh_state)
         stale_state.update({

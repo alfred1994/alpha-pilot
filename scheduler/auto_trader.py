@@ -29,6 +29,7 @@ from config import (
     AUTO_REVIEW_AFTER,
     AUTO_NOTIFY_ENABLED,
     DATA_DIR,
+    FAST_SCAN_BUDGET_SECONDS,
 )
 from scheduler.market_calendar import get_market_status, is_trading_day
 
@@ -36,6 +37,30 @@ logger = logging.getLogger("scheduler.auto_trader")
 
 AUTO_STATE_FILE = os.path.join(DATA_DIR, "auto_trader_state.json")
 AUTO_LOCK_FILE = os.path.join(DATA_DIR, "auto_trader.lock")
+
+# 每个外部阶段在状态文件中声明自己的硬预算。Watchdog 只能对当前
+# 匹配阶段在预算内临时豁免，不能用循环心跳掩盖其他交易动作的超时。
+AUTO_STAGE_BUDGET_SECONDS = {
+    "prefetch": max(180, AUTO_STOP_INTERVAL * 3),
+    "market_regime": max(180, AUTO_STOP_INTERVAL * 3),
+    "sentiment_analysis": max(180, AUTO_STOP_INTERVAL * 3),
+    "stop_check": max(180, AUTO_STOP_INTERVAL * 3),
+    "watch_cycle": max(180, AUTO_WATCH_INTERVAL),
+    "scan": FAST_SCAN_BUDGET_SECONDS,
+    "rescue_scan": AUTO_RESCUE_SCAN_BUDGET_SECONDS,
+    "execute_trades": max(180, AUTO_STOP_INTERVAL * 3),
+    "rescue_execute": max(180, AUTO_STOP_INTERVAL * 3),
+    "review": max(600, AUTO_LOOP_INTERVAL * 5),
+}
+
+# 与盘中履约项的精确映射。没有映射的阶段不可以豁免扫描、执行或止损。
+AUTO_STAGE_ACTIONS = {
+    "stop_check": "stop",
+    "scan": "scan",
+    "rescue_scan": "scan",
+    "execute_trades": "execute",
+    "rescue_execute": "execute",
+}
 
 
 @dataclass
@@ -60,6 +85,9 @@ class AutoTraderState:
     last_status: str = ""
     last_error: str = ""
     updated_at: str = ""
+    active_stage: str = ""
+    stage_started_at: float = 0.0
+    stage_budget_seconds: int = 0
     last_sentiment: dict = field(default_factory=dict)
 
 
@@ -211,6 +239,23 @@ def _save_state(state: AutoTraderState, state_file: str = None):
         json.dump(asdict(state), f, ensure_ascii=False, indent=2)
 
 
+def _start_active_stage(state: AutoTraderState, stage: str, *, now_ts: float = None):
+    """声明当前耗时阶段，供 Watchdog 精确识别暂时的履约豁免。"""
+    budget = int(AUTO_STAGE_BUDGET_SECONDS.get(stage, 0) or 0)
+    if budget <= 0:
+        raise ValueError(f"未配置自动盯盘阶段预算: {stage}")
+    state.active_stage = stage
+    state.stage_started_at = float(time.time() if now_ts is None else now_ts)
+    state.stage_budget_seconds = budget
+
+
+def _clear_active_stage(state: AutoTraderState):
+    """阶段结束后立即清空，避免旧阶段掩盖后续履约超时。"""
+    state.active_stage = ""
+    state.stage_started_at = 0.0
+    state.stage_budget_seconds = 0
+
+
 def _parse_hhmm(value: str) -> tuple:
     try:
         hh, mm = value.split(":", 1)
@@ -346,7 +391,7 @@ def _build_scan_journey(scan_result, exec_result=None) -> dict:
     }
 
 
-def _run_rescue_scan_default(watch_result: dict):
+def _run_rescue_scan_default(watch_result: dict, on_execute: Callable[[], None] = None):
     """
     默认救援扫描：复用快链路生成计划，但只执行二次确认观察池里的BUY。
     """
@@ -366,7 +411,12 @@ def _run_rescue_scan_default(watch_result: dict):
     )
     plan_data = getattr(scan_result, "trade_plan", {}) or {}
     filtered_plan = filter_trade_plan_for_rescue(plan_data, eligible_codes)
-    exec_result = execute_trade_plan(filtered_plan) if filtered_plan else None
+    if filtered_plan:
+        if on_execute:
+            on_execute()
+        exec_result = execute_trade_plan(filtered_plan)
+    else:
+        exec_result = None
     return {
         "scan_result": scan_result,
         "exec_result": exec_result,
@@ -463,6 +513,38 @@ def run_auto_cycle(
         if persist_state:
             _save_state(state, state_file)
 
+    def _stage_now_ts() -> float:
+        return float(now_ts_override) if now_ts_override is not None else time.time()
+
+    def _begin_stage(stage: str):
+        _start_active_stage(state, stage, now_ts=_stage_now_ts())
+        _checkpoint_state()
+
+    def _mark_stage_value(field: str, value: Any):
+        """在清除阶段标记前持久化该阶段刚完成的履约时间。"""
+        setattr(state, field, value)
+        _checkpoint_state()
+
+    def _mark_rescue_stage_complete(rescue):
+        state.last_rescue_scan_at = now_ts
+        state.last_scan_at = now_ts
+        if isinstance(rescue, dict) and rescue.get("exec_result") is not None:
+            state.last_execute_at = now_ts
+        _checkpoint_state()
+
+    def _run_stage(stage: str, func: Callable, *args,
+                   after_success: Callable[[Any], None] = None, **kwargs):
+        """在每个耗时阶段前落盘状态，结束或失败后清除阶段标记。"""
+        _begin_stage(stage)
+        try:
+            result = func(*args, **kwargs)
+            if after_success:
+                after_success(result)
+            return result
+        finally:
+            _clear_active_stage(state)
+            _checkpoint_state()
+
     def _record_candidate_pool_change(scan_result):
         """记录候选池版本变化，避免看板只显示“扫描过”而看不到池是否更新。"""
         if scan_result is None:
@@ -490,15 +572,17 @@ def run_auto_cycle(
 
         elif status in ("盘前", "集合竞价"):
             if state.last_prefetch_date != today:
-                prefetch_func()
-                state.last_prefetch_date = today
-                _checkpoint_state()
+                _run_stage(
+                    "prefetch",
+                    prefetch_func,
+                    after_success=lambda _: _mark_stage_value("last_prefetch_date", today),
+                )
                 actions.append("盘前数据预热完成")
                 
                 # 盘前舆情分析
                 try:
                     from data.sentiment_analyzer import run_sentiment_analysis
-                    sentiment_result = run_sentiment_analysis()
+                    sentiment_result = _run_stage("sentiment_analysis", run_sentiment_analysis)
                     if sentiment_result.get("success"):
                         analysis = sentiment_result.get("analysis", {})
                         recommendations = sentiment_result.get("recommendations", [])
@@ -518,8 +602,11 @@ def run_auto_cycle(
                     logger.warning(f"盘前舆情分析失败: {e}")
             
             if state.last_regime_date != today:
-                regime = detect_regime_func()
-                state.last_regime_date = today
+                regime = _run_stage(
+                    "market_regime",
+                    detect_regime_func,
+                    after_success=lambda _: _mark_stage_value("last_regime_date", today),
+                )
                 actions.append(f"市场环境识别: {regime.regime} conf={regime.confidence:.0%}")
 
         elif status == "盘中" and paused:
@@ -528,9 +615,11 @@ def run_auto_cycle(
 
         elif status == "盘中":
             if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
-                stop_result = check_stops_func()
-                state.last_stop_check_at = now_ts
-                _checkpoint_state()
+                stop_result = _run_stage(
+                    "stop_check",
+                    check_stops_func,
+                    after_success=lambda _: _mark_stage_value("last_stop_check_at", now_ts),
+                )
                 actions.append(
                     f"止损巡检: 持仓{stop_result.get('checked', 0)}只 "
                     f"卖出{stop_result.get('sold', 0)}笔"
@@ -538,14 +627,15 @@ def run_auto_cycle(
 
             watch_result = None
             if now_ts - state.last_watch_at >= AUTO_WATCH_INTERVAL:
-                watch_result = run_watch_func(
+                watch_result = _run_stage(
+                    "watch_cycle",
+                    run_watch_func,
                     state=state,
                     now=now_dt,
                     now_ts=now_ts,
                     services=services,
+                    after_success=lambda _: _mark_stage_value("last_watch_at", now_ts),
                 )
-                state.last_watch_at = now_ts
-                _checkpoint_state()
                 watchlist_items = (watch_result.get("watchlist") or {}).get("items") or {}
                 state.watchlist_count = len(watchlist_items)
                 if watch_result.get("missed_opportunity"):
@@ -585,17 +675,26 @@ def run_auto_cycle(
                 and watch_result.get("rescue_requested")
                 and now_ts - state.last_rescue_scan_at >= AUTO_RESCUE_SCAN_INTERVAL
             ):
-                rescue = run_rescue_scan_func(watch_result)
+                if run_rescue_scan_func is _run_rescue_scan_default:
+                    rescue = _run_stage(
+                        "rescue_scan",
+                        run_rescue_scan_func,
+                        watch_result,
+                        on_execute=lambda: _begin_stage("rescue_execute"),
+                        after_success=_mark_rescue_stage_complete,
+                    )
+                else:
+                    rescue = _run_stage(
+                        "rescue_scan",
+                        run_rescue_scan_func,
+                        watch_result,
+                        after_success=_mark_rescue_stage_complete,
+                    )
                 rescue_ran = True
-                state.last_rescue_scan_at = now_ts
-                state.last_scan_at = now_ts
-                _checkpoint_state()
                 state.rescue_scan_count += 1
                 scan_result = rescue.get("scan_result") if isinstance(rescue, dict) else None
                 exec_result = rescue.get("exec_result") if isinstance(rescue, dict) else None
                 _record_candidate_pool_change(scan_result)
-                if exec_result is not None:
-                    state.last_execute_at = now_ts
                 executed_count = len(getattr(exec_result, "executed_orders", []) or []) if exec_result else 0
                 actions.append(
                     f"救援扫描: 观察确认{len(watch_result.get('eligible_codes', []))}只 "
@@ -619,9 +718,11 @@ def run_auto_cycle(
             effective_scan_interval = scan_interval if scan_interval is not None else AUTO_SCAN_INTERVAL
             should_scan = force_scan or (now_ts - state.last_scan_at >= effective_scan_interval)
             if should_scan and not rescue_ran:
-                scan_result = run_scan_func()
-                state.last_scan_at = now_ts
-                _checkpoint_state()
+                scan_result = _run_stage(
+                    "scan",
+                    run_scan_func,
+                    after_success=lambda _: _mark_stage_value("last_scan_at", now_ts),
+                )
                 _record_candidate_pool_change(scan_result)
                 actions.append(f"盘中扫描: 候选{len(scan_result.candidates)}只 决策{len(scan_result.decisions)}条")
 
@@ -633,9 +734,14 @@ def run_auto_cycle(
                     except Exception as e:
                         logger.warning(f"选股通知发送失败(非致命): {e}")
 
-                exec_result = execute_trades_func()
-                state.last_execute_at = now_ts if now_ts_override is not None else time.time()
-                _checkpoint_state()
+                exec_result = _run_stage(
+                    "execute_trades",
+                    execute_trades_func,
+                    after_success=lambda _: _mark_stage_value(
+                        "last_execute_at",
+                        now_ts if now_ts_override is not None else time.time(),
+                    ),
+                )
                 actions.append(
                     f"模拟执行: 成交{len(exec_result.executed_orders)}笔 "
                     f"风控{len(exec_result.risk_triggered)}项 错误{len(exec_result.errors)}项"
@@ -666,9 +772,11 @@ def run_auto_cycle(
 
         else:
             if after_review_time and state.last_review_date != today:
-                review_result = run_review_func()
-                state.last_review_date = today
-                _checkpoint_state()
+                review_result = _run_stage(
+                    "review",
+                    run_review_func,
+                    after_success=lambda _: _mark_stage_value("last_review_date", today),
+                )
                 actions.append(
                     f"盘后复盘进化: 步骤{len(review_result.steps)}项 "
                     f"错误{len(review_result.errors)}项"

@@ -27,7 +27,12 @@ from config import (
     BROKER_MODE,
 )
 from data.database import Database
-from scheduler.auto_trader import AUTO_LOCK_FILE, AUTO_STATE_FILE
+from scheduler.auto_trader import (
+    AUTO_LOCK_FILE,
+    AUTO_STATE_FILE,
+    AUTO_STAGE_ACTIONS,
+    AUTO_STAGE_BUDGET_SECONDS,
+)
 from scheduler.control import get_auto_control_state
 from scheduler.market_calendar import get_market_status, is_trading_day
 
@@ -89,6 +94,45 @@ def _stale_seconds(updated_at: str, now: datetime) -> Optional[float]:
     if not updated:
         return None
     return max(0.0, (now - updated).total_seconds())
+
+
+def _active_stage_exemption(state: dict, now: datetime, *, action: str = None,
+                            expected_stage: str = None) -> tuple:
+    """判断当前阶段是否能为对应履约项提供一次预算内的临时豁免。
+
+    状态文件中的预算只是运行时快照，不能扩大代码定义的阶段上限；阶段
+    名称、开始时间或预算缺失时一律不豁免，避免旧状态或损坏状态掩盖超时。
+    """
+    stage = str(state.get("active_stage") or "").strip()
+    if not stage:
+        return False, ""
+
+    expected_budget = int(AUTO_STAGE_BUDGET_SECONDS.get(stage, 0) or 0)
+    if expected_budget <= 0:
+        return False, f"当前阶段{stage}未配置预算"
+    if expected_stage is not None and stage != expected_stage:
+        return False, ""
+    if action is not None and AUTO_STAGE_ACTIONS.get(stage) != action:
+        return False, ""
+
+    try:
+        started_at = float(state.get("stage_started_at") or 0)
+        persisted_budget = int(float(state.get("stage_budget_seconds") or 0))
+    except (TypeError, ValueError):
+        return False, f"当前阶段{stage}的开始时间或预算不可解析"
+    if started_at <= 0 or persisted_budget <= 0:
+        return False, f"当前阶段{stage}缺少开始时间或预算"
+
+    now_ts = now.timestamp()
+    if started_at > now_ts + 30:
+        return False, f"当前阶段{stage}开始时间异常"
+
+    budget = min(persisted_budget, expected_budget)
+    elapsed = max(0.0, now_ts - started_at)
+    detail = f"当前阶段{stage}已运行{elapsed:.0f}秒，预算{budget}秒"
+    if elapsed <= budget:
+        return True, detail
+    return False, f"{detail}，已超预算"
 
 
 def _after_review_time(now: datetime) -> bool:
@@ -178,6 +222,9 @@ def run_auto_watchdog(
     max_loop_lag_sec: int = None,
     max_scan_lag_sec: int = None,
     max_stop_lag_sec: int = None,
+    browser_process_probe=None,
+    max_browser_instances: int = 2,
+    max_browser_age_sec: int = 2 * 60 * 60,
 ) -> List[WatchdogItem]:
     """
     执行自动盯盘运行态检查
@@ -193,6 +240,9 @@ def run_auto_watchdog(
         max_loop_lag_sec: 自动循环最大滞后秒数
         max_scan_lag_sec: 盘中扫描最大滞后秒数
         max_stop_lag_sec: 止损巡检最大滞后秒数
+        browser_process_probe: 可注入的只读浏览器进程快照函数，便于测试
+        max_browser_instances: 允许的无头浏览器主实例上限
+        max_browser_age_sec: 单个无头浏览器的最长观察寿命
 
     Returns:
         WatchdogItem列表
@@ -222,6 +272,46 @@ def run_auto_watchdog(
         "critical" if BROKER_MODE != "paper" else "ok",
         "当前目标是模拟盘，请保持 BROKER_MODE=paper。",
     ))
+
+    # Watchdog 只读取进程表，不关闭、不重启浏览器。生命周期回收由数据源自身
+    # 负责；这里仅在旧实例堆积或异常长寿时提供可观察的告警。
+    try:
+        if browser_process_probe is None:
+            from data.eastmoney import get_cloakbrowser_process_snapshot
+            browser_process_probe = get_cloakbrowser_process_snapshot
+        browser_snapshot = browser_process_probe()
+        if not isinstance(browser_snapshot, dict) or not browser_snapshot.get("available"):
+            detail = (browser_snapshot or {}).get("error", "进程快照不可用") if isinstance(browser_snapshot, dict) else "进程快照不可用"
+            items.append(_make_item(
+                "无头浏览器",
+                False,
+                str(detail),
+                "warn",
+                "确认运行环境允许读取进程表；Watchdog不会终止任何浏览器进程。",
+            ))
+        else:
+            count = max(0, int(browser_snapshot.get("instance_count", browser_snapshot.get("count")) or 0))
+            process_count = max(0, int(browser_snapshot.get("process_count", count) or 0))
+            oldest_age = max(0, int(browser_snapshot.get("oldest_age_seconds") or 0))
+            over_count = count > max(0, int(max_browser_instances))
+            over_age = oldest_age > max(1, int(max_browser_age_sec))
+            severity = "critical" if over_count else ("warn" if over_age else "ok")
+            items.append(_make_item(
+                "无头浏览器",
+                not (over_count or over_age),
+                f"instances={count}/{max_browser_instances} processes={process_count} "
+                f"oldest={oldest_age}s/{max_browser_age_sec}s",
+                severity,
+                "检查数据任务是否正常结束；Watchdog仅告警，不会误杀进程。",
+            ))
+    except Exception as exc:
+        items.append(_make_item(
+            "无头浏览器",
+            False,
+            str(exc)[:160],
+            "warn",
+            "浏览器检查失败；Watchdog不会终止任何浏览器进程。",
+        ))
 
     lock_lag = _stale_seconds(lock_state.get("updated_at", ""), now) if lock_state else None
     if not lock_state:
@@ -321,19 +411,29 @@ def run_auto_watchdog(
     if state:
         if status in ("盘前", "集合竞价") and (now.hour, now.minute) >= (8, 45):
             prefetch_ok = state.get("last_prefetch_date") == today
+            prefetch_stage_ok, prefetch_stage_detail = _active_stage_exemption(
+                state,
+                now,
+                expected_stage="prefetch",
+            )
             regime_ok = state.get("last_regime_date") == today
+            regime_stage_ok, regime_stage_detail = _active_stage_exemption(
+                state,
+                now,
+                expected_stage="market_regime",
+            )
             items.append(_make_item(
                 "盘前预热",
-                prefetch_ok,
-                f"last_prefetch_date={state.get('last_prefetch_date')}",
-                "warn" if not prefetch_ok else "ok",
+                prefetch_ok or prefetch_stage_ok,
+                prefetch_stage_detail if prefetch_stage_ok else f"last_prefetch_date={state.get('last_prefetch_date')}",
+                "warn" if not (prefetch_ok or prefetch_stage_ok) else "ok",
                 "盘前应完成数据预热。",
             ))
             items.append(_make_item(
                 "盘前市场识别",
-                regime_ok,
-                f"last_regime_date={state.get('last_regime_date')}",
-                "warn" if not regime_ok else "ok",
+                regime_ok or regime_stage_ok,
+                regime_stage_detail if regime_stage_ok else f"last_regime_date={state.get('last_regime_date')}",
+                "warn" if not (regime_ok or regime_stage_ok) else "ok",
                 "盘前应完成市场环境识别。",
             ))
 
@@ -353,45 +453,59 @@ def run_auto_watchdog(
             scan_lag = now_ts - last_scan_at if last_scan_at else None
             execute_lag = now_ts - last_execute_at if last_execute_at else None
             stop_lag = now_ts - last_stop_at if last_stop_at else None
-
-            cycle_active = (
-                lock_lag is not None
-                and lock_lag <= max_loop_lag_sec
-                and state_lag is not None
-                and state_lag <= max_loop_lag_sec
-            )
-            scan_ok = cycle_active or (scan_lag is not None and scan_lag <= max_scan_lag_sec)
-            execute_ok = cycle_active or (execute_lag is not None and execute_lag <= max_scan_lag_sec)
-            stop_ok = cycle_active or (stop_lag is not None and stop_lag <= max_stop_lag_sec)
+            scan_stage_ok, scan_stage_detail = _active_stage_exemption(state, now, action="scan")
+            execute_stage_ok, execute_stage_detail = _active_stage_exemption(state, now, action="execute")
+            stop_stage_ok, stop_stage_detail = _active_stage_exemption(state, now, action="stop")
+            active_stage = str(state.get("active_stage") or "").strip()
+            scan_stage_matches = AUTO_STAGE_ACTIONS.get(active_stage) == "scan"
+            execute_stage_matches = AUTO_STAGE_ACTIONS.get(active_stage) == "execute"
+            stop_stage_matches = AUTO_STAGE_ACTIONS.get(active_stage) == "stop"
+            scan_ok = scan_stage_ok or (scan_lag is not None and scan_lag <= max_scan_lag_sec)
+            execute_ok = execute_stage_ok or (execute_lag is not None and execute_lag <= max_scan_lag_sec)
+            stop_ok = stop_stage_ok or (stop_lag is not None and stop_lag <= max_stop_lag_sec)
             items.append(_make_item(
                 "盘中扫描",
                 scan_ok,
-                f"距上次扫描{scan_lag:.0f}秒，阈值{max_scan_lag_sec}秒" if scan_lag is not None else "尚无扫描记录",
+                scan_stage_detail if scan_stage_matches and scan_stage_detail else (
+                    f"距上次扫描{scan_lag:.0f}秒，阈值{max_scan_lag_sec}秒"
+                    if scan_lag is not None else "尚无扫描记录"
+                ),
                 "critical" if not scan_ok else "ok",
                 "盘中扫描停滞，检查 --auto 是否运行。",
             ))
             items.append(_make_item(
                 "盘中模拟执行",
                 execute_ok,
-                f"距上次执行{execute_lag:.0f}秒，阈值{max_scan_lag_sec}秒" if execute_lag is not None else "尚无执行记录",
+                execute_stage_detail if execute_stage_matches and execute_stage_detail else (
+                    f"距上次执行{execute_lag:.0f}秒，阈值{max_scan_lag_sec}秒"
+                    if execute_lag is not None else "尚无执行记录"
+                ),
                 "critical" if not execute_ok else "ok",
                 "扫描后应执行模拟交易计划。",
             ))
             items.append(_make_item(
                 "盘中止损巡检",
                 stop_ok,
-                f"距上次巡检{stop_lag:.0f}秒，阈值{max_stop_lag_sec}秒" if stop_lag is not None else "尚无止损巡检记录",
+                stop_stage_detail if stop_stage_matches and stop_stage_detail else (
+                    f"距上次巡检{stop_lag:.0f}秒，阈值{max_stop_lag_sec}秒"
+                    if stop_lag is not None else "尚无止损巡检记录"
+                ),
                 "critical" if not stop_ok else "ok",
                 "止损巡检停滞，检查行情源和自动循环。",
             ))
 
         elif status == "盘后" and _after_review_time(now):
             review_ok = state.get("last_review_date") == today
+            review_stage_ok, review_stage_detail = _active_stage_exemption(
+                state,
+                now,
+                expected_stage="review",
+            )
             items.append(_make_item(
                 "盘后复盘进化",
-                review_ok,
-                f"last_review_date={state.get('last_review_date')}",
-                "critical" if not review_ok else "ok",
+                review_ok or review_stage_ok,
+                review_stage_detail if review_stage_ok else f"last_review_date={state.get('last_review_date')}",
+                "critical" if not (review_ok or review_stage_ok) else "ok",
                 "盘后复盘未完成，运行 python main.py --review 或等待 --auto 执行。",
             ))
         else:

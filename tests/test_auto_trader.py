@@ -148,14 +148,18 @@ def test_after_market_cycle():
 
 
 def test_state_checkpoint_after_stop_check():
-    """长扫描开始前，Watchdog应能读到刚完成的止损巡检时间。"""
+    """耗时阶段前必须落盘，结束后不能遗留豁免状态。"""
     state_path = os.path.join(
         tempfile.gettempdir(),
         f"alpha-pilot-auto-state-{os.getpid()}.json",
     )
     observed_stop_at = []
+    observed_stages = []
 
     def fake_check_stops_once():
+        with open(state_path, "r", encoding="utf-8") as file:
+            snapshot = json.load(file)
+        observed_stages.append(snapshot)
         return {"checked": 0, "sold": 0}
 
     def fake_run_watch_cycle(**kwargs):
@@ -170,14 +174,18 @@ def test_state_checkpoint_after_stop_check():
 
     def fake_run_scan():
         with open(state_path, "r", encoding="utf-8") as file:
-            observed_stop_at.append(json.load(file)["last_stop_check_at"])
+            snapshot = json.load(file)
+        observed_stop_at.append(snapshot["last_stop_check_at"])
+        observed_stages.append(snapshot)
         return SimpleNamespace(candidates=[], decisions=[])
 
     def fake_execute_trades():
+        with open(state_path, "r", encoding="utf-8") as file:
+            observed_stages.append(json.load(file))
         return SimpleNamespace(executed_orders=[], risk_triggered=[], errors=[])
 
     try:
-        run_auto_cycle(
+        result = run_auto_cycle(
             state=AutoTraderState(date="2026-06-09"),
             force_scan=True,
             status_override="盘中",
@@ -201,6 +209,49 @@ def test_state_checkpoint_after_stop_check():
             os.remove(state_path)
 
     assert_true(observed_stop_at == [2000], "长扫描前已持久化最近止损巡检时间")
+    assert_true(observed_stages[0]["active_stage"] == "stop_check", "止损巡检开始前已声明当前阶段")
+    assert_true(observed_stages[0]["stage_started_at"] == 2000, "止损巡检阶段开始时间已持久化")
+    assert_true(observed_stages[0]["stage_budget_seconds"] > 0, "止损巡检阶段预算已持久化")
+    assert_true(observed_stages[1]["active_stage"] == "scan", "扫描开始前已切换为扫描阶段")
+    assert_true(observed_stages[1]["stage_started_at"] == 2000, "扫描阶段开始时间已持久化")
+    assert_true(observed_stages[1]["stage_budget_seconds"] > 0, "扫描阶段预算已持久化")
+    assert_true(observed_stages[2]["active_stage"] == "execute_trades", "模拟执行前已切换为执行阶段")
+    assert_true(observed_stages[2]["stage_started_at"] == 2000, "执行阶段开始时间已持久化")
+    assert_true(observed_stages[2]["stage_budget_seconds"] > 0, "执行阶段预算已持久化")
+    assert_true(result["state"]["active_stage"] == "", "循环完成后不会遗留活跃阶段")
+    assert_true(result["state"]["stage_started_at"] == 0, "循环完成后会清空阶段开始时间")
+    assert_true(result["state"]["stage_budget_seconds"] == 0, "循环完成后会清空阶段预算")
+
+
+def test_failed_stage_clears_active_state():
+    """阶段异常不能遗留预算内豁免，Watchdog必须能看到真实失败。"""
+    today = "2026-06-09"
+
+    def fake_run_scan():
+        raise RuntimeError("scan timeout")
+
+    result = run_auto_cycle(
+        state=AutoTraderState(
+            date=today,
+            last_stop_check_at=2000,
+            last_watch_at=2000,
+        ),
+        force_scan=True,
+        status_override="盘中",
+        trading_day_override=True,
+        today_override=today,
+        now_override=datetime(2026, 6, 9, 10, 0),
+        now_ts_override=2000,
+        services={"run_scan": fake_run_scan},
+        persist_state=False,
+        record_event=False,
+        notify=False,
+    )
+
+    assert_true("scan timeout" in result["state"]["last_error"], "阶段异常会写入循环错误")
+    assert_true(result["state"]["active_stage"] == "", "阶段异常后不会遗留活跃阶段")
+    assert_true(result["state"]["stage_started_at"] == 0, "阶段异常后会清空阶段开始时间")
+    assert_true(result["state"]["stage_budget_seconds"] == 0, "阶段异常后会清空阶段预算")
 
 
 def test_notification_filter():
@@ -240,6 +291,7 @@ def main():
     test_intraday_cycle()
     test_after_market_cycle()
     test_state_checkpoint_after_stop_check()
+    test_failed_stage_clears_active_state()
     test_notification_filter()
     print("=" * 60)
     print("全部通过")
