@@ -293,6 +293,8 @@ class Database:
         c.execute("""
             CREATE TABLE IF NOT EXISTS candidate_outcomes (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation_key   TEXT NOT NULL UNIQUE,
+                scan_id           TEXT NOT NULL,
                 observation_date  TEXT NOT NULL,
                 observed_at       TEXT NOT NULL,
                 code              TEXT NOT NULL,
@@ -304,7 +306,9 @@ class Database:
                 llm_confidence    REAL,
                 score             REAL,
                 entry_price       REAL,
+                price_source      TEXT,
                 hold_reason       TEXT,
+                denial_layer      TEXT,
                 dimensions        TEXT,
                 source            TEXT,
                 return_1d         REAL,
@@ -313,13 +317,19 @@ class Database:
                 return_10d        REAL,
                 mfe_5d            REAL,
                 mae_5d            REAL,
+                net_return_1d     REAL,
+                net_return_3d     REAL,
+                net_return_5d     REAL,
+                net_return_10d    REAL,
+                fee_rate          REAL DEFAULT 0,
+                slippage_rate     REAL DEFAULT 0,
                 outcome_label     TEXT,
                 evaluated_at      TEXT,
                 created_at        TEXT DEFAULT CURRENT_TIMESTAMP,
-                updated_at        TEXT DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE(observation_date, code, strategy_version)
+                updated_at        TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        self._migrate_candidate_outcomes(c)
 
         # ── 索引 ──
         c.execute("CREATE INDEX IF NOT EXISTS idx_k_daily_code ON k_daily(code)")
@@ -380,6 +390,87 @@ class Database:
 
         self.conn.commit()
         logger.debug(f"数据库初始化完成: {self.db_path}")
+
+    def _migrate_candidate_outcomes(self, cursor):
+        """将旧的每日聚合反事实表迁移为逐扫描观察表。"""
+        columns = {row["name"] for row in cursor.execute("PRAGMA table_info(candidate_outcomes)").fetchall()}
+        if "observation_key" in columns:
+            # 兼容已部署过逐扫描结构的早期版本。SQLite 不能为已有数据表
+            # 追加非空列，因此这些新增审计字段以可空列保留历史记录。
+            additions = {
+                "scan_id": "TEXT",
+                "price_source": "TEXT",
+                "denial_layer": "TEXT",
+                "net_return_1d": "REAL",
+                "net_return_3d": "REAL",
+                "net_return_5d": "REAL",
+                "net_return_10d": "REAL",
+                "fee_rate": "REAL DEFAULT 0",
+                "slippage_rate": "REAL DEFAULT 0",
+            }
+            for name, definition in additions.items():
+                if name not in columns:
+                    cursor.execute(f"ALTER TABLE candidate_outcomes ADD COLUMN {name} {definition}")
+            return
+
+        # RENAME/INSERT/DROP 必须作为同一 SQLite 保存点完成：任何一条失败时
+        # 都恢复旧表，避免初始化中断造成反事实历史只剩半份表结构。
+        cursor.execute("SAVEPOINT candidate_outcomes_migration")
+        try:
+            cursor.execute("ALTER TABLE candidate_outcomes RENAME TO candidate_outcomes_legacy")
+            cursor.execute("""
+            CREATE TABLE candidate_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                observation_key TEXT NOT NULL UNIQUE,
+                scan_id TEXT NOT NULL,
+                observation_date TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                code TEXT NOT NULL,
+                name TEXT,
+                strategy_version TEXT NOT NULL DEFAULT '',
+                regime TEXT,
+                action TEXT,
+                llm_action TEXT,
+                llm_confidence REAL,
+                score REAL,
+                entry_price REAL,
+                price_source TEXT,
+                hold_reason TEXT,
+                denial_layer TEXT,
+                dimensions TEXT,
+                source TEXT,
+                return_1d REAL, return_3d REAL, return_5d REAL, return_10d REAL,
+                mfe_5d REAL, mae_5d REAL,
+                net_return_1d REAL, net_return_3d REAL,
+                net_return_5d REAL, net_return_10d REAL,
+                fee_rate REAL DEFAULT 0, slippage_rate REAL DEFAULT 0,
+                outcome_label TEXT, evaluated_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """)
+            cursor.execute("""
+            INSERT INTO candidate_outcomes
+            (id, observation_key, scan_id, observation_date, observed_at, code, name,
+             strategy_version, regime, action, llm_action, llm_confidence, score,
+             entry_price, price_source, hold_reason, denial_layer, dimensions, source,
+             return_1d, return_3d, return_5d, return_10d, mfe_5d, mae_5d,
+             outcome_label, evaluated_at, created_at, updated_at)
+            SELECT id, 'legacy-' || id, 'legacy-' || observation_date,
+                   observation_date, observed_at, code, name, strategy_version,
+                   regime, action, llm_action, llm_confidence, score, entry_price,
+                   'legacy_unknown', hold_reason, 'legacy_unknown', dimensions, source,
+                   return_1d, return_3d, return_5d, return_10d, mfe_5d, mae_5d,
+                   outcome_label, evaluated_at, created_at, updated_at
+            FROM candidate_outcomes_legacy
+            """)
+            cursor.execute("DROP TABLE candidate_outcomes_legacy")
+        except Exception:
+            cursor.execute("ROLLBACK TO SAVEPOINT candidate_outcomes_migration")
+            cursor.execute("RELEASE SAVEPOINT candidate_outcomes_migration")
+            raise
+        else:
+            cursor.execute("RELEASE SAVEPOINT candidate_outcomes_migration")
 
     # ════════════════════════════════════════════════════════════════
     # k_daily 日K线 CRUD
@@ -445,29 +536,22 @@ class Database:
     # candidate_outcomes 候选反事实结果
     # ════════════════════════════════════════════════════════════════
 
-    def upsert_candidate_outcome(self, observation: Dict) -> int:
-        """记录一只候选的首个日内观察，重复扫描只更新最新上下文。"""
+    def insert_candidate_outcome(self, observation: Dict) -> int:
+        """记录一个独立扫描时点的候选观察，不跨时点合并字段。"""
         now = datetime.now().isoformat()
         c = self.conn.cursor()
         c.execute("""
             INSERT INTO candidate_outcomes
-            (observation_date, observed_at, code, name, strategy_version, regime,
+            (observation_key, scan_id, observation_date, observed_at,
+             code, name, strategy_version, regime,
              action, llm_action, llm_confidence, score, entry_price, hold_reason,
-             dimensions, source, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(observation_date, code, strategy_version) DO UPDATE SET
-              name=excluded.name,
-              regime=excluded.regime,
-              action=excluded.action,
-              llm_action=excluded.llm_action,
-              llm_confidence=excluded.llm_confidence,
-              score=MAX(candidate_outcomes.score, excluded.score),
-              entry_price=COALESCE(candidate_outcomes.entry_price, excluded.entry_price),
-              hold_reason=excluded.hold_reason,
-              dimensions=excluded.dimensions,
-              source=excluded.source,
-              updated_at=excluded.updated_at
+             price_source, denial_layer, dimensions, source, fee_rate, slippage_rate,
+             created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(observation_key) DO NOTHING
         """, (
+            observation.get("observation_key", ""),
+            observation.get("scan_id", ""),
             observation.get("observation_date", ""),
             observation.get("observed_at", now),
             observation.get("code", ""),
@@ -480,26 +564,23 @@ class Database:
             observation.get("score"),
             observation.get("entry_price"),
             observation.get("hold_reason", ""),
+            observation.get("price_source", "unknown"),
+            observation.get("denial_layer", ""),
             observation.get("dimensions", "{}"),
             observation.get("source", "scan"),
+            observation.get("fee_rate", 0),
+            observation.get("slippage_rate", 0),
             now,
             now,
         ))
         self.conn.commit()
-        row = c.execute("""
-            SELECT id FROM candidate_outcomes
-            WHERE observation_date=? AND code=? AND strategy_version=?
-        """, (
-            observation.get("observation_date", ""),
-            observation.get("code", ""),
-            observation.get("strategy_version", ""),
-        )).fetchone()
-        return int(row["id"]) if row else 0
+        return int(c.lastrowid) if c.rowcount else 0
 
     def get_candidate_outcomes(self, pending_only: bool = False,
                                limit: int = 1000) -> List[Dict]:
         """读取候选反事实结果，供盘后评估和看板使用。"""
-        where = "WHERE return_5d IS NULL" if pending_only else ""
+        # T+5 只决定标签成熟，T+10 仍需在后续交易日继续回填。
+        where = "WHERE return_10d IS NULL" if pending_only else ""
         rows = self.conn.execute(f"""
             SELECT * FROM candidate_outcomes
             {where}
@@ -513,6 +594,7 @@ class Database:
         allowed = {
             "return_1d", "return_3d", "return_5d", "return_10d",
             "mfe_5d", "mae_5d", "outcome_label", "evaluated_at",
+            "net_return_1d", "net_return_3d", "net_return_5d", "net_return_10d",
         }
         safe = {key: value for key, value in updates.items() if key in allowed}
         if not safe:
