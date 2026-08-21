@@ -559,27 +559,22 @@ def fast_scan(
     min_score = params.get("min_score", 58)
     max_weight = params.get("max_weight", 0.20)
 
-    # P2：影子A/B。真实计划仍按当前策略执行，实验组只在同一候选池上
-    # 记录“若门槛放宽3分”的信号，后续用真实卖出结果评估，不再保持空表。
-    ab_test_id = None
+    # 影子策略：全部变体在同一候选池与同一份打分上推导决策并落库，
+    # 复用反事实回填的净收益计算对比指标；晋级只产生候选行，不改变
+    # 真实下单。旧 A/B 框架长期 running 的实验顺带过期清理。
     try:
-        from strategy.ab_test import ABTestManager
+        from strategy.shadow_traders import record_daily_decisions
+        from strategy.shadow_eval import expire_stale_ab_tests
         from data.database import Database
-        control_params = {"top_k": int(top_k), "min_score": float(min_score), "max_weight": float(max_weight)}
-        treatment_params = {"top_k": min(5, int(top_k) + 1), "min_score": max(45, float(min_score) - 3), "max_weight": float(max_weight)}
-        with Database() as _ab_db:
-            _ab = ABTestManager(_ab_db)
-            ab_test_id = _ab.get_or_create_shadow_test(control_params, treatment_params, regime)
-            if ab_test_id:
-                for _candidate in scored[:5]:
-                    _price = float(_candidate.get("latest_price") or 0)
-                    _control_action = "BUY" if _candidate.get("composite", 0) >= float(min_score) else "HOLD"
-                    _treatment_action = "BUY" if _candidate.get("composite", 0) >= float(treatment_params["min_score"]) else "HOLD"
-                    _ab.record_signal_once(ab_test_id, "control", _candidate["code"], _control_action, _price)
-                    _ab.record_signal_once(ab_test_id, "treatment", _candidate["code"], _treatment_action, _price)
-                logger.info("[A/B] 影子实验=%s 已记录候选信号", ab_test_id)
+        base_params = {"top_k": int(top_k), "min_score": float(min_score), "max_weight": float(max_weight)}
+        with Database() as _shadow_db:
+            record_daily_decisions(
+                _shadow_db, plan.date, regime,
+                plan.strategy_version or "legacy-adaptive", scored, base_params,
+            )
+            expire_stale_ab_tests(_shadow_db)
     except Exception as e:
-        logger.debug(f"[A/B] 影子实验记录失败(非致命): {e}")
+        logger.debug(f"[影子] 决策记录失败(非致命): {e}")
 
     # 动态TopK: 取前K只，但必须过最低质量线
     top_candidates = []

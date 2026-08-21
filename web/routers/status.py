@@ -109,3 +109,26 @@ def get_detailed_positions():
     except Exception as e:
         return {"success": False, "error": public_error_message() if is_production() else str(e)}
 
+
+
+@router.get("/shadow/leaderboard")
+def get_shadow_leaderboard():
+    """影子策略排行榜（只读）：各变体相对 baseline 的净收益对比与晋级候选。
+
+    载荷只含变体名与数值指标，不含内部路径或凭证，公共仪表盘可安全展示。
+    """
+    try:
+        from data.database import Database
+        from strategy.shadow_eval import evaluate_variants
+        with Database() as db:
+            leaderboard = evaluate_variants(db)
+            candidates = [
+                row[0] for row in db.conn.execute(
+                    "SELECT variant_id FROM shadow_promotions WHERE status='candidate'"
+                ).fetchall()
+            ]
+        return {"success": True, "leaderboard": leaderboard,
+                "promotion_candidates": sorted(candidates)}
+    except Exception as e:
+        return {"success": False, "leaderboard": [], "promotion_candidates": [],
+                "error": public_error_message() if is_production() else str(e)}

@@ -232,6 +232,26 @@ def cmd_research_sync(args):
     return {"errors": ["research_sync"] if result.get("status") != "success" else []}
 
 
+def cmd_shadow_report(args):
+    """影子策略排行榜与晋级候选（只读，不改变任何策略参数）。"""
+    from data.database import Database
+    from strategy.shadow_eval import evaluate_variants, promote_candidates
+    min_days = getattr(args, "shadow_min_days", None) or 20
+    min_buys = getattr(args, "shadow_min_buys", None) or 10
+    with Database() as db:
+        promote_candidates(db, min_days=min_days, min_buys=min_buys)
+        leaderboard = evaluate_variants(db, min_days=min_days, min_buys=min_buys)
+        candidates = [
+            row[0] for row in db.conn.execute(
+                "SELECT variant_id FROM shadow_promotions WHERE status='candidate'"
+            ).fetchall()
+        ]
+    print(json.dumps({
+        "leaderboard": leaderboard,
+        "promotion_candidates": sorted(candidates),
+    }, ensure_ascii=False, indent=2))
+
+
 def cmd_train_pooled_model(args):
     """训练宽股票池 pooled ML 影子模型，不参与交易执行。"""
     from strategy.pooled_ml import train_pooled_model
@@ -809,6 +829,7 @@ def main():
     group.add_argument("--research-sync", action="store_true", help="盘后增量同步宽股票池研究数据，不参与交易")
     group.add_argument("--train-pooled-model", action="store_true", help="盘后训练 pooled ML 影子模型，不参与交易")
     group.add_argument("--pooled-ml-status", action="store_true", help="查看 pooled ML 影子模型状态")
+    group.add_argument("--shadow-report", action="store_true", help="查看影子策略排行榜与晋级候选(JSON)")
     group.add_argument("--stop-check", action="store_true", help="盘中止损巡检")
     group.add_argument("--auto", action="store_true", help="自动盯盘交易员（循环运行，默认模拟盘）")
     group.add_argument("--auto-once", action="store_true", help="自动盯盘交易员（只运行一轮，用于测试）")
@@ -913,6 +934,8 @@ def main():
         result = cmd_train_pooled_model(args)
     elif args.pooled_ml_status:
         result = cmd_pooled_ml_status()
+    elif args.shadow_report:
+        result = cmd_shadow_report(args)
     elif args.review:
         result = cmd_review()
     elif args.account:
