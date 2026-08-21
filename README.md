@@ -230,6 +230,9 @@ python3 main.py --paper-ready --unattended-platform linux
 python3 main.py --paper-bootstrap --unattended-platform linux --python-cmd python3
 python3 main.py --linux-tasks
 python3 main.py --linux-unattended-status
+python3 main.py --research-sync
+python3 main.py --train-pooled-model
+python3 main.py --pooled-ml-status
 ```
 
 ## Linux / Hermes 无人值守模式
