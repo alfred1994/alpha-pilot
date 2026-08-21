@@ -289,9 +289,19 @@ WantedBy=default.target
 
 
 def _oneshot_service_unit(description: str, script_path: str,
-                          timeout_start_sec: int = 0) -> str:
+                          timeout_start_sec: int = 0,
+                          resource_limits: bool = False) -> str:
     """生成oneshot systemd service unit"""
     timeout_block = f"TimeoutStartSec={int(timeout_start_sec)}\n" if timeout_start_sec else ""
+    resource_block = """
+Nice=10
+CPUQuota=300%
+MemoryMax=8G
+IOWeight=50
+Environment=OMP_NUM_THREADS=3
+Environment=OPENBLAS_NUM_THREADS=3
+Environment=MKL_NUM_THREADS=3
+""" if resource_limits else ""
     return f"""[Unit]
 Description={description}
 After=network-online.target
@@ -301,7 +311,7 @@ Type=oneshot
 ExecStart=/usr/bin/env bash {script_path}
 Environment=BROKER_MODE=paper
 Environment=PYTHONUNBUFFERED=1
-{timeout_block}"""
+{timeout_block}{resource_block}"""
 
 
 def _interval_timer_unit(description: str, service_unit: str,
@@ -439,7 +449,6 @@ def _uninstall_script(service_prefix: str) -> str:
         _unit_name(service_prefix, "status", "timer"),
         _unit_name(service_prefix, "research"),
         _unit_name(service_prefix, "research", "timer"),
-        _unit_name(service_prefix, "pooled-ml", "timer"),
         _unit_name(service_prefix, "pooled-ml"),
         _unit_name(service_prefix, "pooled-ml", "timer"),
     ]
@@ -527,9 +536,9 @@ def generate_linux_task_scripts(
         paths["report_timer"]: _calendar_timer_unit("AlphaPilot 盘后AI报告", os.path.basename(paths["report_service"]), f"Mon..Fri *-*-* {config.report_time}:00"),
         paths["status_service"]: _oneshot_service_unit("AlphaPilot 自动盯盘运维状态", target_paths["run_status"]),
         paths["status_timer"]: _calendar_timer_unit("AlphaPilot 盘后运维状态", os.path.basename(paths["status_service"]), f"Mon..Fri *-*-* {config.status_time}:00"),
-        paths["research_service"]: _oneshot_service_unit("AlphaPilot 盘后研究数据同步", target_paths["run_research_sync"], timeout_start_sec=900),
+        paths["research_service"]: _oneshot_service_unit("AlphaPilot 盘后研究数据同步", target_paths["run_research_sync"], timeout_start_sec=900, resource_limits=True),
         paths["research_timer"]: _calendar_timer_unit("AlphaPilot 盘后宽股票池研究同步", os.path.basename(paths["research_service"]), "Mon..Fri *-*-* 19:10:00"),
-        paths["pooled_ml_service"]: _oneshot_service_unit("AlphaPilot 盘后 pooled ML 影子训练", target_paths["run_pooled_ml"], timeout_start_sec=900),
+        paths["pooled_ml_service"]: _oneshot_service_unit("AlphaPilot 盘后 pooled ML 影子训练", target_paths["run_pooled_ml"], timeout_start_sec=900, resource_limits=True),
         paths["pooled_ml_timer"]: _calendar_timer_unit("AlphaPilot 盘后 pooled ML 影子训练", os.path.basename(paths["pooled_ml_service"]), "Mon..Fri *-*-* 21:10:00"),
     }
     for path, content in {**scripts, **units}.items():
@@ -596,6 +605,7 @@ def _query_systemd_units(service_prefix: str) -> Dict[str, Dict]:
         _unit_name(service_prefix, "report", "timer"),
         _unit_name(service_prefix, "status", "timer"),
         _unit_name(service_prefix, "research", "timer"),
+        _unit_name(service_prefix, "pooled-ml", "timer"),
     ]
     result = {}
     for unit in units:

@@ -78,6 +78,8 @@ def main():
         auto_restart_timer = _read(paths["auto_restart_timer"])
         doctor_service = _read(paths["doctor_service"])
         doctor_timer = _read(paths["doctor_timer"])
+        research_service = _read(paths["research_service"])
+        pooled_ml_service = _read(paths["pooled_ml_service"])
 
         assert_true('source "$HERMES_ENV_FILE"' in run_auto, "自动盘脚本加载Hermes环境")
         assert_true('source venv/bin/activate' in run_auto, "自动盘脚本兼容历史venv")
@@ -109,6 +111,21 @@ def main():
         assert_true("TimeoutStartSec=300" in doctor_service, "Doctor服务带systemd超时保护")
         assert_true("OnUnitActiveSec=10min" in auto_restart_timer, "Auto-Restart timer每10分钟检查")
         assert_true("OnUnitActiveSec=5min" in doctor_timer, "Doctor timer每5分钟检查")
+        for content, label in ((research_service, "研究同步"), (pooled_ml_service, "pooled ML")):
+            assert_true("Nice=10" in content, f"{label}任务降低调度优先级")
+            assert_true("CPUQuota=300%" in content, f"{label}任务限制CPU")
+            assert_true("MemoryMax=8G" in content, f"{label}任务限制内存")
+            assert_true("IOWeight=50" in content, f"{label}任务降低磁盘竞争")
+            assert_true("OMP_NUM_THREADS=3" in content, f"{label}任务限制计算线程")
+
+        deploy_script = _read(os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "scripts", "deploy_hermes.sh",
+        ))
+        assert_true("ensure_swap" in deploy_script, "部署脚本包含swap保障函数")
+        assert_true("ensure_swap\nprepare_git_repository" in deploy_script, "部署主流程先保障swap")
+        assert_true("vm.swappiness=10" in deploy_script, "swap仅作为OOM安全垫且swappiness压低")
+        assert_true("sudo -n grep -q '^/swapfile ' /etc/fstab" in deploy_script, "fstab写入幂等")
 
         log_dir = os.path.join(temp_dir, "logs")
         os.makedirs(log_dir, exist_ok=True)
@@ -190,6 +207,7 @@ def main():
         assert_true(not any(i.severity == "critical" for i in status_items), "Linux无人值守巡检无critical")
         assert_true(any(i.name == "systemd状态:alpha-pilot-test-auto.service" and i.ok for i in status_items), "巡检识别Auto systemd服务")
         assert_true(any(i.name == "systemd状态:alpha-pilot-test-auto-restart.timer" and i.ok for i in status_items), "巡检识别Auto-Restart timer")
+        assert_true(any(i.name == "systemd状态:alpha-pilot-test-pooled-ml.timer" and i.ok for i in status_items), "巡检识别pooled ML timer")
         assert_true(
             any(
                 i.name == "日志:Auto"

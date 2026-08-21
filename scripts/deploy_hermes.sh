@@ -13,6 +13,7 @@ RESTART_WEB="${9:-true}"
 WEB_HOST="${10:-0.0.0.0}"
 WEB_PORT="${11:-8000}"
 PUBLIC_ORIGIN="${12:-${HERMES_PUBLIC_ORIGIN:-https://alphapilot.pp.ua}}"
+DEPLOY_SHA="${13:-}"
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 LEGACY_PROJECT_DIR="${LEGACY_PROJECT_DIR:-$HOME/projects/quant-pilot}"
 LEGACY_USER_UNITS="${LEGACY_USER_UNITS:-quant-pilot-auto.service quant-pilot-auto-restart.service quant-pilot-auto-restart.timer quant-pilot-doctor.service quant-pilot-doctor.timer quant-pilot-report.service quant-pilot-report.timer quant-pilot-status.service quant-pilot-status.timer quant-pilot-web.service}"
@@ -100,6 +101,35 @@ PY
   if ! grep -q '^ALPHAPILOT_CORS_ORIGINS=' "$HERMES_ENV_FILE"; then
     printf 'ALPHAPILOT_CORS_ORIGINS=%s\n' "$PUBLIC_ORIGIN" >> "$HERMES_ENV_FILE"
   fi
+}
+
+ensure_swap() {
+  # 4GiB swap 仅作为内存尖峰的OOM安全垫（模型训练/浏览器/批量回测），
+  # 不作为正常计算内存：swappiness 压低到 10。
+  local swap_total_mb
+  swap_total_mb="$(awk '/^SwapTotal:/ {print int($2/1024)}' /proc/meminfo)"
+  if [ "${swap_total_mb:-0}" -ge 4096 ]; then
+    log "swap sufficient: ${swap_total_mb}MiB"
+    return 0
+  fi
+  log "ensuring 4GiB swapfile (current ${swap_total_mb:-0}MiB)"
+  local swapfile_bytes
+  swapfile_bytes="$(sudo -n stat -c '%s' /swapfile 2>/dev/null || echo 0)"
+  if [ ! -f /swapfile ] || [ "${swapfile_bytes:-0}" -lt 4294967296 ]; then
+    sudo -n rm -f /swapfile
+    sudo -n fallocate -l 4G /swapfile || sudo -n dd if=/dev/zero of=/swapfile bs=1M count=4096 status=none
+    sudo -n chmod 600 /swapfile
+    sudo -n mkswap /swapfile >/dev/null
+  fi
+  sudo -n swapon /swapfile 2>/dev/null || true
+  if ! sudo -n grep -q '^/swapfile ' /etc/fstab; then
+    printf '/swapfile none swap sw 0 0\n' | sudo -n tee -a /etc/fstab >/dev/null
+  fi
+  sudo -n sysctl -w vm.swappiness=10 >/dev/null
+  if ! sudo -n grep -q '^vm.swappiness=' /etc/sysctl.conf; then
+    printf 'vm.swappiness=10\n' | sudo -n tee -a /etc/sysctl.conf >/dev/null
+  fi
+  log "swap active: $(awk '/^SwapTotal:/ {print int($2/1024)}' /proc/meminfo)MiB, swappiness=10"
 }
 
 prepare_git_repository() {
@@ -250,16 +280,23 @@ restart_web_process() {
   return 30
 }
 
+ensure_swap
 prepare_git_repository
 
 cd "$PROJECT_DIR"
 mkdir -p logs
 
-log "deploy branch $BRANCH in $PROJECT_DIR"
+log "deploy branch $BRANCH in $PROJECT_DIR${DEPLOY_SHA:+ at $DEPLOY_SHA}"
 reset_git_worktree_for_deploy
-git_auth fetch --prune origin "$BRANCH"
-git checkout -f -B "$BRANCH" "origin/$BRANCH"
-git reset --hard "origin/$BRANCH"
+if [ -n "$DEPLOY_SHA" ]; then
+  git_auth fetch --prune origin "$DEPLOY_SHA"
+  git checkout -f --detach "$DEPLOY_SHA"
+  git reset --hard "$DEPLOY_SHA"
+else
+  git_auth fetch --prune origin "$BRANCH"
+  git checkout -f -B "$BRANCH" "origin/$BRANCH"
+  git reset --hard "origin/$BRANCH"
+fi
 
 if [ -x "$PROJECT_DIR/.venv/bin/python" ]; then
   VENV_PY="$PROJECT_DIR/.venv/bin/python"
