@@ -233,6 +233,7 @@ def _try_cache(code: str, start_date: str, end_date: str,
                 if allow_stale:
                     df.attrs["stale_cache_days"] = stale_days
                     df.attrs["stale_cache_latest"] = latest_date
+                    df.attrs["missing_start_days"] = missing_start_days
                     return df
     except Exception as e:
         logger.debug(f"缓存查询失败: {e}")

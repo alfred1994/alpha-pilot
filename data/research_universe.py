@@ -14,11 +14,12 @@ from config import DATA_DIR
 logger = logging.getLogger("data.research_universe")
 
 UNIVERSE_FILE = os.path.join(DATA_DIR, "research_universe.json")
-RESEARCH_UNIVERSE_SIZE = int(os.environ.get("RESEARCH_UNIVERSE_SIZE", "300"))
-RESEARCH_SYNC_BATCH = int(os.environ.get("RESEARCH_SYNC_BATCH", "12"))
+RESEARCH_UNIVERSE_SIZE = int(os.environ.get("RESEARCH_UNIVERSE_SIZE", "800"))
+RESEARCH_SYNC_BATCH = int(os.environ.get("RESEARCH_SYNC_BATCH", "8"))
 RESEARCH_SYNC_WORKERS = int(os.environ.get("RESEARCH_SYNC_WORKERS", "1"))
 RESEARCH_HISTORY_DAYS = int(os.environ.get("RESEARCH_HISTORY_DAYS", "730"))
 RESEARCH_ITEM_TIMEOUT = int(os.environ.get("RESEARCH_ITEM_TIMEOUT", "95"))
+RESEARCH_JOB_TIMEOUT = int(os.environ.get("RESEARCH_JOB_TIMEOUT", "840"))
 RESEARCH_LOCK_FILE = os.path.join(DATA_DIR, "research_sync.lock")
 
 
@@ -45,6 +46,18 @@ def _save_universe(payload: Dict, path: str = None):
     os.replace(temp, path)
 
 
+def _is_eligible_research_code(code: str) -> bool:
+    """研究池仅保留普通A股，显式排除北交所和科创板。"""
+    code = str(code or "").strip()
+    return (
+        len(code) == 6
+        and code.isdigit()
+        and code.startswith(("0", "3", "6"))
+        and not code.startswith("688")
+        and code != "000300"
+    )
+
+
 def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
     """以成交额靠前的普通A股构建研究池，保留已有样本以保障连续性。"""
     limit = max(20, int(limit or RESEARCH_UNIVERSE_SIZE))
@@ -55,7 +68,7 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
     ordered: List[Dict] = []
     seen = set()
     for code, name in active.items():
-        if code in seen:
+        if code in seen or not _is_eligible_research_code(code):
             continue
         seen.add(code)
         ordered.append({"code": code, "name": name, "source": "active_liquidity"})
@@ -68,7 +81,7 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
             snapshot = get_candidate_pool_status(max_age=24 * 3600).get("snapshot") or {}
             for item in snapshot.get("candidates") or []:
                 code = str(item.get("code") or "").strip()
-                if code and code not in seen:
+                if _is_eligible_research_code(code) and code not in seen:
                     seen.add(code)
                     ordered.append({"code": code, "name": item.get("name", code), "source": "candidate_pool_fallback"})
         except Exception:
@@ -87,14 +100,14 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
                 """, (limit,)).fetchall()
             for row in rows:
                 code = str(row["code"])
-                if code not in seen:
+                if _is_eligible_research_code(code) and code not in seen:
                     seen.add(code)
                     ordered.append({"code": code, "name": code, "source": "kline_cache_fallback"})
         except Exception:
             pass
     for item in current.get("codes") or []:
         code = str(item.get("code") or "")
-        if code and code not in seen and len(ordered) < limit:
+        if _is_eligible_research_code(code) and code not in seen and len(ordered) < limit:
             seen.add(code)
             ordered.append({"code": code, "name": item.get("name", code), "source": "retained"})
 
@@ -104,6 +117,10 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
         "source": ordered[0].get("source", "none") if ordered else "none",
         "codes": ordered[:limit],
         "cursor": min(int(current.get("cursor") or 0), max(0, len(ordered) - 1)),
+        "retry_codes": [
+            str(code) for code in current.get("retry_codes") or []
+            if str(code) in {str(item.get("code") or "") for item in ordered}
+        ],
         "last_sync": current.get("last_sync") or {},
     }
     _save_universe(payload, path)
@@ -121,12 +138,14 @@ def _sync_one(item: Dict, start_date: str, end_date: str) -> Dict:
         if df is None or df.empty:
             return {"code": code, "status": "empty", "rows": 0}
         stale = int(getattr(df, "attrs", {}).get("stale_cache_days") or 0)
+        missing_start = int(getattr(df, "attrs", {}).get("missing_start_days") or 0)
         return {
             "code": code,
-            "status": "stale" if stale else "ok",
+            "status": "incomplete" if missing_start > 3 else ("stale" if stale else "ok"),
             "rows": int(len(df)),
             "latest": str(df["date"].max()) if "date" in df.columns else "",
             "stale_days": stale,
+            "missing_start_days": missing_start,
         }
     except Exception as exc:
         return {"code": code, "status": "error", "error": str(exc)[:160], "rows": 0}
@@ -175,13 +194,29 @@ def _acquire_lock(path: str = None) -> bool:
         return True
     except FileExistsError:
         try:
+            with open(path, "r", encoding="utf-8") as file:
+                payload = json.load(file)
+            pid = int(payload.get("pid") or 0)
+            alive = pid > 0
+            if alive:
+                try:
+                    os.kill(pid, 0)
+                except OSError:
+                    alive = False
             age = datetime.now().timestamp() - os.path.getmtime(path)
-            if age > RESEARCH_ITEM_TIMEOUT * 2:
+            if not alive and age > RESEARCH_JOB_TIMEOUT:
                 os.unlink(path)
                 return _acquire_lock(path)
-        except OSError:
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
             pass
         return False
+
+
+def _heartbeat_lock(path: str):
+    try:
+        os.utime(path, None)
+    except OSError:
+        pass
 
 
 def _release_lock(path: str = None):
@@ -205,24 +240,47 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
         if not codes:
             return {"status": "no_universe", "synced": 0}
 
-        batch_size = max(1, min(int(batch_size or RESEARCH_SYNC_BATCH), len(codes)))
+        max_batch = max(1, (RESEARCH_JOB_TIMEOUT - 30) // max(1, RESEARCH_ITEM_TIMEOUT))
+        batch_size = max(1, min(int(batch_size or RESEARCH_SYNC_BATCH), len(codes), max_batch))
         # 研究同步优先确定性和可恢复性；单标的已在子进程隔离，workers 参数
         # 预留给后续可靠数据源扩容，当前强制顺序执行避免供应商并发封锁。
         workers = 1
         history_days = max(365, int(history_days or RESEARCH_HISTORY_DAYS))
         cursor = int(payload.get("cursor") or 0) % len(codes)
-        batch = [codes[(cursor + index) % len(codes)] for index in range(batch_size)]
+        retry_codes = list(dict.fromkeys(
+            str(code) for code in payload.get("retry_codes") or []
+            if str(code) in {str(item.get("code") or "") for item in codes}
+        ))
+        by_code = {str(item.get("code") or ""): item for item in codes}
+        batch = [by_code[code] for code in retry_codes if code in by_code][:batch_size]
+        selected_retry_codes = {str(item.get("code") or "") for item in batch}
+        selected_from_cursor = 0
+        while len(batch) < batch_size and selected_from_cursor < len(codes):
+            item = codes[(cursor + selected_from_cursor) % len(codes)]
+            selected_from_cursor += 1
+            if str(item.get("code") or "") not in {str(row.get("code") or "") for row in batch}:
+                batch.append(item)
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=history_days)).strftime("%Y-%m-%d")
-        results = [_sync_one_bounded(item, start_date, end_date) for item in batch]
+        results = []
+        for item in batch:
+            _heartbeat_lock(lock_path)
+            results.append(_sync_one_bounded(item, start_date, end_date))
+            _heartbeat_lock(lock_path)
 
-        payload["cursor"] = (cursor + batch_size) % len(codes)
+        payload["cursor"] = (cursor + selected_from_cursor) % len(codes)
+        # 不能因单次预算不足而丢弃尚未轮到的失败标的；已尝试且成功的标的
+        # 从队列移除，失败的标的回到队尾，防止永久优先级饥饿。
+        failed_codes = [str(row["code"]) for row in results if row.get("status") != "ok"]
+        pending_retry_codes = [code for code in retry_codes if code not in selected_retry_codes]
+        payload["retry_codes"] = list(dict.fromkeys(pending_retry_codes + failed_codes))
         summary = {
             "at": datetime.now().isoformat(),
             "requested": batch_size,
             "workers": workers,
             "ok": sum(1 for row in results if row.get("status") == "ok"),
             "stale": sum(1 for row in results if row.get("status") == "stale"),
+            "incomplete": sum(1 for row in results if row.get("status") == "incomplete"),
             "empty": sum(1 for row in results if row.get("status") == "empty"),
             "timeout": sum(1 for row in results if row.get("status") == "timeout"),
             "error": sum(1 for row in results if row.get("status") == "error"),
@@ -230,6 +288,10 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
             "end_date": end_date,
             "results": results,
         }
+        summary["status"] = (
+            "success" if summary["ok"] == summary["requested"]
+            else ("partial" if summary["ok"] > 0 else "failed")
+        )
         payload["last_sync"] = summary
         _save_universe(payload, path)
         logger.info("研究数据同步: requested=%s ok=%s stale=%s empty=%s timeout=%s error=%s", summary["requested"], summary["ok"], summary["stale"], summary["empty"], summary["timeout"], summary["error"])

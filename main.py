@@ -227,7 +227,9 @@ def cmd_research_sync(args):
     )
     result["universe_size"] = len(universe.get("codes") or [])
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    return {"errors": ["research_sync"] if result.get("error", 0) >= result.get("requested", 1) else []}
+    # 研究任务只在整批成功时返回零退出码；partial 也必须失败，避免
+    # timeout/stale/incomplete/empty 混入成功批次后被 systemd 标成成功。
+    return {"errors": ["research_sync"] if result.get("status") != "success" else []}
 
 
 def cmd_train_pooled_model(args):
@@ -840,9 +842,9 @@ def main():
     parser.add_argument("--stocks", nargs="+", help="回测股票列表")
     parser.add_argument("--strategy", default="zt_reversal", help="策略名称（用于 strategy 模式）")
     parser.add_argument("--rounds", type=int, default=3, help="优化轮数（用于 optimize 模式）")
-    parser.add_argument("--research-universe-size", type=int, default=None, help="研究股票池上限，默认300")
-    parser.add_argument("--research-batch-size", type=int, default=None, help="单次研究K线同步数量，默认40")
-    parser.add_argument("--research-workers", type=int, default=None, help="研究K线同步并发数，最大2")
+    parser.add_argument("--research-universe-size", type=int, default=None, help="研究股票池上限，默认800")
+    parser.add_argument("--research-batch-size", type=int, default=None, help="单次研究K线同步数量，默认8")
+    parser.add_argument("--research-workers", type=int, default=None, help="研究K线同步并发数；当前为保护数据源固定串行")
     parser.add_argument("--research-history-days", type=int, default=None, help="研究K线补齐自然日范围，默认730")
     parser.add_argument("--pooled-min-symbols", type=int, default=5, help="pooled ML最少股票数")
     parser.add_argument("--pooled-min-rows", type=int, default=500, help="pooled ML最少特征样本数")
