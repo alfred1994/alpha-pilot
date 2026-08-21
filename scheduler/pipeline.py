@@ -23,6 +23,7 @@ import os
 import time
 import logging
 import hashlib
+import uuid
 from datetime import datetime
 from scheduler.market_calendar import _now_bj
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ SIGNAL_CACHE_FILE = os.path.join(
 class TradePlan:
     """交易计划（替代旧的信号缓存）"""
     date: str = ""
+    scan_id: str = ""
     regime: str = "sideways"
     regime_confidence: float = 0.0
     strategy_version: str = ""
@@ -77,6 +79,7 @@ class TradePlan:
     def to_dict(self):
         return {
             "date": self.date,
+            "scan_id": self.scan_id,
             "regime": self.regime,
             "regime_confidence": self.regime_confidence,
             "strategy_version": self.strategy_version,
@@ -223,7 +226,11 @@ def fast_scan(
         get_candidate_pool_status, save_candidate_pool, with_timeout,
     )
 
-    plan = TradePlan(date=_now_bj().strftime("%Y-%m-%d"))
+    scan_date = _now_bj().strftime("%Y-%m-%d")
+    plan = TradePlan(
+        date=scan_date,
+        scan_id=f"{scan_date}T{datetime.now().strftime('%H%M%S%f')}-{uuid.uuid4().hex[:12]}",
+    )
     t0 = time.time()
 
     def elapsed():
@@ -502,6 +509,16 @@ def fast_scan(
         data_quality["degraded"].append("部分股票舆情未返回")
     if data_quality["degraded"]:
         logger.warning("[快链路] 数据降级进入LLM上下文: %s", data_quality["degraded"])
+
+    # ML信号批量预取：pooled影子模型可用时走本地库批量推理，避免逐股
+    # 临时训练；不可用时各候选自动回退原逐股路径，行为与旧版一致。
+    try:
+        from strategy.qlib_signal import prefetch_pooled_signals
+        prefetch_pooled_signals(
+            [c.code if hasattr(c, "code") else c.get("code", "") for c in candidates]
+        )
+    except Exception as exc:
+        logger.warning(f"[快链路] pooled批量预取跳过: {exc}")
 
     scored = _parallel_score(candidates, sentiment_scores, timeout=remaining())
 
@@ -1545,6 +1562,23 @@ def run_review() -> PipelineResult:
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
 
+    # 先回填已成熟的历史候选，再构建 daily_facts 和调用 LLM；否则本轮新
+    # 标签至少要晚一天才能进入复盘上下文。
+    try:
+        from strategy.counterfactual import evaluate_candidate_outcomes
+        counterfactual = evaluate_candidate_outcomes()
+        result.steps.append(StepResult(
+            name="候选反事实评估", success=True,
+            elapsed=time.time() - t0,
+            detail=(
+                f"检查{counterfactual.get('checked', 0)}条 "
+                f"回填{counterfactual.get('updated', 0)}条 "
+                f"成熟{counterfactual.get('matured', 0)}条"
+            ),
+        ))
+    except Exception as e:
+        logger.warning(f"候选反事实评估失败(非致命): {e}")
+
     try:
         from review.daily_review import run_daily_review
         review_payload = run_daily_review(return_data=True)
@@ -1595,21 +1629,6 @@ def run_review() -> PipelineResult:
         ))
 
         adaptive_data = {}
-        try:
-            from strategy.counterfactual import evaluate_candidate_outcomes
-            counterfactual = evaluate_candidate_outcomes()
-            result.steps.append(StepResult(
-                name="候选反事实评估", success=True,
-                elapsed=time.time() - t0,
-                detail=(
-                    f"检查{counterfactual.get('checked', 0)}条 "
-                    f"回填{counterfactual.get('updated', 0)}条 "
-                    f"成熟{counterfactual.get('matured', 0)}条"
-                ),
-            ))
-        except Exception as e:
-            logger.warning(f"候选反事实评估失败(非致命): {e}")
-
         try:
             from strategy.adaptive import AdaptiveEngine
             adaptive = AdaptiveEngine()
