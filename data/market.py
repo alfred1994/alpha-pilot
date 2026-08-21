@@ -335,29 +335,11 @@ def get_north_flow() -> dict:
         dict: {net_flow: 净流入(亿), buy: 买入(亿), sell: 卖出(亿), date}
     """
     try:
-        import asyncio
-        import cloakbrowser
-
-        async def _fetch():
-            url = "https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f54,f52,f55,f58,f61,f59,f62,f57,f60,f164,f166,f168,f170,f172,f56,f53,f64,f63"
-            browser = await cloakbrowser.launch_async(headless=True)
-            try:
-                page = await browser.new_page()
-                await page.goto("https://quote.eastmoney.com/", wait_until="domcontentloaded", timeout=15000)
-                await asyncio.sleep(1)
-                result = await page.evaluate(f'''async () => {{
-                    const resp = await fetch("{url}");
-                    return await resp.json();
-                }}''')
-                return result
-            finally:
-                await browser.close()
-
-        loop = asyncio.new_event_loop()
-        try:
-            result = loop.run_until_complete(_fetch())
-        finally:
-            loop.close()
+        # 统一复用东方财富共享浏览器。禁止在此额外启动实例，否则并发扫描会
+        # 绕过浏览器生命周期上限。
+        from data.eastmoney import _fetch_with_cloak
+        url = "https://push2.eastmoney.com/api/qt/kamt.rtmin/get?fields1=f1,f2,f3,f4&fields2=f51,f54,f52,f55,f58,f61,f59,f62,f57,f60,f164,f166,f168,f170,f172,f56,f53,f64,f63"
+        result = _fetch_with_cloak(url, base_url="https://quote.eastmoney.com/")
 
         if not result:
             return {}

@@ -3,123 +3,261 @@
 涨停板、龙虎榜、融资融券、个股新闻
 """
 import asyncio
+import atexit
+import concurrent.futures
 import json
 import logging
+import subprocess
 import threading
+import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
 
 logger = logging.getLogger("data.eastmoney")
 
-# ═══ 线程本地存储（每个线程独立的事件循环+浏览器实例） ═══
-# 解决 ThreadPoolExecutor 并发打分时多线程竞争同一事件循环的问题
-_thread_local = threading.local()
+# CloakBrowser 的连接和页面对象绑定创建它们的事件循环。过去的“每线程一个
+# 浏览器”在候选并发评分时会无上限扩张；这里把所有请求收敛到一个专属事件循环
+# 和一个浏览器实例。上限实际为 1（小于运维上限 2），以换取 API 线程安全。
 EASTMONEY_ASYNC_TIMEOUT = 45
+EASTMONEY_BROWSER_IDLE_SECONDS = 20 * 60
 
 
-def cleanup_eastmoney():
-    """清理当前线程的浏览器实例和事件循环（避免asyncio泄漏）"""
-    browser = getattr(_thread_local, "browser", None)
-    if browser is not None:
+class _CloakBrowserManager:
+    """在单一专属事件循环中串行复用 CloakBrowser。
+
+    CloakBrowser 没有跨事件循环共享连接的安全契约，因此不实现表面上的两实例
+    池。单实例已经消除重复启动，且在低配主机上比跨线程池更可靠。
+    """
+
+    def __init__(self, *, launcher=None, idle_seconds: int = EASTMONEY_BROWSER_IDLE_SECONDS,
+                 navigation_wait_seconds: float = 2, retry_wait_seconds: float = 1):
+        self._launcher = launcher
+        self._idle_seconds = max(0.01, float(idle_seconds))
+        self._navigation_wait_seconds = max(0.0, float(navigation_wait_seconds))
+        self._retry_wait_seconds = max(0.0, float(retry_wait_seconds))
+        self._thread = None
+        self._loop = None
+        self._ready = threading.Event()
+        self._start_lock = threading.Lock()
+        self._browser = None
+        self._request_lock = None
+        self._idle_task = None
+        self._last_activity = 0.0
+
+    def _ensure_worker(self):
+        with self._start_lock:
+            if self._loop is not None and self._thread is not None and self._thread.is_alive():
+                return
+            self._ready.clear()
+
+            def _worker():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                self._loop = loop
+                self._request_lock = asyncio.Lock()
+                self._ready.set()
+                loop.run_forever()
+
+            self._thread = threading.Thread(
+                target=_worker,
+                name="eastmoney-cloakbrowser",
+                daemon=True,
+            )
+            self._thread.start()
+        if not self._ready.wait(timeout=5):
+            raise RuntimeError("CloakBrowser事件循环启动超时")
+
+    async def _close_browser(self):
+        browser, self._browser = self._browser, None
+        if browser is not None:
+            try:
+                await asyncio.wait_for(browser.close(), timeout=10)
+            except Exception as exc:
+                logger.warning("关闭东方财富浏览器失败: %s", exc)
+
+    async def _get_browser(self):
+        browser = self._browser
+        connected = False
+        if browser is not None:
+            try:
+                connected = bool(browser.is_connected())
+            except Exception:
+                connected = False
+        if not connected:
+            await self._close_browser()
+            launcher = self._launcher
+            if launcher is None:
+                import cloakbrowser
+                launcher = cloakbrowser.launch_async
+            self._browser = await launcher(headless=True)
+        return self._browser
+
+    def _touch(self):
+        self._last_activity = time.monotonic()
+        if self._idle_task is None or self._idle_task.done():
+            self._idle_task = asyncio.create_task(self._close_when_idle())
+
+    async def _close_when_idle(self):
+        while self._browser is not None:
+            remaining = self._idle_seconds - (time.monotonic() - self._last_activity)
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+                continue
+            await self._close_browser()
+            return
+
+    async def _fetch(self, url: str, base_url: str):
+        # 页面请求串行化，保证一个 Browser/一个事件循环的使用契约，并避免同一
+        # 数据源在并发扫描中产生放大式访问。
+        async with self._request_lock:
+            browser = await self._get_browser()
+            page = None
+            try:
+                page = await browser.new_page()
+                await page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(self._navigation_wait_seconds)
+                for attempt in range(3):
+                    result = await page.evaluate(f'''async () => {{
+                        try {{
+                            const resp = await fetch("{url}");
+                            const text = await resp.text();
+                            try {{
+                                return JSON.parse(text);
+                            }} catch(e) {{
+                                const start = text.indexOf("(");
+                                const end = text.lastIndexOf(")");
+                                if (start >= 0 && end > start) {{
+                                    return JSON.parse(text.substring(start + 1, end));
+                                }}
+                                return {{raw: text.substring(0, 200)}};
+                            }}
+                        }} catch(e) {{
+                            return {{error: e.message}};
+                        }}
+                    }}''')
+                    if result and not result.get("error"):
+                        return result
+                    if attempt < 2:
+                        await asyncio.sleep(self._retry_wait_seconds)
+                return result
+            finally:
+                try:
+                    if page is not None:
+                        await page.close()
+                finally:
+                    self._touch()
+
+    def fetch(self, url: str, base_url: str):
+        self._ensure_worker()
+        future = asyncio.run_coroutine_threadsafe(self._fetch(url, base_url), self._loop)
         try:
-            loop = getattr(_thread_local, "loop", None)
-            if loop and not loop.is_closed():
-                loop.run_until_complete(asyncio.wait_for(browser.close(), timeout=10))
+            return future.result(timeout=EASTMONEY_ASYNC_TIMEOUT)
+        except concurrent.futures.TimeoutError as exc:
+            future.cancel()
+            raise TimeoutError("东方财富浏览器请求超时") from exc
+
+    def close(self):
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        future = asyncio.run_coroutine_threadsafe(self._close_browser(), loop)
+        try:
+            future.result(timeout=10)
         except Exception:
             pass
-        _thread_local.browser = None
-    loop = getattr(_thread_local, "loop", None)
-    if loop and not loop.is_closed():
-        try:
-            loop.close()
-        except Exception:
-            pass
-        _thread_local.loop = None
+
+    def snapshot(self) -> Dict:
+        """只返回进程内状态，供测试和诊断使用；不触发浏览器启动。"""
+        return {
+            "max_instances": 1,
+            "browser_active": self._browser is not None,
+            "worker_alive": bool(self._thread and self._thread.is_alive()),
+        }
 
 
-def _get_thread_loop():
-    """获取当前线程的事件循环（线程安全）"""
-    loop = getattr(_thread_local, "loop", None)
-    if loop is None or loop.is_closed():
-        loop = asyncio.new_event_loop()
-        _thread_local.loop = loop
-    return loop
+_browser_manager = _CloakBrowserManager()
 
 
-def _run_async(coro):
-    """运行异步函数（线程安全，每个线程独立事件循环）"""
+def cleanup_eastmoney(force: bool = False):
+    """释放东方财富调用方的引用。
+
+    并发评分器会在每个标的结束时调用本函数；此时立即关闭全局浏览器会打断
+    其他标的并失去复用价值。因此常规清理仅交由20分钟空闲回收，进程退出或
+    明确 force 时才同步关闭并等待 Browser.close() 完成。
+    """
+    if force:
+        _browser_manager.close()
+
+
+atexit.register(cleanup_eastmoney, True)
+
+
+def _fetch_with_cloak(url: str, base_url: str = "https://quote.eastmoney.com/ztb/"):
+    """通过唯一共享浏览器请求东方财富，失败时释放连接供下一轮重建。"""
     try:
-        async def _bounded():
-            return await asyncio.wait_for(coro, timeout=EASTMONEY_ASYNC_TIMEOUT)
-
-        # 检查是否有正在运行的循环
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-
-        if running_loop is not None:
-            # 已有循环在跑，用新线程执行
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return pool.submit(asyncio.run, _bounded()).result(timeout=EASTMONEY_ASYNC_TIMEOUT + 5)
-        else:
-            loop = _get_thread_loop()
-            return loop.run_until_complete(_bounded())
-    except asyncio.TimeoutError:
-        logger.warning("东方财富浏览器请求超时(%ss)，将释放本线程资源", EASTMONEY_ASYNC_TIMEOUT)
-        cleanup_eastmoney()
+        return _browser_manager.fetch(url, base_url)
+    except TimeoutError:
+        logger.warning("东方财富浏览器请求超时(%ss)，将释放共享连接", EASTMONEY_ASYNC_TIMEOUT)
+        cleanup_eastmoney(force=True)
         return None
     except Exception as e:
         logger.error(f"异步执行失败: {e}")
+        cleanup_eastmoney(force=True)
         return None
 
 
-async def _get_browser():
-    """获取当前线程的浏览器实例（线程安全，每线程独立实例）"""
-    browser = getattr(_thread_local, "browser", None)
-    if browser is None or not browser.is_connected():
-        import cloakbrowser
-        browser = await cloakbrowser.launch_async(headless=True)
-        _thread_local.browser = browser
-    return browser
+def get_cloakbrowser_process_snapshot(process_runner=None) -> Dict:
+    """只读统计 Linux 上受管的无头浏览器进程，供 Watchdog 使用。
 
-
-async def _fetch_with_cloak(url: str, base_url: str = "https://quote.eastmoney.com/ztb/"):
-    """用 CloakBrowser 发起请求（复用共享浏览器实例，带重试）"""
-    browser = await _get_browser()
-    page = await browser.new_page()
+    只匹配 CloakBrowser，或带 headless/remote-debugging 参数的 Chromium，避免
+    将用户交互式 Chrome 误记为交易任务。无法取得进程表时显式返回 unavailable。
+    """
+    runner = process_runner or subprocess.run
     try:
-        await page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
-        await asyncio.sleep(2)
+        proc = runner(
+            ["ps", "-eo", "pid=,etimes=,args="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except Exception as exc:
+        return {"available": False, "error": str(exc)[:160], "count": 0, "oldest_age_seconds": 0}
+    if getattr(proc, "returncode", 1) != 0:
+        return {"available": False, "error": str(getattr(proc, "stderr", ""))[:160], "count": 0, "oldest_age_seconds": 0}
 
-        # 重试最多2次（首次fetch可能因页面未完全就绪而失败）
-        for attempt in range(3):
-            result = await page.evaluate(f'''async () => {{
-                try {{
-                    const resp = await fetch("{url}");
-                    const text = await resp.text();
-                    try {{
-                        return JSON.parse(text);
-                    }} catch(e) {{
-                        const start = text.indexOf("(");
-                        const end = text.lastIndexOf(")");
-                        if (start >= 0 && end > start) {{
-                            return JSON.parse(text.substring(start + 1, end));
-                        }}
-                        return {{raw: text.substring(0, 200)}};
-                    }}
-                }} catch(e) {{
-                    return {{error: e.message}};
-                }}
-            }}''')
-            if result and not result.get("error"):
-                return result
-            if attempt < 2:
-                await asyncio.sleep(1)
-        return result
-    finally:
-        await page.close()
+    processes = []
+    instances = []
+    for line in (getattr(proc, "stdout", "") or "").splitlines():
+        parts = line.strip().split(None, 2)
+        if len(parts) != 3:
+            continue
+        pid, elapsed, command = parts
+        lowered = command.lower()
+        is_cloak = "cloakbrowser" in lowered
+        is_headless_chromium = (
+            ("chromium" in lowered or "chrome" in lowered)
+            and ("--headless" in lowered or "--remote-debugging-port" in lowered)
+        )
+        if not (is_cloak or is_headless_chromium):
+            continue
+        try:
+            item = {"pid": int(pid), "age_seconds": max(0, int(elapsed))}
+        except ValueError:
+            continue
+        processes.append(item)
+        # Chromium 的 renderer/gpu/utility 子进程都带 --type=。实例上限应
+        # 统计没有 --type= 的 browser 主进程，否则一个健康实例也会因多个
+        # renderer 被误报成“超过2个实例”。
+        if "--type=" not in lowered:
+            instances.append(item)
+    return {
+        "available": True,
+        "count": len(instances),
+        "instance_count": len(instances),
+        "process_count": len(processes),
+        "oldest_age_seconds": max((item["age_seconds"] for item in processes), default=0),
+        "pids": [item["pid"] for item in instances],
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -170,7 +308,7 @@ def get_limit_up(date: str = None, limit: int = 200) -> List[Dict]:
     
     url = f"https://push2ex.eastmoney.com/getTopicZTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize={limit}&sort=fbt:asc&date={date}"
     
-    result = _run_async(_fetch_with_cloak(url))
+    result = _fetch_with_cloak(url)
     
     if not result or result.get("error"):
         logger.warning(f"涨停板API失败: {result}")
@@ -247,7 +385,7 @@ def get_limit_down(date: str = None, limit: int = 200) -> List[Dict]:
 
     url = f"https://push2ex.eastmoney.com/getTopicDTPool?ut=7eea3edcaed734bea9cbfc24409ed989&dpt=wz.ztzt&Pageindex=0&pagesize={limit}&sort=fbt:asc&date={date}"
 
-    result = _run_async(_fetch_with_cloak(url))
+    result = _fetch_with_cloak(url)
 
     if not result or result.get("error"):
         logger.warning(f"跌停板API失败: {result}")
@@ -302,7 +440,7 @@ def get_dragon_tiger(date: str = None, limit: int = 100) -> List[Dict]:
         date_filter = f"(TRADE_DATE>='{try_date}')(TRADE_DATE<='{try_date}')"
         url = f"https://datacenter-web.eastmoney.com/api/data/v1/get?sortColumns=TRADE_DATE,SECURITY_CODE&sortTypes=-1,1&pageSize={limit}&pageNumber=1&reportName=RPT_DAILYBILLBOARD_DETAILSNEW&columns=ALL&source=WEB&client=WEB&filter={date_filter}"
         
-        result = _run_async(_fetch_with_cloak(url))
+        result = _fetch_with_cloak(url)
         
         if not result or result.get("error"):
             continue
@@ -359,7 +497,7 @@ def get_margin_data(code: str) -> Dict:
     
     url = f"https://datacenter-web.eastmoney.com/api/data/v1/get?reportName=RPTA_WEB_RZRQ_GGMX&columns=ALL&filter=(SCODE=%22{code}%22)&pageNumber=1&pageSize=5&sortTypes=-1&sortColumns=DATE"
     
-    result = _run_async(_fetch_with_cloak(url))
+    result = _fetch_with_cloak(url)
     
     if not result or result.get("error"):
         return {}
@@ -400,7 +538,7 @@ def get_stock_news(code: str, limit: int = 10) -> List[Dict]:
     """
     url = f"https://search-api-web.eastmoney.com/search/jsonp?cb=jQuery&param=%7B%22uid%22%3A%22%22%2C%22keyword%22%3A%22{code}%22%2C%22type%22%3A%5B%22cmsArticleWebOld%22%5D%2C%22client%22%3A%22web%22%2C%22clientType%22%3A%22web%22%2C%22clientVersion%22%3A%22curr%22%2C%22param%22%3A%7B%22cmsArticleWebOld%22%3A%7B%22searchScope%22%3A%22default%22%2C%22sort%22%3A%22default%22%2C%22pageIndex%22%3A1%2C%22pageSize%22%3A{limit}%2C%22preTag%22%3A%22%22%2C%22postTag%22%3A%22%22%7D%7D%7D"
     
-    result = _run_async(_fetch_with_cloak(url))
+    result = _fetch_with_cloak(url)
     
     if not result or result.get("error"):
         return []
