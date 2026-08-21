@@ -19,7 +19,7 @@ ML预测信号模块（Qlib风格）
 import logging
 import time
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -40,7 +40,9 @@ FEATURE_COLS = [
 
 
 # ── 缓存: 避免同一股票短时间内重复训练 ──
-_model_cache = {}   # key=(code, train_days) -> (model, train_time, accuracy)
+_model_cache = {}   # key=(code, train_days, latest_bar_date) -> (model, train_time, accuracy)
+VALIDATION_PURGE_DAYS = 1
+VALIDATION_EMBARGO_DAYS = 1
 
 
 @dataclass
@@ -148,6 +150,15 @@ def build_target(df: pd.DataFrame) -> pd.Series:
     return target
 
 
+def _time_split_indices(sample_count: int) -> Tuple[int, int]:
+    """返回训练末端和验证起点，隔开标签依赖的边界日。"""
+    split = max(45, int(sample_count * 0.75))
+    split = min(split, sample_count - 12)
+    train_end = max(0, split - VALIDATION_PURGE_DAYS)
+    validation_start = min(sample_count, split + VALIDATION_EMBARGO_DAYS)
+    return train_end, validation_start
+
+
 # ════════════════════════════════════════════════════════════════
 # 预测器
 # ════════════════════════════════════════════════════════════════
@@ -174,7 +185,7 @@ class QlibPredictor:
             df: 日线DataFrame（至少 train_days + 60 行）
 
         Returns:
-            训练集准确率 (0-1)
+            时间切分的样本外平衡准确率 (0-1)
         """
         try:
             from lightgbm import LGBMClassifier
@@ -223,28 +234,41 @@ class QlibPredictor:
         )
 
         # 用时间顺序保留末段作为样本外校准，禁止把训练准确率伪装成置信度。
-        split = max(45, int(len(X) * 0.75))
-        split = min(split, len(X) - 12)
-        if split > 0 and len(np.unique(y[:split])) > 1:
-            model.fit(X[:split], y[:split])
-            validation_pred = model.predict(X[split:])
-            self._accuracy = float(np.mean(validation_pred == y[split:]))
+        train_end, validation_start = _time_split_indices(len(X))
+        # 训练区最后一条标签依赖下一交易日收盘。purge 排除该边界样本，
+        # embargo 再留出一个交易日，使样本外置信度不跨越切分边界。
+        validation_y = y[validation_start:]
+        if (
+            train_end > 0
+            and len(validation_y)
+            and len(np.unique(y[:train_end])) > 1
+            and len(np.unique(validation_y)) > 1
+        ):
+            model.fit(X[:train_end], y[:train_end])
+            validation_pred = model.predict(X[validation_start:])
+            positive = validation_y == 1
+            negative = validation_y == 0
+            true_positive_rate = float(np.mean(validation_pred[positive] == 1))
+            true_negative_rate = float(np.mean(validation_pred[negative] == 0))
+            self._accuracy = (true_positive_rate + true_negative_rate) / 2
             model.fit(X, y)
         else:
             model.fit(X, y)
-            self._accuracy = 0.5
+            self._accuracy = 0.0
         self._model = model
         logger.info(f"模型训练完成: 样本数={len(X)}, 样本外准确率={self._accuracy:.2%}")
 
         return self._accuracy
 
-    def predict(self, code: str, date: str = None) -> Tuple[float, float]:
+    def predict(self, code: str, date: str = None,
+                lookback_days: int = None) -> Tuple[float, float]:
         """
         预测指定股票次日涨跌概率
 
         Args:
             code: 股票代码
             date: 预测基准日期（默认最新交易日）
+            lookback_days: 获取日线的自然日回溯范围（默认 DEFAULT_LOOKBACK）
 
         Returns:
             (score: 0-100, confidence: 0-1)
@@ -254,7 +278,8 @@ class QlibPredictor:
         from datetime import datetime, timedelta
 
         end = date or datetime.now().strftime("%Y-%m-%d")
-        start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=DEFAULT_LOOKBACK)).strftime("%Y-%m-%d")
+        lookback = int(lookback_days or DEFAULT_LOOKBACK)
+        start = (datetime.strptime(end, "%Y-%m-%d") - timedelta(days=lookback)).strftime("%Y-%m-%d")
 
         try:
             df = get_daily(code, start_date=start, end_date=end)
@@ -281,7 +306,8 @@ class QlibPredictor:
             return 50.0, 0.0
 
         # 检查缓存（同一股票5分钟内复用模型）
-        cache_key = (code, effective_train_days)
+        last_bar_date = str(df["date"].iloc[-1]) if "date" in df.columns and not df.empty else end
+        cache_key = (code, effective_train_days, last_bar_date)
         cached = _model_cache.get(cache_key)
         if cached and time.time() - cached[1] < 300:
             model, _, train_acc = cached
@@ -301,11 +327,60 @@ class QlibPredictor:
         up_prob = float(proba[1])
         score = round(up_prob * 100, 1)
 
-        # 置信度 = 训练准确率（适度缩放到 0.3-0.8 区间，避免过度自信）
-        confidence = round(max(0.3, min(0.8, train_acc)), 2)
+        # 置信度是样本外平衡准确率；验证集类别不足时为 0，禁止伪造下限。
+        confidence = round(max(0.0, min(1.0, train_acc)), 2)
 
         logger.info(f"ML预测 {code}: score={score}, confidence={confidence}")
         return score, confidence
+
+
+# ════════════════════════════════════════════════════════════════
+# pooled 批量信号
+# ════════════════════════════════════════════════════════════════
+
+# 扫描级缓存：每次 prefetch_pooled_signals 全量替换，进程内各调用方共享。
+_pooled_signal_cache: Dict[str, MLPrediction] = {}
+
+
+def prefetch_pooled_signals(codes: List[str]) -> Dict[str, MLPrediction]:
+    """
+    用 pooled 影子模型为一批候选批量预取ML信号。
+
+    数据来自本地K线库，不发起外部行情请求；模型不可用、数据不足或
+    过期的代码不写入缓存，预测时自动回退逐股路径。每次调用清空上一
+    轮缓存，保证信号与最近一次扫描对齐。
+
+    Returns:
+        实际通过 pooled 覆盖的 {code: MLPrediction}
+    """
+    _pooled_signal_cache.clear()
+    unique_codes = [str(c) for c in dict.fromkeys(codes or []) if str(c)]
+    if not unique_codes:
+        return {}
+    try:
+        from strategy.pooled_ml import predict_pooled
+        raw = predict_pooled(unique_codes)
+    except Exception as exc:
+        logger.warning(f"pooled 批量预测失败，全部回退逐股路径: {exc}")
+        return {}
+    result: Dict[str, MLPrediction] = {}
+    for code in unique_codes:
+        info = raw.get(code) or {}
+        if info.get("status") != "ok":
+            continue
+        prediction = MLPrediction(
+            score=float(info.get("score", 50.0)),
+            confidence=max(0.0, min(1.0, float(info.get("confidence", 0.0)))),
+            detail=(
+                f"pooled模型={info.get('model_version', '')}"
+                f" 数据截至={info.get('data_cutoff', '')}"
+                f" 置信度=样本外AUC"
+            ),
+        )
+        result[code] = prediction
+        _pooled_signal_cache[code] = prediction
+    logger.info(f"pooled 批量信号覆盖 {len(result)}/{len(unique_codes)} 只")
+    return result
 
 
 # ════════════════════════════════════════════════════════════════
@@ -316,6 +391,9 @@ def get_ml_signal(code: str, lookback_days: int = DEFAULT_LOOKBACK) -> MLPredict
     """
     获取ML预测信号（一站式接口）
 
+    优先返回本轮扫描预取的 pooled 批量信号；未预取或未覆盖时回退
+    逐股临时训练路径。
+
     Args:
         code: 股票代码
         lookback_days: 回溯天数
@@ -323,9 +401,12 @@ def get_ml_signal(code: str, lookback_days: int = DEFAULT_LOOKBACK) -> MLPredict
     Returns:
         MLPrediction(score, confidence, detail)
     """
+    cached = _pooled_signal_cache.get(str(code))
+    if cached is not None:
+        return cached
     try:
         predictor = QlibPredictor(train_days=min(DEFAULT_TRAIN_DAYS, lookback_days - 60))
-        score, confidence = predictor.predict(code)
+        score, confidence = predictor.predict(code, lookback_days=lookback_days)
         detail = f"ML预测分数={score:.1f}, 置信度={confidence:.0%}"
         return MLPrediction(score=score, confidence=confidence, detail=detail)
     except Exception as e:
