@@ -212,6 +212,18 @@ def test_expire_stale_ab_tests():
             assert_true(status_new == "running", "新实验保持running")
 
 
+def test_empty_db_readonly():
+    """空库上只读路径（排行榜接口）必须自建表且不抛错。"""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        db_path = os.path.join(temp_dir, "empty.db")
+        with Database(db_path=db_path) as db:
+            leaderboard = evaluate_variants(db)
+            assert_true(len(leaderboard) == 6, "空库排行榜仍返回六个变体")
+            assert_true(all(r["mature"] is False for r in leaderboard), "空库全部未成熟")
+            result = promote_candidates(db, min_days=20, min_buys=10)
+            assert_true(result["candidates"] == [], "空库无晋级候选")
+
+
 def main():
     assert_true(len(SHADOW_VARIANT_IDS) == 6, "六个影子变体已定义")
     test_variant_decisions()
@@ -219,6 +231,7 @@ def main():
     test_record_and_metrics()
     test_promotion_gate()
     test_expire_stale_ab_tests()
+    test_empty_db_readonly()
     print("影子策略变体与晋级门禁测试通过")
 
 

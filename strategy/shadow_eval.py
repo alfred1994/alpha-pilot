@@ -21,6 +21,12 @@ from strategy.shadow_traders import (
     ensure_tables,
 )
 
+def ensure_eval_tables(db) -> None:
+    """确保影子决策与晋级表存在，供只读接口在空库上安全调用。"""
+    ensure_tables(db)
+    db.conn.execute(SHADOW_PROMOTIONS_DDL)
+    db.conn.commit()
+
 logger = logging.getLogger("strategy.shadow_eval")
 
 SHADOW_PROMOTIONS_DDL = """
@@ -53,6 +59,8 @@ def evaluate_variants(db, min_days: int = DEFAULT_MIN_DAYS,
 
     mature 判定：交易日数与已回填买入样本数同时达标。
     """
+    # 空库上直接调用也安全：先确保影子表存在
+    ensure_tables(db)
     baseline = compute_variant_metrics(db, "baseline")
     rows = []
     for variant_id in SHADOW_VARIANT_IDS:

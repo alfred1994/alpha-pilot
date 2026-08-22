@@ -119,8 +119,9 @@ def get_shadow_leaderboard():
     """
     try:
         from data.database import Database
-        from strategy.shadow_eval import evaluate_variants
+        from strategy.shadow_eval import ensure_eval_tables, evaluate_variants
         with Database() as db:
+            ensure_eval_tables(db)
             leaderboard = evaluate_variants(db)
             candidates = [
                 row[0] for row in db.conn.execute(
