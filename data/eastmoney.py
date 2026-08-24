@@ -247,8 +247,9 @@ def get_cloakbrowser_process_snapshot(process_runner=None) -> Dict:
         processes.append(item)
         # Chromium 的 renderer/gpu/utility 子进程都带 --type=。实例上限应
         # 统计没有 --type= 的 browser 主进程，否则一个健康实例也会因多个
-        # renderer 被误报成“超过2个实例”。
-        if "--type=" not in lowered:
+        # renderer 被误报成“超过2个实例”。crashpad_handler 是每个实例固定
+        # 的崩溃报告伴生进程（命令行同样无 --type=），也不计入实例数。
+        if "--type=" not in lowered and "crashpad_handler" not in lowered:
             instances.append(item)
     return {
         "available": True,

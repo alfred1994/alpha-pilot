@@ -80,6 +80,20 @@ def main():
         assert_true(snapshot["instance_count"] == 1, "进程快照按browser主进程统计实例")
         assert_true(snapshot["process_count"] == 2, "进程快照保留受管子进程总数")
         assert_true(snapshot["oldest_age_seconds"] == 7201, "进程快照报告最长存活时间")
+
+        class _ProcWithCrashpad:
+            returncode = 0
+            stderr = ""
+            stdout = (
+                "201 100 /home/u/.cloakbrowser/chromium-146/chrome --headless --user-data-dir=/tmp/p1\n"
+                "202 100 /home/u/.cloakbrowser/chromium-146/chrome_crashpad_handler --monitor-self\n"
+                "203 100 /home/u/.cloakbrowser/chromium-146/chrome_crashpad_handler --no-periodic-tasks\n"
+                "204 100 /home/u/.cloakbrowser/chromium-146/chrome --type=zygote --headless\n"
+            )
+
+        snapshot = get_cloakbrowser_process_snapshot(process_runner=lambda *_args, **_kwargs: _ProcWithCrashpad())
+        assert_true(snapshot["instance_count"] == 1, "crashpad_handler伴生进程不计入浏览器实例数")
+        assert_true(snapshot["process_count"] == 4, "crashpad_handler仍计入受管进程总数")
     finally:
         manager.close()
     print("浏览器生命周期测试通过")
