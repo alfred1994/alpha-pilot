@@ -9,6 +9,7 @@
 """
 import json
 import os
+import threading
 import time
 from datetime import datetime
 from typing import Callable, Dict, List, Optional
@@ -30,6 +31,12 @@ RESCUE_CUTOFF_HHMM = (14, 30)
 HIGH_CASH_RATIO = 0.35
 LIMIT_UP_ABS_DELTA = 20
 LIMIT_UP_REL_DELTA = 0.5
+
+# 1分钟线盯盘分析: 拉取根数与缓存TTL(秒)。只在轻量看盘/救援确认时调用。
+INTRADAY_KLINE_BARS = 30
+INTRADAY_KLINE_CACHE_TTL = 60.0
+_kline_cache = {}
+_kline_cache_lock = threading.Lock()
 
 
 def _today(now: datetime = None) -> str:
@@ -190,6 +197,64 @@ def _load_default_account_snapshot() -> Dict:
         return {"cash": 0, "total_assets": 0, "position_count": 0, "positions": {}}
 
 
+def _analyze_intraday_bars(frame) -> Dict:
+    """纯函数: 1分钟K线 DataFrame → 盯盘特征（动量/VWAP/量比）。"""
+    result = {"valid": False, "bars": 0, "source": "kt_1m"}
+    try:
+        if frame is None or getattr(frame, "empty", True):
+            result["reason"] = "无1分钟K线数据"
+            return result
+        closes = frame["close"].astype(float)
+        opens = frame["open"].astype(float)
+        highs = frame["high"].astype(float)
+        lows = frame["low"].astype(float)
+        vols = frame["volume_hand"].fillna(0).astype(float)
+        if len(frame) < 5 or float(closes.iloc[-1]) <= 0:
+            result["reason"] = "有效K线不足"
+            return result
+        first_open = float(opens.iloc[0])
+        last_close = float(closes.iloc[-1])
+        typical = (highs + lows + closes) / 3.0
+        total_vol = float(vols.sum())
+        # mkline无成交额字段，用典型价×量的近似VWAP，不可用时退化为均价
+        vwap = (float((typical * vols).sum()) / total_vol) if total_vol > 0 else float(closes.mean())
+        recent = vols.iloc[-5:]
+        base = vols.iloc[:-5]
+        volume_ratio = (float(recent.mean()) / float(base.mean())) if len(base) > 0 and float(base.mean()) > 0 else 1.0
+        result.update({
+            "valid": True,
+            "bars": int(len(frame)),
+            "momentum_pct": round((last_close - first_open) / first_open * 100, 3) if first_open > 0 else 0.0,
+            "last_close": round(last_close, 4),
+            "vwap": round(vwap, 4),
+            "above_vwap": bool(last_close >= vwap),
+            "volume_ratio": round(volume_ratio, 2),
+            "trend": "up" if last_close > first_open * 1.001 else ("down" if last_close < first_open * 0.999 else "flat"),
+        })
+        return result
+    except Exception as exc:
+        result["reason"] = f"1分钟线分析失败 ({type(exc).__name__})"
+        return result
+
+
+def _default_intraday_kline_analyzer(code: str, now_ts: float = None) -> Dict:
+    """拉取并分析标的1分钟K线；带TTL缓存，失败不影响看盘主流程。"""
+    now_ts = now_ts if now_ts is not None else time.time()
+    with _kline_cache_lock:
+        cached = _kline_cache.get(code)
+        if cached and now_ts - cached[0] <= INTRADAY_KLINE_CACHE_TTL:
+            return dict(cached[1])
+    try:
+        from data.kt_realtime import get_kt_client
+        frame = get_kt_client().get_kline(code, "1m", count=INTRADAY_KLINE_BARS)
+    except Exception as exc:
+        return {"valid": False, "bars": 0, "source": "kt_1m", "reason": f"1分钟线获取失败 ({type(exc).__name__})"}
+    analysis = _analyze_intraday_bars(frame)
+    with _kline_cache_lock:
+        _kline_cache[code] = (now_ts, analysis)
+    return dict(analysis)
+
+
 def _build_baseline(market: Dict, candidates: List[Dict], account: Dict, now_ts: float) -> Dict:
     """构造早盘基准。"""
     total_assets = _safe_float(account.get("total_assets"))
@@ -281,6 +346,7 @@ def run_watch_cycle(
     market_loader = services.get("watch_market_snapshot", _load_default_market_snapshot)
     candidate_loader = services.get("watch_candidate_pool", _load_default_candidate_pool)
     account_loader = services.get("watch_account_snapshot", _load_default_account_snapshot)
+    kline_analyzer = services.get("intraday_kline", _default_intraday_kline_analyzer)
 
     market = market_loader() or {}
     candidates = candidate_loader() or []
@@ -327,6 +393,24 @@ def run_watch_cycle(
         if str(item.get("code") or "") not in previous_confirmed
     ]
 
+    # 二次确认标的的1分钟线特征: 信息增强（写入观察池与看盘动作，
+    # 随救援扫描候选上下文进入LLM），不改变救援触发逻辑。
+    kline_notes = []
+    for item in confirmed[:AUTO_RESCUE_MAX_TOPK]:
+        code = str(item.get("code") or "")
+        try:
+            analysis = kline_analyzer(code) or {}
+        except Exception as exc:
+            logger.debug(f"1分钟线分析服务异常 {code}: {exc}")
+            analysis = {"valid": False, "bars": 0, "source": "kt_1m", "reason": f"分析服务异常 ({type(exc).__name__})"}
+        item["intraday_kline"] = analysis
+        if analysis.get("valid"):
+            kline_notes.append(
+                f"{code} 1m{analysis.get('momentum_pct', 0):+.2f}% "
+                f"{'站上' if analysis.get('above_vwap') else '跌破'}VWAP "
+                f"量比{analysis.get('volume_ratio', 1):.1f}"
+            )
+
     eligible_codes = [item["code"] for item in confirmed[:AUTO_RESCUE_MAX_TOPK]]
     pool_version = str(pool_meta.get("version") or "")
     rescue_signature = ":".join([
@@ -358,6 +442,8 @@ def run_watch_cycle(
         actions.append("疑似踏空: 市场转强/高现金/观察池确认，等待救援确认")
     if not allow_new:
         actions.append("14:30后不新增追入机会，仅刷新观察池")
+    if kline_notes:
+        actions.append("1分钟线: " + "; ".join(kline_notes))
     if pool_meta.get("source") in ("stale_cache", "stale_fallback"):
         actions.append(
             f"候选池过期: 版本{pool_meta.get('version') or 'legacy'}，仍以旧池观察并等待刷新"

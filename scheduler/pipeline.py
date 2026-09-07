@@ -1090,9 +1090,52 @@ def _load_trade_plan() -> Optional[dict]:
 # ═══════════════════════════════════════════════════════════════════
 
 def _default_realtime_func():
-    """获取默认实时行情函数"""
-    from data.realtime import get_realtime
-    return get_realtime
+    """获取默认实时行情函数: 新浪快照(KT适配器)优先，腾讯源回退。
+
+    返回的函数保持既有契约: 签名([code]) -> quote列表，消费方只用
+    .price/.close_prev；依赖 .pe 的估值逻辑不走本函数(decision.py/
+    market_timing.py 直连 data.realtime 腾讯源)。
+    """
+    def _quote_provider(codes):
+        try:
+            from data.kt_realtime import get_realtime_quotes
+            quotes = get_realtime_quotes(codes)
+            if quotes:
+                return quotes
+        except Exception as exc:
+            logger.debug("KT实时行情获取失败，回退腾讯源: %s", exc)
+        from data.realtime import get_realtime
+        return get_realtime(codes)
+    return _quote_provider
+
+
+def _collect_position_prices(codes: list, realtime_func) -> dict:
+    """批量优先收集持仓最新价；批量未覆盖的逐个回退查询。
+
+    批量结果按 quote.code 归并；注入的 fake 行情(无 .code 属性)或
+    部分缺失时，自动落入原有的逐个 realtime_func([code]) 路径。
+    """
+    prices = {}
+    if not codes:
+        return prices
+    try:
+        for quote in (realtime_func(codes) or []):
+            code = str(getattr(quote, "code", "") or "").strip()
+            price = getattr(quote, "price", 0) or 0
+            if code and price > 0:
+                prices[code] = price
+    except Exception as exc:
+        logger.debug("批量获取持仓价格失败，回退逐个查询: %s", exc)
+    for code in codes:
+        if code in prices:
+            continue
+        try:
+            quotes = realtime_func([code])
+            if quotes and quotes[0].price > 0:
+                prices[code] = quotes[0].price
+        except Exception as exc:
+            logger.debug(f"获取 {code} 实时价格失败: {exc}")
+    return prices
 
 
 def _audit_order(result: PipelineResult, order: dict, status: str,
@@ -1301,15 +1344,8 @@ def execute_trade_plan(
         positions = broker.get_positions()
 
         if positions:
-            # 获取持仓股票实时价格
-            prices = {}
-            for code in positions:
-                try:
-                    quotes = realtime_func([code])
-                    if quotes and quotes[0].price > 0:
-                        prices[code] = quotes[0].price
-                except Exception as e:
-                    logger.debug(f"获取 {code} 实时价格失败: {e}")
+            # 获取持仓股票实时价格（批量优先，逐个回退）
+            prices = _collect_position_prices(list(positions), realtime_func)
 
             # 检查止损条件（内部会自动执行卖出）
             stop_trades = broker.check_stop_conditions(

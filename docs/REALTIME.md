@@ -18,7 +18,7 @@ pip install longport  # 长桥OpenAPI（实时行情）
 
 ### 2. 测试运行
 ```bash
-# 确保环境变量已设置
+# 确保环境变量已设置（可选，见下方轮询回退）
 export LONGPORT_APP_KEY="your_key"
 export LONGPORT_APP_SECRET="your_secret"
 export LONGPORT_ACCESS_TOKEN="your_token"
@@ -27,7 +27,26 @@ export LONGPORT_ACCESS_TOKEN="your_token"
 python3 main.py --realtime
 ```
 
-### 3. 生产部署（systemd守护）
+### 3. 无Longport凭证时的轮询回退
+
+没有 `LONGPORT_*` 凭证或SDK不可用时，行情监控自动回退到
+新浪公开快照轮询（`data/kt_realtime.py` KT适配器），无需任何凭证：
+
+```bash
+# 直接启动，无需Longport环境变量
+python3 main.py --realtime
+
+# 可选: 调整轮询间隔（默认3秒，新浪接口有频率限制，不要低于1秒）
+export REALTIME_POLL_INTERVAL=5
+```
+
+回退模式说明：
+- 推送变轮询，止损感知延迟从亚秒级变为秒级（默认3秒）
+- 事件结构与长桥推送同构（quote_update: code/price/volume/turnover），
+  下游处理器无感知；事件额外携带 `source: sina_poll`
+- 行情覆盖沪深京股票/ETF/可转债/指数，带 `data_valid` 时间戳校验
+
+### 4. 生产部署（systemd守护）
 
 #### Hermes/Ubuntu环境
 ```bash
@@ -56,7 +75,7 @@ systemctl --user stop quant-realtime
 异步发布订阅，解耦事件生产者和消费者
 
 ### 2. `realtime/quote_monitor.py` - 行情监控
-长桥WebSocket订阅持仓股票实时行情
+长桥WebSocket订阅持仓股票实时行情；凭证缺失时自动回退新浪快照轮询
 
 ### 3. `realtime/event_handlers.py` - 事件处理器
 - `StopLossHandler` - 实时止损
@@ -69,7 +88,7 @@ systemctl --user stop quant-realtime
 
 ```
 [长桥WebSocket] → [quote_update事件] → [EventBus] 
-                                          ↓
+[新浪快照轮询] ↗       (无凭证时自动回退)   ↓
                               [StopLossHandler检查持仓]
                                           ↓
                           触发止损 → [PaperAccount.sell()]

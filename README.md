@@ -75,7 +75,9 @@ AlphaPilot 更关注 AI 交易员周围的工程闭环：
 
 ```text
 市场 / 数据源
-  |-- 腾讯实时行情
+  |-- 新浪实时快照（五档盘口，执行链路默认，腾讯源自动回退）
+  |-- 腾讯实时行情（pe/市值估值字段 + 回退源）
+  |-- 腾讯分钟K线（data/kt_realtime.py）
   |-- 东方财富数据
   |-- LongBridge OpenAPI
   |-- Baostock / 历史数据兜底

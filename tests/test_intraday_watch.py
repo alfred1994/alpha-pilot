@@ -347,10 +347,95 @@ def test_auto_cycle_records_watch_and_rescue():
     assert_true(any("救援扫描" in a for a in result["actions"]), "自动循环报告包含救援扫描")
 
 
+def test_intraday_kline_analyzer_features():
+    """1分钟线特征计算: 动量/VWAP/量比/降级"""
+    import pandas as pd
+    import scheduler.intraday_watch as intraday_watch
+
+    frame = pd.DataFrame({
+        "open": [10.0, 10.1, 10.2, 10.1, 10.3, 10.5],
+        "close": [10.1, 10.2, 10.1, 10.3, 10.5, 10.6],
+        "high": [10.15, 10.25, 10.25, 10.35, 10.55, 10.65],
+        "low": [9.95, 10.05, 10.15, 10.05, 10.25, 10.55],
+        "volume_hand": [100.0, 100.0, 100.0, 100.0, 100.0, 400.0],
+    })
+    analysis = intraday_watch._analyze_intraday_bars(frame)
+    assert_true(analysis["valid"] is True, f"有效K线应分析成功: {analysis}")
+    assert_true(analysis["bars"] == 6, "K线根数")
+    assert_true(abs(analysis["momentum_pct"] - 6.0) < 1e-6, "动量百分比")
+    assert_true(analysis["above_vwap"] is True, "上升趋势尾盘应站上VWAP")
+    assert_true(abs(analysis["volume_ratio"] - 1.6) < 1e-6, f"尾盘5根量比: {analysis['volume_ratio']}")
+    assert_true(analysis["trend"] == "up", "趋势标记")
+    assert_true(analysis["vwap"] > frame["low"].min() and analysis["vwap"] < frame["high"].max(), "VWAP在价格区间内")
+
+    empty = intraday_watch._analyze_intraday_bars(pd.DataFrame())
+    assert_true(empty["valid"] is False and empty.get("reason"), "空数据降级为无效")
+    short = intraday_watch._analyze_intraday_bars(frame.iloc[:3])
+    assert_true(short["valid"] is False, "不足5根K线降级为无效")
+    print("  OK 1分钟线特征计算与降级")
+
+
+def test_watch_cycle_attaches_kline_analysis():
+    """看盘周期把1分钟线特征写入确认标的与动作，不改变救援触发"""
+    import json
+
+    watch_file = tempfile.NamedTemporaryFile(suffix="_watchlist.json", delete=False)
+    watch_path = watch_file.name
+    watch_file.close()
+    os.unlink(watch_path)
+    try:
+        state = AutoTraderState(date="2026-06-09")
+        common = {
+            "watch_market_snapshot": lambda: _market(10),
+            "watch_candidate_pool": lambda: [{"code": "600519", "name": "贵州茅台", "score": 60}],
+            "watch_account_snapshot": lambda: _account(),
+            "intraday_kline": lambda code: {
+                "valid": True, "bars": 30, "source": "kt_1m", "momentum_pct": 1.2,
+                "last_close": 10.6, "vwap": 10.4, "above_vwap": True,
+                "volume_ratio": 1.8, "trend": "up",
+            },
+        }
+        first = run_watch_cycle(
+            state=state, now=datetime(2026, 6, 9, 10, 0), now_ts=1000,
+            watchlist_path=watch_path, services=dict(common),
+        )
+        assert_true(first["watchlist"]["items"]["600519"].get("intraday_kline") is None, "首轮watching状态不挂1分钟线特征")
+
+        second = run_watch_cycle(
+            state=state, now=datetime(2026, 6, 9, 10, 5), now_ts=1300,
+            watchlist_path=watch_path, services=dict(common),
+        )
+        item = second["watchlist"]["items"]["600519"]
+        assert_true(item.get("intraday_kline", {}).get("valid") is True, "确认标的写入1分钟线特征")
+        assert_true(any("1分钟线" in a for a in second["actions"]), "看盘动作包含1分钟线摘要")
+        assert_true(second["rescue_requested"] is True, "1分钟线信息不改变救援触发逻辑")
+        assert_true(second["eligible_codes"] == ["600519"], "救援白名单不受影响")
+
+        with open(watch_path, "r", encoding="utf-8") as f:
+            persisted = json.load(f)
+        assert_true(persisted["items"]["600519"].get("intraday_kline", {}).get("valid") is True, "特征持久化到观察池文件")
+
+        def broken_analyzer(code):
+            raise RuntimeError("boom")
+
+        third = run_watch_cycle(
+            state=state, now=datetime(2026, 6, 9, 10, 10), now_ts=1600,
+            watchlist_path=watch_path,
+            services={**common, "intraday_kline": broken_analyzer},
+        )
+        item = third["watchlist"]["items"]["600519"]
+        assert_true(item.get("intraday_kline", {}).get("valid") is False, "分析服务异常降级不崩污")
+    finally:
+        if os.path.exists(watch_path):
+            os.unlink(watch_path)
+
+
 def main():
     print("盘中轻量盯盘测试")
     print("=" * 60)
     test_watch_cycle_keeps_working_without_trade()
+    test_intraday_kline_analyzer_features()
+    test_watch_cycle_attaches_kline_analysis()
     test_rescue_filter_allows_only_confirmed_watchlist()
     test_default_candidate_pool_prefers_latest_composite_scores()
     test_watchlist_after_cutoff_and_cooling_no_buy()

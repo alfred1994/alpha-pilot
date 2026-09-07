@@ -29,6 +29,7 @@ class EventBus:
         self._handlers: Dict[str, List[Callable]] = {}
         self._queue = asyncio.Queue(maxsize=1000)
         self._running = False
+        self._loop: asyncio.AbstractEventLoop = None  # dispatch循环所在线程的loop，跨线程发布用
 
     def subscribe(self, event_type: str, handler: Callable):
         """订阅事件"""
@@ -45,7 +46,20 @@ class EventBus:
             logger.warning(f"事件队列已满，丢弃事件: {event.type}")
 
     def publish_sync(self, event: Event):
-        """发布事件（同步包装）"""
+        """同步/跨线程发布。
+
+        优先级:
+          1. dispatch循环已在别的线程运行 → run_coroutine_threadsafe 投递
+             (行情SDK回调线程/轮询线程都在此路径，避免跨loop操作Queue)
+          2. 当前线程已有运行中的loop → create_task (原行为)
+          3. 无loop → 兼容旧路径 asyncio.run 入队
+        """
+        if self._loop is not None and self._loop.is_running():
+            try:
+                asyncio.run_coroutine_threadsafe(self.publish(event), self._loop)
+                return
+            except RuntimeError:
+                pass  # loop刚关闭，走后面的兑底
         try:
             loop = asyncio.get_running_loop()
             asyncio.create_task(self.publish(event))
@@ -74,6 +88,7 @@ class EventBus:
 
     async def start(self):
         """启动事件循环"""
+        self._loop = asyncio.get_running_loop()
         self._running = True
         logger.info("事件总线启动")
         await self._dispatch_loop()
@@ -81,6 +96,7 @@ class EventBus:
     def stop(self):
         """停止事件循环"""
         self._running = False
+        self._loop = None
         logger.info("事件总线停止")
 
 
