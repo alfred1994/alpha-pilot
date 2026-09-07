@@ -201,12 +201,19 @@ def scan_and_score() -> List[dict]:
     return scored
 
 
-def should_buy(cb: dict) -> dict:
+def is_cb_code(code: str) -> bool:
+    """判断是否为可转债代码（沪市11xxxx/深市12xxxx）"""
+    c = str(code or "").strip()
+    return len(c) == 6 and (c.startswith("11") or c.startswith("12")) and c.isdigit()
+
+
+def should_buy(cb: dict, max_single_weight: Optional[float] = None) -> dict:
     """
     买入决策
 
     Args:
         cb: 评分后的可转债数据
+        max_single_weight: 单票仓位硬上限（可选，结合全系统策略指令统一风控预算）
 
     Returns:
         {buy: bool, reason: str, position_pct: float}
@@ -227,13 +234,17 @@ def should_buy(cb: dict) -> dict:
     if stock_chg < 7:
         return {"buy": False, "reason": f"正股涨幅{stock_chg:.1f}%<7%", "position_pct": 0}
 
+    base_cap = CB_SINGLE_POSITION
+    if max_single_weight is not None and max_single_weight > 0:
+        base_cap = min(base_cap, float(max_single_weight))
+
     # 计算仓位（根据分数动态调整）
     if score >= 85:
-        position_pct = CB_SINGLE_POSITION
+        position_pct = base_cap
     elif score >= 75:
-        position_pct = CB_SINGLE_POSITION * 0.75
+        position_pct = base_cap * 0.75
     else:
-        position_pct = CB_SINGLE_POSITION * 0.5
+        position_pct = base_cap * 0.5
 
     return {
         "buy": True,
@@ -242,37 +253,45 @@ def should_buy(cb: dict) -> dict:
     }
 
 
-def should_sell(cb_code: str, current_data: dict, buy_price: float) -> dict:
+def should_sell(cb_code: str, current_data, buy_price: float) -> dict:
     """
-    卖出决策
+    卖出决策（包含止损、正股炸板、溢价扩大）
 
     Args:
         cb_code: 转债代码
-        current_data: 当前数据 {cb_price, stock_change_pct, premium_rate}
+        current_data: 当前数据 dict {cb_price, stock_change_pct, premium_rate} 或当前浮点价格
         buy_price: 买入价格
 
     Returns:
         {sell: bool, reason: str}
     """
-    current_price = current_data.get("cb_price", 0)
+    if isinstance(current_data, (int, float)):
+        current_price = float(current_data)
+        stock_chg = 5.0  # 单价格入参时默认正股未炸板
+        premium = 0.0
+    elif isinstance(current_data, dict):
+        current_price = float(current_data.get("cb_price", 0) or 0)
+        stock_chg = float(current_data.get("stock_change_pct", 5.0) or 5.0)
+        premium = float(current_data.get("premium_rate", 0.0) or 0.0)
+    else:
+        return {"sell": False, "reason": "数据格式异常"}
+
     if current_price <= 0 or buy_price <= 0:
         return {"sell": False, "reason": "价格数据缺失"}
 
     pnl = (current_price - buy_price) / buy_price
 
-    # 止损 -3%
+    # 止损 -3% (CB_STOP_LOSS, 默认 -0.03)
     if pnl <= CB_STOP_LOSS:
-        return {"sell": True, "reason": f"止损触发: {pnl:+.1%} <= {CB_STOP_LOSS:.0%}"}
+        return {"sell": True, "reason": f"可转债止损触发: {pnl:+.1%} <= {CB_STOP_LOSS:.0%}"}
 
     # 正股炸板（涨幅回落到<3%）
-    stock_chg = current_data.get("stock_change_pct", 0)
     if stock_chg < 3:
-        return {"sell": True, "reason": f"正股炸板: 涨幅回落至{stock_chg:.1f}%"}
+        return {"sell": True, "reason": f"可转债正股炸板: 涨幅回落至{stock_chg:.1f}%"}
 
     # 溢价扩大到>30%
-    premium = current_data.get("premium_rate", 0)
     if premium > 30:
-        return {"sell": True, "reason": f"溢价扩大: {premium:.1f}%>30%"}
+        return {"sell": True, "reason": f"可转债溢价扩大: {premium:.1f}%>30%"}
 
     return {"sell": False, "reason": "继续持有"}
 

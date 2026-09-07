@@ -773,12 +773,44 @@ def fast_scan(
                 logger.debug(f"[快链路-卖出] 创建共享记忆失败(可忽略): {_e}")
 
             try:
+                # 可转债持仓专属退出巡检（-3% 严格止损、正股炸板等），与股票通用策略隔离
+                from strategy.cb_t0_strategy import is_cb_code, should_sell as cb_should_sell
+                for _cb_code, _cb_info in _positions_sell.items():
+                    if not (is_cb_code(_cb_code) or _cb_info.get("allow_t0") or _cb_info.get("trade_unit") == 10):
+                        continue
+                    _cb_buy_price = float(_cb_info.get("buy_price", 0) or 0)
+                    _cb_current_price = float(_cb_info.get("current_price", 0) or 0)
+                    if _cb_buy_price > 0 and _cb_current_price > 0:
+                        _cb_exit = cb_should_sell(_cb_code, _cb_current_price, _cb_buy_price)
+                        if _cb_exit.get("sell"):
+                            plan.orders.append(TradeOrder(
+                                code=_cb_code,
+                                name=_cb_info.get("name", _cb_code),
+                                action="SELL",
+                                priority=1,
+                                target_weight=0,
+                                max_price=0,
+                                reason=f"可转债退出: {_cb_exit.get('reason', '')}",
+                                score=0,
+                                conviction=1.0,
+                                allow_t0=True,
+                                trade_unit=10,
+                                market_regime=regime,
+                                signal_detail=_cb_exit.get("reason", ""),
+                            ))
+                            _sell_signal_count += 1
+                            logger.info(f"[快链路-可转债] 触发退出: {_cb_code} {_cb_exit.get('reason')}")
+
                 for _pos_code, _pos_info in _positions_sell.items():
                     if _pos_code in _evaluated_codes:
                         continue  # 已经评估过
                     if remaining() < 5:
                         logger.warning("[快链路-卖出] 时间不足，跳过剩余持仓评估")
                         break
+
+                    # 可转债由专用退出规则管理，跳过股票LLM持仓卖出评估
+                    if is_cb_code(_pos_code) or _pos_info.get("allow_t0") or _pos_info.get("trade_unit") == 10:
+                        continue
 
                     try:
                         from strategy.decision import compute_dimension_scores, DimensionScore as _DS2
@@ -809,8 +841,8 @@ def fast_scan(
                         )
 
                         _sell_eval_count += 1
-                        if _sell_decision and _sell_decision.action == "SELL":
-                            # LLM建议卖出持仓股，添加SELL订单
+                        if _sell_decision and _sell_decision.action == "SELL" and float(_sell_decision.confidence or 0) > 0:
+                            # LLM建议卖出持仓股，添加SELL订单（需置信度>0）
                             _pos_shares = _pos_info.get("shares", 0)
                             plan.orders.append(TradeOrder(
                                 code=_pos_code,
@@ -818,17 +850,17 @@ def fast_scan(
                                 action="SELL",
                                 priority=len(plan.orders) + 1,
                                 target_weight=0,  # 清仓
-                            max_price=0,
-                            reason=f"LLM卖出: {_sell_decision.reason[:80]}",
-                            score=_sell_decision.composite_score,
-                            conviction=_sell_decision.confidence,
-                            market_regime=regime,
-                            dimensions={
-                                k: {"score": v.score, "confidence": v.confidence, "detail": v.detail}
-                                for k, v in (_sell_decision.dimensions or {}).items()
-                            },
-                            signal_detail=_sell_decision.reason,
-                        ))
+                                max_price=0,
+                                reason=f"LLM卖出: {_sell_decision.reason[:80]}",
+                                score=_sell_decision.composite_score,
+                                conviction=_sell_decision.confidence,
+                                market_regime=regime,
+                                dimensions={
+                                    k: {"score": v.score, "confidence": v.confidence, "detail": v.detail}
+                                    for k, v in (_sell_decision.dimensions or {}).items()
+                                },
+                                signal_detail=_sell_decision.reason,
+                            ))
                             _sell_signal_count += 1
                             logger.info(f"[快链路-卖出] LLM建议卖出: {_pos_code} {_pos_name} {_sell_decision.reason[:50]}")
                         elif _sell_decision and _sell_decision.action == "HOLD":
@@ -853,10 +885,17 @@ def fast_scan(
         from config import CB_T0_ENABLED
         if CB_T0_ENABLED and remaining() > 5 and not (candidate_filter or candidate_items):
             from strategy.cb_t0_strategy import scan_and_score, should_buy
+            # 可转债试验预算受限于策略指令 max_weight 与单票上限，默认最高 8%
+            _directive_max_weight = 0.08
+            if directive and hasattr(directive, "params"):
+                _directive_max_weight = float(getattr(directive.params, "max_weight", 0.08) or 0.08)
+            elif isinstance(directive, dict) and "params" in directive:
+                _directive_max_weight = float(directive["params"].get("max_weight", 0.08) or 0.08)
+
             cb_results = scan_and_score()
             cb_buys = []
             for cb in cb_results:
-                decision = should_buy(cb)
+                decision = should_buy(cb, max_single_weight=_directive_max_weight)
                 if decision["buy"]:
                     cb_buys.append(cb)
                     logger.info(
@@ -872,13 +911,14 @@ def fast_scan(
                     cb_code = str(cb.get("cb_code", "")).strip()
                     if not cb_code or cb_code in existing_codes:
                         continue
-                    decision = should_buy(cb)
+                    decision = should_buy(cb, max_single_weight=_directive_max_weight)
+                    cb_target_weight = min(float(decision.get("position_pct", 0)), _directive_max_weight, 0.08)
                     plan.orders.append(TradeOrder(
                         code=cb_code,
                         name=cb.get("cb_name", cb_code),
                         action="BUY",
                         priority=len(plan.orders) + 1,
-                        target_weight=min(float(decision.get("position_pct", 0)), 0.20),
+                        target_weight=cb_target_weight,
                         max_price=float(cb.get("cb_price", 0) or 0) * 1.02,
                         reason=f"可转债T+0: {decision.get('reason', '')}",
                         score=float(cb.get("total_score", 0) or 0),

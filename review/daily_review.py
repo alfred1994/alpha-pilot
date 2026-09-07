@@ -226,8 +226,16 @@ class DailyReviewer:
         for t in trades:
             action = t.get("action", "")
             code = t.get("code", "")
-            profit_pct = t.get("profit_pct", 0)
-            hit = profit_pct >= 0 if action == "SELL" else True
+            raw_pnl_pct = t.get("pnl_pct")
+            if raw_pnl_pct is None and "profit_pct" in t:
+                # 兼容旧内存对象（例如 profit_pct=5.0 代表 5%）
+                try:
+                    raw_pnl_pct = float(t.get("profit_pct", 0)) / 100.0 if t.get("profit_pct") is not None else None
+                except (TypeError, ValueError):
+                    raw_pnl_pct = None
+            pnl_pct = float(raw_pnl_pct) if raw_pnl_pct is not None else 0.0
+            # 必须具有明确有效收益数据且 >= 0 才判断为命中；缺失数据绝不默认判为命中
+            hit = (raw_pnl_pct is not None and pnl_pct >= 0) if action == "SELL" else True
 
             if action == "SELL":
                 exit_reason = str(t.get("reason") or "")
@@ -250,7 +258,7 @@ class DailyReviewer:
                 shares=t.get("shares", 0),
                 reason=t.get("reason", ""),
                 signal_score=t.get("signal_score") or 0,
-                result_pct=profit_pct,
+                result_pct=pnl_pct,
                 hit=hit,
             ))
 
@@ -485,15 +493,22 @@ class DailyReviewer:
                                 outcome = "WIN" if outcome_pct > 0 else ("LOSS" if outcome_pct < 0 else "BREAKEVEN")
 
                     elif dec_action == "SELL":
-                        # SELL决策：直接用交易记录的profit_pct
+                        # SELL决策：直接用交易记录的pnl_pct/profit_pct
                         sell_trade = None
                         for t in code_trades:
                             if t.get("action") == "SELL":
                                 sell_trade = t
                                 break
                         if sell_trade:
-                            outcome_pct = sell_trade.get("profit_pct", 0)
-                            outcome = "WIN" if outcome_pct > 0 else ("LOSS" if outcome_pct < 0 else "BREAKEVEN")
+                            raw_pnl = sell_trade.get("pnl_pct")
+                            if raw_pnl is None and "profit_pct" in sell_trade:
+                                try:
+                                    raw_pnl = float(sell_trade["profit_pct"]) / 100.0 if sell_trade["profit_pct"] is not None else None
+                                except (TypeError, ValueError):
+                                    raw_pnl = None
+                            if raw_pnl is not None:
+                                outcome_pct = float(raw_pnl) * 100.0
+                                outcome = "WIN" if outcome_pct > 0 else ("LOSS" if outcome_pct < 0 else "BREAKEVEN")
 
                     if outcome is not None:
                         db.update_llm_decision(dec_id, {
@@ -609,15 +624,21 @@ class DailyReviewer:
                     elif dec_action == "SELL":
                         # ── SELL决策的盈亏计算 ──
                         # 逻辑: SELL决策的好坏看卖出是否及时
-                        # 直接使用交易记录中已计算好的 profit_pct
+                        # 直接使用交易记录中的 pnl_pct / profit_pct
                         sell_trade = None
                         for t in matched_trades:
                             if t.get("action") == "SELL":
                                 sell_trade = t
                                 # 取最后一笔卖出
                         if sell_trade:
-                            outcome_pct = sell_trade.get("profit_pct", 0)
-                            if outcome_pct is not None:
+                            raw_pnl = sell_trade.get("pnl_pct")
+                            if raw_pnl is None and "profit_pct" in sell_trade:
+                                try:
+                                    raw_pnl = float(sell_trade["profit_pct"]) / 100.0 if sell_trade["profit_pct"] is not None else None
+                                except (TypeError, ValueError):
+                                    raw_pnl = None
+                            if raw_pnl is not None:
+                                outcome_pct = float(raw_pnl) * 100.0
                                 outcome = "WIN" if outcome_pct > 0 else (
                                     "LOSS" if outcome_pct < 0 else "BREAKEVEN"
                                 )

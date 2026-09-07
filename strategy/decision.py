@@ -143,11 +143,10 @@ def compute_dimension_scores(
 
     # 2. 资金面 (主力资金 + 融资融券)
     try:
-        from signals.sentiment import sentiment_signal
-        cap_score = _compute_capital_score(code)
+        cap_score, cap_conf, cap_detail = _compute_capital_score(code)
         dims["capital"] = DimensionScore(
-            name="capital", score=cap_score, confidence=0.5,
-            detail=f"资金面分数={cap_score}",
+            name="capital", score=cap_score, confidence=cap_conf,
+            detail=cap_detail,
         )
     except Exception as e:
         dims["capital"] = DimensionScore("capital", 50, 0.0, f"资金数据异常: {e}")
@@ -192,31 +191,40 @@ def compute_dimension_scores(
 
     return dims
 
-_CAPITAL_SCORE_CACHE = None
-_CAPITAL_SCORE_CACHE_TIME = 0
+_CAPITAL_SCORE_CACHE: Dict[str, dict] = {}
 
 
-def _compute_capital_score(code: str) -> float:
+def _compute_capital_score(code: str):
     """
-    计算资金面分数
-    使用东方财富融资融券API（个股级别）+ 北向资金持仓作为参考
+    计算资金面分数与置信度
+    使用东方财富融资融券API（个股级别）
+
+    Returns:
+        (score: float, confidence: float, detail: str)
     """
     import time
-    global _CAPITAL_SCORE_CACHE, _CAPITAL_SCORE_CACHE_TIME
+    global _CAPITAL_SCORE_CACHE
 
-    # 缓存5分钟内有效
-    if _CAPITAL_SCORE_CACHE is not None and time.time() - _CAPITAL_SCORE_CACHE_TIME < 300:
-        return _CAPITAL_SCORE_CACHE
+    code_str = str(code or "").strip()
+    if not code_str:
+        return 50.0, 0.0, "无有效股票代码"
+
+    # 按个股缓存5分钟内有效，杜绝跨股票复用
+    cached = _CAPITAL_SCORE_CACHE.get(code_str)
+    if cached is not None and time.time() - cached.get("time", 0) < 300:
+        return cached["score"], cached["confidence"], cached["detail"]
 
     import requests
     score = 50.0
+    confidence = 0.0
+    detail = "无资金面数据"
 
     try:
         # 东方财富融资融券个股数据
         url = (
             f"https://datacenter-web.eastmoney.com/api/data/v1/get?"
             f"reportName=RPTA_WEB_RZRQ_GGMX&columns=DATE,RZMRE,RZYE,RQYL,RQYE"
-            f"&filter=(SCODE=%22{code}%22)&pageNumber=1&pageSize=5"
+            f"&filter=(SCODE=%22{code_str}%22)&pageNumber=1&pageSize=5"
             f"&sortTypes=-1&sortColumns=DATE&source=WEB&client=WEB"
         )
         headers = {
@@ -232,11 +240,13 @@ def _compute_capital_score(code: str) -> float:
                 latest_buy = float(items[0].get("RZMRE", 0) or 0)  # 融资买入额
                 latest_balance = float(items[0].get("RZYE", 0) or 0)  # 融资余额
                 prev_balance = float(items[1].get("RZYE", 0) or 0)
+                details = []
 
                 # 融资余额增长 → 市场看多
                 if prev_balance > 0:
                     change = (latest_balance - prev_balance) / prev_balance * 100
                     score += min(20, max(-20, change * 5))
+                    details.append(f"两融变动={change:+.1f}%")
 
                 # 融资买入额大 → 资金积极
                 if latest_buy > 0 and latest_balance > 0:
@@ -245,14 +255,29 @@ def _compute_capital_score(code: str) -> float:
                         score += 5
                     elif buy_ratio > 2:
                         score += 2
-    except Exception as e:
-        # API失败时保持默认50分
-        pass
+                    details.append(f"买入比={buy_ratio:.1f}%")
 
-    score = max(0, min(100, score))
-    _CAPITAL_SCORE_CACHE = score
-    _CAPITAL_SCORE_CACHE_TIME = time.time()
-    return score
+                confidence = 0.5
+                score = max(0.0, min(100.0, score))
+                detail = f"两融资金: {' | '.join(details)}" if details else "两融数据平稳"
+            else:
+                detail = "两融历史数据不足(少于2期)"
+        else:
+            detail = "非两融标的或数据为空"
+    except Exception as e:
+        # API失败时置信度设为0.0，避免伪装成有效中性信号
+        score = 50.0
+        confidence = 0.0
+        detail = f"两融接口异常: {e}"
+
+    score = max(0.0, min(100.0, score))
+    _CAPITAL_SCORE_CACHE[code_str] = {
+        "score": score,
+        "confidence": confidence,
+        "detail": detail,
+        "time": time.time(),
+    }
+    return score, confidence, detail
 
 
 def _compute_fundamental_score(code: str, df=None) -> float:

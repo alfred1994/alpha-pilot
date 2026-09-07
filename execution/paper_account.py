@@ -583,6 +583,16 @@ class PaperAccount:
             # 更新最高价
             self.update_highest_price(code, current)
 
+            # 可转债独立退出规则（-3% 严格止损，正股炸板等），与股票通用ATR止损解耦
+            from strategy.cb_t0_strategy import is_cb_code, should_sell as cb_should_sell
+            if is_cb_code(code) or pos.get("allow_t0") or pos.get("trade_unit") == 10:
+                cb_exit = cb_should_sell(code, current, pos["buy_price"])
+                if cb_exit.get("sell"):
+                    trade = self.sell(code, current, reason=cb_exit.get("reason", "可转债止损触发"), trade_date=trade_date)
+                    if trade:
+                        triggered.append(trade)
+                continue
+
             # 获取ATR：优先用买入时记录的，其次用外部传入的
             atr = pos.get("atr_at_buy", 0)
             if not atr and atr_map:

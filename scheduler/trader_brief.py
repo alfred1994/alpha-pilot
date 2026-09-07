@@ -176,14 +176,25 @@ def build_daily_facts(date: str = None, db_path: str = None,
         reviewed = db.get_review_snapshot(date) is not None
         current_directive = db.get_effective_strategy_directive(date)
         pending_directive = db.get_next_strategy_directive(date)
+        # 反事实统计：按 (observation_date, code) 去重，统计独立机会样本数，避免重复扫描轮次充数
         rows = db.conn.execute("""
-            SELECT outcome_label, COUNT(*) AS count
+            SELECT outcome_label, COUNT(DISTINCT observation_date || '|' || code) AS count
             FROM candidate_outcomes
             WHERE outcome_label <> ''
               AND observation_date >= date(?, '-30 days')
             GROUP BY outcome_label
         """, (date,)).fetchall()
         counterfactual = {str(row["outcome_label"]): int(row["count"]) for row in rows}
+
+        # 拒绝层级统计（区分门槛、排名还是LLM拒绝）
+        denial_rows = db.conn.execute("""
+            SELECT denial_layer, COUNT(DISTINCT observation_date || '|' || code) AS count
+            FROM candidate_outcomes
+            WHERE denial_layer <> ''
+              AND observation_date >= date(?, '-30 days')
+            GROUP BY denial_layer
+        """, (date,)).fetchall()
+        denial_summary = {str(row["denial_layer"]): int(row["count"]) for row in denial_rows}
 
     scan_journeys = []
     order_audit = []
@@ -204,6 +215,34 @@ def build_daily_facts(date: str = None, db_path: str = None,
             event_errors.append(str(event.get("error")))
 
     order_audit = _dedupe_order_audit(order_audit)
+
+    # 逐笔核对订单审计与数据库真实成交流水（SQLite trades 为唯一真实成交事实）
+    trade_keys = {(str(t.get("code")), str(t.get("action")).upper()) for t in trades}
+    reconciled_keys = set()
+    audit_reconciled = []
+    for item in order_audit:
+        item_copy = dict(item)
+        key = (str(item_copy.get("code")), str(item_copy.get("action")).upper())
+        if key in trade_keys:
+            item_copy["status"] = "filled"
+            reconciled_keys.add(key)
+        audit_reconciled.append(item_copy)
+
+    # 补全存在真实成交但未被扫描订单审计捕获的记录（如独立可转债执行、盘中止损平仓等）
+    for t in trades:
+        key = (str(t.get("code")), str(t.get("action")).upper())
+        if key not in reconciled_keys:
+            audit_reconciled.append({
+                "code": t.get("code"),
+                "name": t.get("name") or t.get("code"),
+                "action": t.get("action"),
+                "status": "filled",
+                "reason": "真实成交记录",
+            })
+            reconciled_keys.add(key)
+
+    order_audit = audit_reconciled
+
     decision_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
     no_response_count = 0
     for item in decisions:
@@ -221,7 +260,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
     candidate_observations = sum(int(item.get("candidate_count") or 0) for item in scan_journeys)
     scored_observations = sum(int(item.get("scored_count") or 0) for item in scan_journeys)
     planned_orders = sum(int(item.get("planned_orders") or 0) for item in scan_journeys)
-    if not audit_counts["filled"] and trades:
+    if trades and audit_counts["filled"] < len(trades):
         audit_counts["filled"] = len(trades)
 
     degradations = _load_signal_degradations()
@@ -300,6 +339,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
         "event_error_count": len(event_errors),
         "llm_no_response_count": no_response_count,
         "counterfactual": counterfactual,
+        "counterfactual_denial": denial_summary,
         "degradations": degradations,
         "reviewed": reviewed,
         "latest_scan": latest_scan,

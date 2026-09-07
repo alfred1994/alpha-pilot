@@ -126,6 +126,7 @@ POSITION_REDUCE_RATIO = 0.5      # 降仓缩放系数（连亏后仓位降至50%
 # ══════════════════════════════════════════════════════════════════
 CB_MAX_PREMIUM = 0.30        # 最大溢价率30%
 CB_STOP_LOSS = -0.03         # 可转债止损-3%
-CB_SINGLE_POSITION = 0.20    # 单只可转债仓位上限20%
+CB_SINGLE_POSITION = float(os.environ.get("CB_SINGLE_POSITION", "0.08"))    # 单只可转债试验仓位上限8%（避免20%超额单票风险）
 CB_MIN_SCORE = 70            # 最低入选分数70
 CB_T0_ENABLED = True         # 是否启用可转债T+0
+

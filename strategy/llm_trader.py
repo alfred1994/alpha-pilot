@@ -276,46 +276,16 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
         except Exception:
             pass
 
-    # 4. 最后兜底：从自然语言推理文本中推断决策
+    # 4. 安全兜底：交易动作必须来自结构化响应；若无法解析合法JSON，一律保持安全观望(HOLD)，严禁猜单
     try:
-        # 过滤掉prompt模板中的指令文本，避免"BUY、SELL或HOLD"误导关键词提取
-        cleaned_for_match = _strip_prompt_echo(raw)
-        text_lower = cleaned_for_match.lower()
-
-        # 优先检查明确的卖出信号（中文为主，避免单独"sell"误匹配prompt模板）
-        sell_keywords = ["建议卖出", "应卖出", "建议清仓", "卖出信号", "决定卖出",
-                         "应当卖出", "适合卖出", "应该sell", "决定sell", "action.*sell"]
-        hold_keywords = ["建议持有", "建议观望", "不宜买入", "不建议买入", "置信度不足",
-                         "风险较高", "谨慎", "暂时不买", "不建议买入", "应当hold",
-                         "决定hold", "选择hold"]
-        buy_keywords = ["建议买入", "可以买入", "买入信号", "看多", "决定买入",
-                        "应当买入", "适合买入", "应该buy", "决定buy", "action.*buy"]
-
-        # 提取更干净、更长的推理摘要
         clean_text = clean_reasoning(raw)
-        
         reason_summary = clean_text[:200]
         if len(clean_text) > 200:
             reason_summary += "..."
-
-        for kw in sell_keywords:
-            if re.search(kw, text_lower) if '.*' in kw else kw in text_lower:
-                logger.info(f"从推理文本推断: SELL (关键词: {kw})")
-                return "SELL", 0.3, f"从文本推断: {reason_summary}"
-        for kw in hold_keywords:
-            if re.search(kw, text_lower) if '.*' in kw else kw in text_lower:
-                logger.info(f"从推理文本推断: HOLD (关键词: {kw})")
-                return "HOLD", 0.3, f"从文本推断: {reason_summary}"
-        for kw in buy_keywords:
-            if re.search(kw, text_lower) if '.*' in kw else kw in text_lower:
-                logger.info(f"从推理文本推断: BUY (关键词: {kw})")
-                return "BUY", 0.3, f"从文本推断: {reason_summary}"
-
-        # 完全无法推断，默认HOLD
-        logger.warning(f"LLM决策解析失败，无法推断: {raw[:200]}")
-        return "HOLD", 0.0, f"解析失败，文本摘要: {reason_summary}"
+        logger.warning(f"LLM决策结构化解析失败，安全回退为HOLD: {reason_summary}")
+        return "HOLD", 0.0, f"结构化响应解析失败(保持观望): {reason_summary}"
     except Exception as e:
-        return "HOLD", 0.0, f"解析失败: {e}"
+        return "HOLD", 0.0, f"解析异常(保持观望): {e}"
 
 
 def _build_decision_prompt(

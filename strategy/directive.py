@@ -58,7 +58,7 @@ def _number(value, field: str, minimum: float, maximum: float, integer: bool = F
 
 
 def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: str,
-                                 regime: str) -> Dict:
+                                 regime: str, current_params: Dict = None) -> Dict:
     """将 LLM 输出规范成可执行且可审计的策略指令。"""
     if not isinstance(raw, dict):
         raise ValueError("策略指令必须是对象")
@@ -79,6 +79,23 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
     if verdict not in ("supported", "refuted", "inconclusive"):
         verdict = "inconclusive"
 
+    top_k = _number(params.get("top_k"), "params.top_k", MIN_TOP_K, MAX_TOP_K, integer=True)
+    min_score = _number(params.get("min_score"), "params.min_score", MIN_SCORE, MAX_SCORE)
+    max_weight = _number(params.get("max_weight"), "params.max_weight", MIN_WEIGHT, MAX_WEIGHT)
+
+    # 安全护栏：若显式评估结论为证据不足(inconclusive)，严禁下调入场门槛或提高单票仓位扩大风险
+    has_explicit_inconclusive = (
+        isinstance(raw.get("evaluation"), dict)
+        and str(raw["evaluation"].get("verdict") or "").strip().lower() == "inconclusive"
+    )
+    if current_params and has_explicit_inconclusive:
+        curr_min_score = float(current_params.get("min_score") or min_score)
+        curr_max_weight = float(current_params.get("max_weight") or max_weight)
+        if min_score < curr_min_score or max_weight > curr_max_weight:
+            min_score = max(min_score, curr_min_score)
+            max_weight = min(max_weight, curr_max_weight)
+            rationale += " [安全护栏: 前序策略证据不足(inconclusive)，禁止扩大风险，参数已受风控约束保持稳健]"
+
     now = datetime.now().isoformat()
     version = f"directive-{effective_date.replace('-', '')}-{datetime.now().strftime('%H%M%S%f')}"
     return {
@@ -98,9 +115,9 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
             "evidence": str(evaluation.get("evidence") or "当日事实不足，暂不下结论").strip(),
         },
         "params": {
-            "top_k": _number(params.get("top_k"), "params.top_k", MIN_TOP_K, MAX_TOP_K, integer=True),
-            "min_score": _number(params.get("min_score"), "params.min_score", MIN_SCORE, MAX_SCORE),
-            "max_weight": _number(params.get("max_weight"), "params.max_weight", MIN_WEIGHT, MAX_WEIGHT),
+            "top_k": top_k,
+            "min_score": min_score,
+            "max_weight": max_weight,
         },
     }
 
@@ -128,12 +145,14 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
 已有日终复盘：
 {llm_review or '无'}
 
-自主决策要求：
+自主决策与风控要求：
 1. 你可以保持、探索、收紧或放宽策略；不要机械地按连续天数或单一胜率规则行动。
 2. 要区分“市场无机会”“评分门槛压制”“模型或数据降级”“计划被阻断”和“执行失败”。
-3. 必须依据当日决策漏斗评估上一策略的 hypothesis；证据不足时 verdict 必须为 inconclusive。
-4. 只输出一个 JSON 对象，不要 Markdown 或额外文字。
-5. params.top_k 必须是 1-5 的整数；params.min_score 必须为 45-75；params.max_weight 必须为 0.03-0.25。
+3. 严禁以“产生更多买单”作为策略成功的标准。调整依据必须是成熟样本的真实净收益、哪类拒绝产生错误，以及相对基准的改善。
+4. 必须依据当日决策漏斗评估上一策略的 hypothesis；证据不足时 verdict 必须为 inconclusive。
+5. 当 verdict 为 inconclusive 时，严禁下调入场门槛 (降低 min_score) 或放大单票仓位 (提高 max_weight) 扩大风险。
+6. 只输出一个 JSON 对象，不要 Markdown 或额外文字。
+7. params.top_k 必须是 1-5 的整数；params.min_score 必须为 45-75；params.max_weight 必须为 0.03-0.25。
 
 JSON 格式：
 {{
@@ -175,7 +194,7 @@ def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
         logger.warning("AI 未返回可解析的策略指令，沿用上一有效版本")
         return None
     try:
-        directive = normalize_strategy_directive(raw, review_date, effective_date, regime)
+        directive = normalize_strategy_directive(raw, review_date, effective_date, regime, current_params=current_params)
     except ValueError as exc:
         logger.warning("AI 策略指令无效，沿用上一有效版本: %s", exc)
         return None
