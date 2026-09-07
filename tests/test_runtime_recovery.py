@@ -59,15 +59,18 @@ def test_early_scan_persists_fresh_plan():
 
 def test_low_price_picker_uses_project_realtime_api():
     active = {"000001": "测试股份", "600000": "测试银行"}
+    # 低位选股新契约: 换手率1%~10% + PE估值筛选，fake需携带turnover/pe/amount
     quotes = [
-        SimpleNamespace(code="000001", price=9.5, change_pct=1.2),
-        SimpleNamespace(code="600000", price=16.0, change_pct=1.0),
+        SimpleNamespace(code="000001", price=9.5, change_pct=1.2,
+                        turnover=3.5, pe=12.0, amount=5000.0, name="测试股份"),
+        SimpleNamespace(code="600000", price=16.0, change_pct=1.0,
+                        turnover=0.5, pe=30.0, amount=9000.0, name="测试银行"),
     ]
     with patch("strategy.stock_picker._get_active_stocks", return_value=active), patch(
         "data.realtime.get_realtime_batch", return_value=quotes
     ):
         candidates = _get_early_stage_candidates()
-    assert_true(list(candidates) == ["000001"], "低价股选股使用批量实时行情并保留合格候选")
+    assert_true(list(candidates) == ["000001"], "低位选股使用批量实时行情并保留合格候选(换手过滤生效)")
 
 
 def main():
