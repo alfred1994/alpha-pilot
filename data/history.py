@@ -1,12 +1,12 @@
 """
-历史数据模块 - Baostock + 长桥 + SQLite缓存
-完全免费，无需注册，无频率限制
+历史数据模块 - 同花顺 + Baostock + 长桥 + SQLite缓存
 适合获取日线/周线/月线/分钟线历史数据
 
 数据获取优先级:
     1. SQLite本地缓存
-    2. 长桥API（如已配置）
-    3. Baostock（兜底）
+    2. 同花顺API（显式启用且已配置）
+    3. 长桥API（如已配置）
+    4. Baostock（兜底）
 """
 import baostock as bs
 import multiprocessing as mp
@@ -189,6 +189,9 @@ def _try_cache(code: str, start_date: str, end_date: str,
     Returns:
         DataFrame 或 None（缓存未命中）
     """
+    # 共享表没有复权维度，只存前复权；其他模式不能混用。
+    if adjust != "qfq":
+        return None
     try:
         from data.database import Database
         system_code = _to_system_code(code)
@@ -197,6 +200,8 @@ def _try_cache(code: str, start_date: str, end_date: str,
             if cached and len(cached) > 0:
                 df = pd.DataFrame(cached)
                 # 清理内部字段
+                df.attrs["source"] = sorted(set(df.get("source", pd.Series(dtype=str)).dropna()))
+                df.attrs["adjust"] = "qfq"
                 for col in ["source"]:
                     if col in df.columns:
                         df = df.drop(columns=[col])
@@ -243,7 +248,7 @@ def _try_cache(code: str, start_date: str, end_date: str,
 def _save_to_cache(code: str, df: pd.DataFrame, adjust: str = "qfq",
                    source: str = "baostock"):
     """将数据保存到SQLite缓存"""
-    if df is None or df.empty:
+    if adjust != "qfq" or df is None or df.empty:
         return
     try:
         from data.database import Database
@@ -255,6 +260,27 @@ def _save_to_cache(code: str, df: pd.DataFrame, adjust: str = "qfq",
             db.insert_k_daily(records, source=source)
     except Exception as e:
         logger.debug(f"缓存保存失败: {e}")
+
+
+def _try_hithink(code: str, start_date: str, end_date: str,
+                 adjust: str = "qfq") -> Optional[pd.DataFrame]:
+    """可选同花顺日线源；失败不改变已有源的降级顺序。"""
+    try:
+        from data.hithink import get_client
+        client = get_client()
+        if client is None:
+            return None
+        expected_adjust = {"qfq": "forward", "hfq": "backward", "": "none"}.get(adjust)
+        if expected_adjust is None:
+            return None
+        df = client.get_daily(code, start_date, end_date, adjust=expected_adjust)
+        if df is not None and not df.empty and df.attrs.get("adjust") == expected_adjust:
+            df.attrs["adjust"] = adjust
+            df.attrs["source"] = "hithink"
+            return df
+    except Exception as exc:
+        logger.warning("同花顺日线不可用，回退已有源: %s", type(exc).__name__)
+    return None
 
 
 def _try_longbridge(code: str, start_date: str, end_date: str,
@@ -280,12 +306,13 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
               adjust: str = "qfq", simple: bool = True,
               require_full_range: bool = False) -> pd.DataFrame:
     """
-    获取日线数据（带缓存 + 长桥优先）
+    获取日线数据（缓存 + 可选同花顺 + 长桥 + Baostock）
 
     数据获取优先级:
         1. SQLite本地缓存
-        2. 长桥API（如已配置）
-        3. Baostock（兜底）
+        2. 同花顺API（显式启用且已配置）
+        3. 长桥API（如已配置）
+        4. Baostock（兜底）
 
     Args:
         code: 股票代码, 如 "600519" 或 "sh.600519"
@@ -322,7 +349,12 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
                                  allow_stale=True,
                                  require_full_range=require_full_range)
 
-        # 2. 尝试长桥API
+        df = _try_hithink(code, start_date, end_date, adjust)
+        if df is not None:
+            _save_to_cache(code, df, adjust, source="hithink")
+            return df
+
+        # 同花顺未配置、失败或不支持时，保持原有回退。
         df = _try_longbridge(code, start_date, end_date, adjust)
         if df is not None:
             _save_to_cache(code, df, adjust, source="longport")

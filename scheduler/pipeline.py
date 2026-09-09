@@ -1010,6 +1010,17 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
                 for name, dim in dims.items()
             ) / total_w
 
+            # 新形态只记录诊断，不进入评分维度或 LLM 下单上下文。
+            # 复用已有日线，盘中排除未收盘K线，不新增外部请求。
+            technical_patterns = {"mode": "shadow", "affects_orders": False, "signals": []}
+            if os.environ.get("TECHNICAL_PATTERN_SHADOW", "1") == "1":
+                try:
+                    from strategy.technical_screen import evaluate_patterns
+                    technical_patterns = evaluate_patterns(code, df)
+                except Exception as exc:
+                    technical_patterns["status"] = "unavailable"
+                    technical_patterns["reason"] = type(exc).__name__
+
             return {
                 "code": code,
                 "name": name,
@@ -1017,6 +1028,7 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
                 "dimensions": {dn: {"score": d.score, "confidence": d.confidence, "detail": d.detail} for dn, d in dims.items()},
                 "top_signal": top_signal,
                 "avg_confidence": round(avg_conf, 2),
+                "technical_patterns": technical_patterns,
                 "signal_coverage": {
                     "effective_weights": {
                         name: round(weight / total_w, 4)

@@ -15,9 +15,13 @@ from strategy.strategies.macd_trend import MACDTrendStrategy
 from strategy.strategies.bollinger_squeeze import BollingerSqueezeStrategy
 from strategy.strategies.kdj_reversal import KDJReversalStrategy
 from strategy.strategies.technical_ensemble import TechnicalEnsembleStrategy
+from strategy.strategies.high_tight_flag import HighTightFlagStrategy
+from strategy.strategies.rps_breakout import RPSBreakoutStrategy
 
 # 策略注册表
 STRATEGY_REGISTRY = {
+    "high_tight_flag": HighTightFlagStrategy,
+    "rps_breakout": RPSBreakoutStrategy,
     "zt_reversal": ZTReversalStrategy,
     "ma_cross": MACrossStrategy,
     "rsi_bounce": RSIBounceStrategy,
@@ -32,6 +36,8 @@ STRATEGY_REGISTRY = {
 
 # 策略画像用于发现、回测选择和人工复盘；不会改变账户、风控或执行规则。
 STRATEGY_PROFILES = {
+    "high_tight_flag": {"category": "趋势整理突破", "regimes": ["bull"], "risk": "high"},
+    "rps_breakout": {"category": "横截面动量", "regimes": ["bull", "rebound"], "risk": "high"},
     "zt_reversal": {"category": "形态反转", "regimes": ["rebound", "sideways"], "risk": "high"},
     "ma_cross": {"category": "趋势跟踪", "regimes": ["bull", "rebound"], "risk": "medium"},
     "rsi_bounce": {"category": "均值回归", "regimes": ["sideways", "rebound"], "risk": "medium"},

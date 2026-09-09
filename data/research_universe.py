@@ -6,6 +6,7 @@
 import json
 import logging
 import os
+import math
 from datetime import datetime, timedelta
 from typing import Dict, List
 
@@ -58,12 +59,59 @@ def _is_eligible_research_code(code: str) -> bool:
     )
 
 
+def _hithink_active_stocks(limit: int) -> Dict:
+    """预算内顺序分页；不完整结果不冒充全市场流动性排名。"""
+    from data.hithink import get_client
+    client = get_client()
+    if client is None:
+        return {}
+    try:
+        # 客户端按公开契约保守限制每页100条。A股约5200只，默认60页
+        # 能覆盖完整代码表；请求由客户端串行节流，只在盘后研究任务使用。
+        max_pages = min(100, max(1, int(os.getenv("HITHINK_UNIVERSE_MAX_PAGES", "60"))))
+        page_size = 100
+        rows = []
+        complete = False
+        for page in range(max_pages):
+            data = client.get_snapshot_page(limit=page_size, offset=page * page_size)
+            batch = data.get("item", [])
+            rows.extend(batch)
+            total = data.get("total")
+            if ((isinstance(total, int) and total >= 0 and len(rows) >= total)
+                    or (not isinstance(total, int) and len(batch) < page_size)):
+                complete = True
+                break
+        if not complete:
+            logger.warning("同花顺研究池分页预算耗尽，回退已有源")
+            return {}
+        candidates = {}
+        for row in rows:
+            code = str(row.get("thscode") or "").split(".")[0]
+            try:
+                amount = float(row.get("turnover"))
+            except (TypeError, ValueError):
+                continue
+            name = str(row.get("name") or code)
+            if (_is_eligible_research_code(code) and "ST" not in name.upper()
+                    and math.isfinite(amount) and amount >= 30_000_000):
+                candidates[code] = (name, amount)
+        return {code: value[0] for code, value in
+                sorted(candidates.items(), key=lambda entry: entry[1][1], reverse=True)[:limit]}
+    except Exception as exc:
+        logger.warning("同花顺研究池不可用，回退已有源: %s", type(exc).__name__)
+        return {}
+
+
 def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
     """以成交额靠前的普通A股构建研究池，保留已有样本以保障连续性。"""
     limit = max(20, int(limit or RESEARCH_UNIVERSE_SIZE))
     from strategy.stock_picker import _get_active_stocks
 
-    active = _get_active_stocks(min_amount=3000, limit=limit)
+    active = _hithink_active_stocks(limit)
+    active_source = "hithink_liquidity"
+    if not active:
+        active = _get_active_stocks(min_amount=3000, limit=limit)
+        active_source = "active_liquidity"
     current = _load_universe(path)
     ordered: List[Dict] = []
     seen = set()
@@ -71,7 +119,7 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
         if code in seen or not _is_eligible_research_code(code):
             continue
         seen.add(code)
-        ordered.append({"code": code, "name": name, "source": "active_liquidity"})
+        ordered.append({"code": code, "name": name, "source": active_source})
 
     # 供应商临时返回异常时不能让研究池归零。优先复用当天盘中已验证的
     # 候选，再从已有K线库续跑；这些来源均只作为研究数据种子，不下单。
@@ -184,6 +232,38 @@ def _sync_one_bounded(item: Dict, start_date: str, end_date: str) -> Dict:
         return {"code": item.get("code", ""), "status": "error", "error": "worker_no_result", "rows": 0}
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """只读探测锁持有者；Windows 的 os.kill(pid, 0) 会发送 Ctrl+C。"""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            # 无效 PID 已退出；拒绝访问等未知状态保守地保留锁。
+            return ctypes.get_last_error() != 87
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) != 0
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
 def _acquire_lock(path: str = None) -> bool:
     path = path or RESEARCH_LOCK_FILE
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -197,12 +277,7 @@ def _acquire_lock(path: str = None) -> bool:
             with open(path, "r", encoding="utf-8") as file:
                 payload = json.load(file)
             pid = int(payload.get("pid") or 0)
-            alive = pid > 0
-            if alive:
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    alive = False
+            alive = _pid_is_alive(pid)
             age = datetime.now().timestamp() - os.path.getmtime(path)
             if not alive and age > RESEARCH_JOB_TIMEOUT:
                 os.unlink(path)

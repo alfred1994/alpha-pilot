@@ -700,6 +700,23 @@ class SimpleBacktestEngine:
 
         buy_candidates = []
 
+        strategy_context = {}
+        if getattr(self.strategy, "requires_cross_section", False):
+            # 比较集同样截断到信号日，绝不使用执行日或区间末尾收益排名。
+            series = {}
+            for symbol in stock_codes:
+                history = df_cache.get(symbol)
+                if history is None or history.empty:
+                    continue
+                past = history[history["date"].astype(str) <= date].copy()
+                if past.empty or past["date"].duplicated().any():
+                    continue
+                values = pd.to_numeric(past["close"], errors="coerce")
+                volumes = pd.to_numeric(past.get("volume", pd.Series(float("nan"), index=past.index)), errors="coerce")
+                values = values.where(volumes.between(0, float("inf"), inclusive="neither"))
+                series[symbol] = pd.Series(values.to_numpy(), index=pd.to_datetime(past["date"]))
+            strategy_context = {"as_of": date, "universe_closes": pd.DataFrame(series)}
+
         for code in stock_codes:
             price = current_prices.get(code)
             if price is None:
@@ -715,7 +732,9 @@ class SimpleBacktestEngine:
 
             try:
                 market_regime = self._infer_technical_regime(df)
-                signal = self.strategy.generate_signals(code, df, market_regime=market_regime)
+                if strategy_context and str(df["date"].max()) != date:
+                    continue
+                signal = self.strategy.generate_signals(code, df, market_regime=market_regime, **strategy_context)
 
                 if signal.action == "BUY" and code not in pm.positions:
                     buy_candidates.append((code, signal, market_regime))
