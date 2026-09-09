@@ -10,6 +10,7 @@ import sys
 import tempfile
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -267,14 +268,19 @@ def test_rescue_scan_whitelist_and_llm_hold_no_buy():
         )
         paper_account.PaperAccount = FakeAccount
 
-        result = pipeline.run_scan(
-            budget_seconds=120,
-            candidate_codes=["600519"],
-            candidate_items=[
-                {"code": "600519", "name": "贵州茅台", "score": 70, "source": ["盘中观察池"]},
-                {"code": "000001", "name": "平安银行", "score": 80, "source": ["不应进入"]},
-            ],
-        )
+        # The real scan also writes shadow/counterfactual observations. Keep these
+        # integration effects in a temporary database, not the local paper account.
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "data.database.DB_PATH", os.path.join(directory, "quant.db")
+        ):
+            result = pipeline.run_scan(
+                budget_seconds=120,
+                candidate_codes=["600519"],
+                candidate_items=[
+                    {"code": "600519", "name": "贵州茅台", "score": 70, "source": ["盘中观察池"]},
+                    {"code": "000001", "name": "平安银行", "score": 80, "source": ["不应进入"]},
+                ],
+            )
         assert_true([c["code"] for c in result.candidates] == ["600519"], "救援扫描只评分白名单候选")
         assert_true(result.trade_plan["orders"] == [], "LLM HOLD不会被兜底转换成BUY")
         assert_true("600519" in result.trade_plan["hold_reasons"], "LLM HOLD写入拒绝原因")
@@ -433,12 +439,14 @@ def test_watch_cycle_attaches_kline_analysis():
 def main():
     print("盘中轻量盯盘测试")
     print("=" * 60)
-    test_watch_cycle_keeps_working_without_trade()
+    with patch("scheduler.intraday_watch._default_intraday_kline_analyzer", return_value={"valid": False, "reason": "fixture"}):
+        test_watch_cycle_keeps_working_without_trade()
     test_intraday_kline_analyzer_features()
     test_watch_cycle_attaches_kline_analysis()
     test_rescue_filter_allows_only_confirmed_watchlist()
     test_default_candidate_pool_prefers_latest_composite_scores()
-    test_watchlist_after_cutoff_and_cooling_no_buy()
+    with patch("scheduler.intraday_watch._default_intraday_kline_analyzer", return_value={"valid": False, "reason": "fixture"}):
+        test_watchlist_after_cutoff_and_cooling_no_buy()
     test_rescue_scan_whitelist_and_llm_hold_no_buy()
     test_auto_cycle_records_watch_and_rescue()
     print("=" * 60)

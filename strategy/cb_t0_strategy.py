@@ -17,6 +17,9 @@
   - 单只仓位≤20%
 """
 import logging
+import math
+import threading
+import time
 from typing import Dict, List, Optional
 from datetime import datetime
 
@@ -26,6 +29,12 @@ from config import (
 )
 
 logger = logging.getLogger("strategy.cb_t0")
+
+
+# 可转债列表一次返回转债、正股与溢价所需字段。退出巡检可能由多个入口在
+# 一个轮询周期内调用，短期缓存只用于请求限流，不能当作源行情时间戳。
+_EXIT_CONTEXT_CACHE = {"fetched_at": 0.0, "by_code": {}, "refreshing": False}
+_EXIT_CONTEXT_LOCK = threading.Lock()
 
 
 # ── 评分权重 ─────────────────────────────────────────────────
@@ -202,9 +211,11 @@ def scan_and_score() -> List[dict]:
 
 
 def is_cb_code(code: str) -> bool:
-    """判断是否为可转债代码（沪市11xxxx/深市12xxxx）"""
+    """判断是否为可转债代码（沪市 110/111/113/118，深市 123/127/128）。"""
     c = str(code or "").strip()
-    return len(c) == 6 and (c.startswith("11") or c.startswith("12")) and c.isdigit()
+    return len(c) == 6 and c.isdigit() and c.startswith((
+        "110", "111", "113", "118", "123", "127", "128",
+    ))
 
 
 def should_buy(cb: dict, max_single_weight: Optional[float] = None) -> dict:
@@ -266,17 +277,19 @@ def should_sell(cb_code: str, current_data, buy_price: float) -> dict:
         {sell: bool, reason: str}
     """
     if isinstance(current_data, (int, float)):
-        current_price = float(current_data)
-        stock_chg = 5.0  # 单价格入参时默认正股未炸板
-        premium = 0.0
+        current_price = _optional_float(current_data)
+        stock_chg = None
+        premium = None
     elif isinstance(current_data, dict):
-        current_price = float(current_data.get("cb_price", 0) or 0)
-        stock_chg = float(current_data.get("stock_change_pct", 5.0) or 5.0)
-        premium = float(current_data.get("premium_rate", 0.0) or 0.0)
+        current_price = _optional_float(current_data.get("cb_price"))
+        # 不能用 ``or`` 设默认值：真实的 0% 正是正股炸板的退出信号。
+        # 字段缺失时只跳过相应的附加规则，保留价格止损。
+        stock_chg = _optional_float(current_data.get("stock_change_pct"))
+        premium = _optional_float(current_data.get("premium_rate"))
     else:
         return {"sell": False, "reason": "数据格式异常"}
 
-    if current_price <= 0 or buy_price <= 0:
+    if current_price is None or current_price <= 0 or buy_price <= 0:
         return {"sell": False, "reason": "价格数据缺失"}
 
     pnl = (current_price - buy_price) / buy_price
@@ -286,14 +299,98 @@ def should_sell(cb_code: str, current_data, buy_price: float) -> dict:
         return {"sell": True, "reason": f"可转债止损触发: {pnl:+.1%} <= {CB_STOP_LOSS:.0%}"}
 
     # 正股炸板（涨幅回落到<3%）
-    if stock_chg < 3:
+    if stock_chg is not None and stock_chg < 3:
         return {"sell": True, "reason": f"可转债正股炸板: 涨幅回落至{stock_chg:.1f}%"}
 
     # 溢价扩大到>30%
-    if premium > 30:
+    if premium is not None and premium > 30:
         return {"sell": True, "reason": f"可转债溢价扩大: {premium:.1f}%>30%"}
 
     return {"sell": False, "reason": "继续持有"}
+
+
+def get_cb_exit_market_context(cb_codes, max_age_seconds: float = 30.0) -> Dict[str, dict]:
+    """批量获取可转债退出所需的正股涨幅与溢价上下文。
+
+    返回值按转债代码索引，数据源失败、字段无效或某只转债缺失时不伪造正股、
+    溢价字段；调用方仍可将已有的转债现价作为 ``cb_price`` 传给
+    :func:`should_sell` 来执行严格价格止损。数据源未提供逐标的时间戳，缓存
+    时间只用于限制请求频率，不能被用于声明源行情新鲜度。
+    """
+    requested = {
+        code for code in (str(value or "").strip() for value in cb_codes)
+        if is_cb_code(code)
+    }
+    if not requested:
+        return {}
+
+    try:
+        max_age = max(0.0, float(max_age_seconds))
+    except (TypeError, ValueError):
+        max_age = 30.0
+    now = time.monotonic()
+    with _EXIT_CONTEXT_LOCK:
+        cache = _EXIT_CONTEXT_CACHE
+        needs_refresh = now - cache["fetched_at"] > max_age
+        if needs_refresh and not cache.get("refreshing"):
+            # 外部 AkShare 调用没有可靠的调用方超时契约。止损巡检不能等待它：
+            # 后台单飞刷新，当前轮降级为价格止损，待有效缓存可用后再补足规则。
+            cache["refreshing"] = True
+            threading.Thread(
+                target=_refresh_cb_exit_context,
+                name="cb-exit-context-refresh",
+                daemon=True,
+            ).start()
+        # 已过期的数据不能在刷新期间继续驱动正股炸板或溢价退出；当前轮
+        # 安全降级为价格止损，只有刷新成功后的下一轮才恢复扩展规则。
+        records_by_code = {} if needs_refresh else dict(cache["by_code"])
+
+    contexts = {}
+    for code in requested:
+        record = records_by_code.get(code)
+        if not record:
+            continue
+        context = dict(record)
+        # data.convertible_bond 保留 0.0 的兼容值，同时附带有效性标志。
+        # 无效字段必须缺席，令 should_sell 安全降级为价格止损。
+        for field in ("stock_change_pct", "premium_rate"):
+            if context.get(f"{field}_valid") is False:
+                context.pop(field, None)
+        contexts[code] = context
+    return contexts
+
+
+def _refresh_cb_exit_context() -> None:
+    """异步刷新退出上下文；任何失败均使附加退出规则安全降级。"""
+    records_by_code = {}
+    try:
+        from data.convertible_bond import get_cb_list
+
+        records = get_cb_list()
+        records_by_code = {
+            str(record.get("cb_code", "")).strip(): dict(record)
+            for record in records
+            if str(record.get("cb_code", "")).strip()
+        }
+    except Exception as exc:
+        logger.warning("可转债退出上下文获取失败，仅保留价格止损: %s", exc)
+    finally:
+        with _EXIT_CONTEXT_LOCK:
+            # 无逐标的源时间戳时，这里只记录本地刷新完成时刻用于限流。
+            _EXIT_CONTEXT_CACHE["by_code"] = records_by_code
+            _EXIT_CONTEXT_CACHE["fetched_at"] = time.monotonic()
+            _EXIT_CONTEXT_CACHE["refreshing"] = False
+
+
+def _optional_float(value) -> Optional[float]:
+    """将存在且可解析的数值转换为 float；保留缺失语义。"""
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def format_cb_report(scored: List[dict], top_n: int = 5) -> str:

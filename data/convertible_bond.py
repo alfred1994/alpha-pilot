@@ -3,6 +3,7 @@
 基于AkShare获取集思录可转债数据，提供评分所需的全部字段
 """
 import logging
+import math
 from typing import Dict, List, Optional
 
 logger = logging.getLogger("data.convertible_bond")
@@ -25,6 +26,8 @@ def get_cb_list() -> List[dict]:
 
         records = []
         for _, row in df.iterrows():
+            stock_change_pct = _optional_float(row.get("正股涨跌"))
+            premium_rate = _optional_float(row.get("转股溢价率"))
             records.append({
                 "cb_code": str(row.get("代码", "")),
                 "cb_name": str(row.get("转债名称", "")),
@@ -33,8 +36,12 @@ def get_cb_list() -> List[dict]:
                 "stock_code": str(row.get("正股代码", "")),
                 "stock_name": str(row.get("正股名称", "")),
                 "stock_price": _safe_float(row.get("正股价", 0)),
-                "stock_change_pct": _safe_float(row.get("正股涨跌", 0)),
-                "premium_rate": _safe_float(row.get("转股溢价率", 0)),
+                # 保留既有数值字段（扫描/评分依赖其为 float），并额外公开
+                # 有效性，避免退出逻辑把上游空值归一后的 0% 当成炸板。
+                "stock_change_pct": stock_change_pct if stock_change_pct is not None else 0.0,
+                "stock_change_pct_valid": stock_change_pct is not None,
+                "premium_rate": premium_rate if premium_rate is not None else 0.0,
+                "premium_rate_valid": premium_rate is not None,
                 "remaining_scale": _safe_float(row.get("剩余规模", 0)),
                 "turnover_rate": _safe_float(row.get("换手率", 0)),
                 "trade_amount": _safe_float(row.get("成交额", 0)),
@@ -110,6 +117,17 @@ def _safe_float(val) -> float:
         return float(val)
     except (ValueError, TypeError):
         return 0.0
+
+
+def _optional_float(val) -> Optional[float]:
+    """解析可选数值，供风险规则区分真实零值与数据缺失。"""
+    try:
+        if val is None or isinstance(val, bool) or str(val).strip() in ("", "-", "nan", "None"):
+            return None
+        result = float(val)
+        return result if math.isfinite(result) else None
+    except (ValueError, TypeError):
+        return None
 
 
 if __name__ == "__main__":

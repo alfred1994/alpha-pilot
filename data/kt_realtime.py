@@ -29,6 +29,8 @@ from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import pandas as pd
 
+from data.quote_validation import validate_quote
+
 logger = logging.getLogger("data.kt_realtime")
 
 
@@ -151,11 +153,20 @@ class KTRealtimeClient:
     def _valid_snapshot_time(date_value: Optional[str], time_value: str) -> bool:
         if date_value is None or not re.fullmatch(r"\d{2}:\d{2}:\d{2}", (time_value or "").strip()):
             return False
-        try:
-            dt.datetime.strptime(f"{date_value} {time_value}", "%Y-%m-%d %H:%M:%S")
-            return True
-        except ValueError:
-            return False
+        return validate_quote({
+            "price": 1.0,
+            "timestamp": f"{date_value} {time_value}",
+        }).valid
+
+    @staticmethod
+    def _snapshot_invalid_reason(date_value: Optional[str], time_value: str) -> str:
+        if date_value is None or not re.fullmatch(r"\d{2}:\d{2}:\d{2}", (time_value or "").strip()):
+            return "invalid_source_datetime"
+        validation = validate_quote({
+            "price": 1.0,
+            "timestamp": f"{date_value} {time_value}",
+        })
+        return validation.reason or "invalid_source_datetime"
 
     @classmethod
     def _empty_ticks(cls, requested=None, errors=None) -> pd.DataFrame:
@@ -228,7 +239,7 @@ class KTRealtimeClient:
                 "amount_yuan": amount, "amount_wan": amount / 10000 if amount is not None else float("nan"),
                 **book, "time": f"{date_text} {time_text}".strip(), "source": "sina_hq", "received_at": received_at,
                 "data_date": data_date, "data_valid": time_valid,
-                "invalid_reason": None if time_valid else "invalid_source_datetime",
+                "invalid_reason": None if time_valid else self._snapshot_invalid_reason(data_date, time_text),
                 "amount_status": "provider_field_9" if amount is not None else "missing_or_invalid_provider_field_9",
             })
         return rows, []

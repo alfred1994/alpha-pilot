@@ -14,6 +14,7 @@ import sys
 import tempfile
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -170,4 +171,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with patch("scheduler.closure_check._next_trading_day_label", return_value="2026-06-10"):
+        main()

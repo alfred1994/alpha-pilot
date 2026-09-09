@@ -35,11 +35,12 @@ def main():
         }
         calls = []
         import pandas as pd
-        history.get_daily = lambda code, **kwargs: (
-            calls.append((code, kwargs)) or pd.DataFrame({
-                "date": ["2025-01-01", "2026-08-20"], "close": [10, 11],
-            })
-        )
+        def fresh_history(code, **kwargs):
+            calls.append((code, kwargs))
+            dates = pd.date_range(kwargs["start_date"], kwargs["end_date"], freq="B")
+            return pd.DataFrame({"date": dates.strftime("%Y-%m-%d"), "close": 10})
+
+        history.get_daily = fresh_history
         universe = refresh_research_universe(limit=3, path=path)
         assert_true(len(universe["codes"]) == 3, "按活跃股构建研究股票池")
         assert_true(research_universe.RESEARCH_UNIVERSE_SIZE == 800, "研究股票池默认覆盖800只普通A股")
@@ -87,6 +88,53 @@ def main():
         os.utime(f"{path}.lock", (1, 1))
         recovered = sync_research_universe(batch_size=1, path=path)
         assert_true(recovered["status"] == "success", "超时预算外的无主研究锁可回收")
+
+        # 同步结果必须依据本次返回的实际日期重新判定，不能仅靠缓存 attrs。
+        old_only = pd.DataFrame({"date": ["2020-01-02"], "close": [10]})
+        history.get_daily = lambda *args, **kwargs: old_only
+        coverage = research_universe._sync_one(
+            {"code": "600519"}, "2020-01-01", "2026-09-09"
+        )
+        assert_true(coverage["status"] == "stale", "缺失末端历史不会被报告为ok")
+
+        # 两个失败重试项不能占满两个槽位；游标必须持续带动未重试项轮转。
+        fair_path = f"{path}.fair"
+        fair_payload = {
+            "version": 1,
+            "codes": [
+                {"code": "600000"}, {"code": "600001"},
+                {"code": "000001"}, {"code": "000002"},
+            ],
+            "cursor": 0,
+            "retry_codes": ["600000", "600001"],
+        }
+        with open(fair_path, "w", encoding="utf-8") as file:
+            json.dump(fair_payload, file)
+        original_bounded = research_universe._sync_one_bounded
+        fair_calls = []
+        try:
+            def fake_sync(item, start_date, end_date):
+                code = item["code"]
+                fair_calls.append(code)
+                return {"code": code, "status": "error" if code.startswith("600") else "ok", "rows": 1}
+
+            research_universe._sync_one_bounded = fake_sync
+            sync_research_universe(batch_size=2, history_days=365, path=fair_path)
+            sync_research_universe(batch_size=2, history_days=365, path=fair_path)
+            assert_true(
+                fair_calls == ["600000", "000001", "600001", "000002"],
+                "持续失败重试时仍为正常游标保留轮转名额",
+            )
+            with open(fair_path, "r", encoding="utf-8") as file:
+                fair_state = json.load(file)
+            assert_true(
+                fair_state["retry_codes"] == ["600000", "600001"],
+                "未选中的重试项与本轮失败项都会保留",
+            )
+        finally:
+            research_universe._sync_one_bounded = original_bounded
+            if os.path.exists(fair_path):
+                os.unlink(fair_path)
 
         import main as app_main
         original_refresh = research_universe.refresh_research_universe

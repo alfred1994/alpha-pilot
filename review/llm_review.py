@@ -300,8 +300,9 @@ def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
         return 0
 
     # 分离亏损和盈利交易
-    losing_trades = [t for t in trades if t.get("result_pct", 0) < -2]
-    winning_trades = [t for t in trades if t.get("result_pct", 0) > 2]
+    # DailyReviewer outputs ratios: 0.08 means 8%, not 0.08%.
+    losing_trades = [t for t in trades if t.get("result_pct", 0) < -0.02]
+    winning_trades = [t for t in trades if t.get("result_pct", 0) > 0.02]
 
     # 也从持仓中提取
     for p in review_data.get("position_pnls", []):
@@ -445,7 +446,7 @@ def _analyze_lessons_with_llm(losing_trades: list, winning_trades: list) -> list
         for t in losing_trades[:5]:
             analysis_prompt += (
                 f"- {t.get('code', '')} {t.get('name', '')} "
-                f"亏损{t.get('pnl_pct', t.get('result_pct', 0)):+.1f}% "
+                f"亏损{t.get('pnl_pct', t.get('result_pct', 0)):+.1%} "
                 f"买入价{t.get('buy_price', 0):.2f} "
                 f"卖出价{t.get('sell_price', t.get('price', 0)):.2f}\n"
             )
@@ -455,7 +456,7 @@ def _analyze_lessons_with_llm(losing_trades: list, winning_trades: list) -> list
         for t in winning_trades[:5]:
             analysis_prompt += (
                 f"- {t.get('code', '')} {t.get('name', '')} "
-                f"盈利{t.get('pnl_pct', t.get('result_pct', 0)):+.1f}% "
+                f"盈利{t.get('pnl_pct', t.get('result_pct', 0)):+.1%} "
                 f"买入价{t.get('buy_price', 0):.2f} "
                 f"卖出价{t.get('sell_price', t.get('price', 0)):.2f}\n"
             )
@@ -545,10 +546,10 @@ def _extract_lessons_by_rules(memory, losing_trades: list, winning_trades: list)
         name = t.get("name", "")
         pnl = t.get("pnl_pct", t.get("result_pct", 0))
         reason = t.get("reason", "未知")
-        importance = 4 if abs(pnl) > 5 else 3
+        importance = 4 if abs(pnl) > 0.05 else 3
         memory.save_lesson(
             category="sell",
-            content=f"亏损卖出: {name}({code}) 盈亏{pnl:+.1f}% 原因: {reason}",
+            content=f"亏损卖出: {name}({code}) 盈亏{pnl:+.1%} 原因: {reason}",
             importance=importance,
             related_trades=[code],
         )
@@ -561,7 +562,7 @@ def _extract_lessons_by_rules(memory, losing_trades: list, winning_trades: list)
         reason = t.get("reason", "未知")
         memory.save_lesson(
             category="sell",
-            content=f"盈利卖出: {name}({code}) 盈亏{pnl:+.1f}% 原因: {reason}",
+            content=f"盈利卖出: {name}({code}) 盈亏{pnl:+.1%} 原因: {reason}",
             importance=3,
             related_trades=[code],
         )

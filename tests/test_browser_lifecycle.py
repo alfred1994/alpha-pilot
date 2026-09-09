@@ -3,6 +3,8 @@
 import concurrent.futures
 import os
 import sys
+import asyncio
+import threading
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -62,8 +64,31 @@ def main():
         retry_wait_seconds=0,
     )
     try:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-            results = list(pool.map(lambda _: manager.fetch("https://example.invalid/data", "https://example.invalid/"), range(4)))
+        # 延迟首个事件循环发布，稳定复现多个调用方同时进入 _ensure_worker 的窗口。
+        # 启动锁必须覆盖 ready 等待，确保不会创建第二个 loop。
+        loop_creation_started = threading.Event()
+        allow_loop_creation = threading.Event()
+        original_new_event_loop = asyncio.new_event_loop
+
+        def delayed_new_event_loop():
+            loop_creation_started.set()
+            assert allow_loop_creation.wait(timeout=2), "测试未释放事件循环启动"
+            return original_new_event_loop()
+
+        import data.eastmoney as eastmoney
+        original_factory = eastmoney.asyncio.new_event_loop
+        eastmoney.asyncio.new_event_loop = delayed_new_event_loop
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                futures = [pool.submit(
+                    manager.fetch, "https://example.invalid/data", "https://example.invalid/"
+                ) for _ in range(4)]
+                assert_true(loop_creation_started.wait(timeout=1), "首个事件循环进入延迟启动窗口")
+                time.sleep(0.05)
+                allow_loop_creation.set()
+                results = [future.result(timeout=2) for future in futures]
+        finally:
+            eastmoney.asyncio.new_event_loop = original_factory
         assert_true(len(launches) == 1, "并发请求只启动一个共享浏览器实例")
         assert_true(all(result == {"data": {"ok": True}} for result in results), "共享浏览器返回全部请求结果")
         assert_true(all(page.closed for page in launches[0].pages), "每次请求结束均关闭页面子进程资源")

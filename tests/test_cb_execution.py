@@ -2,6 +2,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -18,7 +19,10 @@ def main():
         broker = PaperBrokerAdapter(account_file=account_path, db_path=db_path)
 
         def quote(codes):
-            return [SimpleNamespace(code=codes[0], price=100.0, close_prev=99.0)]
+            return [SimpleNamespace(
+                code=codes[0], price=100.0, close_prev=99.0,
+                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            )]
 
         plan = {
             "date": "2026-08-08",
@@ -34,7 +38,14 @@ def main():
                 "dimensions": {"convertible_bond": {"premium": 98}},
             }],
         }
-        result = execute_trade_plan(plan, broker=broker, realtime_func=quote)
+        result = execute_trade_plan(
+            plan,
+            broker=broker,
+            realtime_func=quote,
+            market_status="盘中",
+            update_memory=False,
+            allow_historical_plan=True,
+        )
         assert not result.errors, result.errors
         assert broker.get_positions()["113000"]["shares"] % 10 == 0
         assert broker.get_sellable_shares("113000", trade_date="2026-08-08") > 0

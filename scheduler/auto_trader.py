@@ -301,26 +301,27 @@ def check_stops_once() -> dict:
         {"checked": N, "sold": M, "trades": [...]}
     """
     from execution.broker import get_broker_adapter
-    from data.realtime import get_realtime
+    from scheduler.pipeline import _collect_position_prices, _default_realtime_func
 
     broker = get_broker_adapter()
     positions = broker.get_positions()
     if not positions:
         return {"checked": 0, "sold": 0, "trades": []}
 
-    prices = {}
-    for code in positions:
-        try:
-            quotes = get_realtime([code])
-            if quotes and quotes[0].price > 0:
-                prices[code] = quotes[0].price
-        except Exception as e:
-            logger.debug(f"止损巡检行情失败 {code}: {e}")
+    # 自动止损和订单执行共享严格的行情校验：没有当前、匹配标的的有效价格
+    # 就宁可不成交，也不能以陈旧快照平仓。
+    prices = _collect_position_prices(
+        list(positions), _default_realtime_func(), allow_historical=False,
+    )
 
     if not prices:
         return {"checked": len(positions), "sold": 0, "trades": [], "error": "无法获取持仓行情"}
 
-    trades = broker.check_stop_conditions(prices)
+    # 补充可转债正股涨幅、溢价；该调用后台单飞且本轮不等待，源不可用时
+    # 返回空上下文，PaperAccount 会安全降级为仅按转债价格止损。
+    from strategy.cb_t0_strategy import get_cb_exit_market_context
+    market_context = get_cb_exit_market_context(list(positions))
+    trades = broker.check_stop_conditions(prices, market_context=market_context)
     return {"checked": len(positions), "sold": len(trades), "trades": trades}
 
 
@@ -414,7 +415,7 @@ def _run_rescue_scan_default(watch_result: dict, on_execute: Callable[[], None] 
     if filtered_plan:
         if on_execute:
             on_execute()
-        exec_result = execute_trade_plan(filtered_plan)
+        exec_result = execute_trade_plan(filtered_plan, allow_historical_plan=False)
     else:
         exec_result = None
     return {

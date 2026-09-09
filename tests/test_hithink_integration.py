@@ -47,7 +47,9 @@ class HiThinkIntegrationTests(unittest.TestCase):
             client.get_daily.return_value = response
             legacy = self.frame()
             with patch("data.hithink.get_client", return_value=client), patch.object(history, "_try_cache", return_value=None), patch.object(history, "_save_to_cache"), patch.object(history, "_try_longbridge", return_value=legacy) as fallback:
-                self.assertIs(history.get_daily("600519", "20260901", "20260902"), legacy)
+                result = history.get_daily("600519", "20260901", "20260902")
+                self.assertEqual(result.attrs["source"], "longport")
+                self.assertEqual(result.iloc[0].close, legacy.iloc[0].close)
                 fallback.assert_called_once()
 
     def test_non_qfq_never_uses_shared_cache(self):

@@ -5,6 +5,7 @@ import asyncio
 import logging
 from datetime import datetime
 from realtime.event_bus import Event
+from data.quote_validation import validate_quote
 
 logger = logging.getLogger("realtime.handlers")
 
@@ -19,9 +20,12 @@ class StopLossHandler:
     async def on_quote_update(self, event: Event):
         """行情更新事件"""
         code = event.data.get("code")
-        price = event.data.get("price")
+        validation = validate_quote(event.data, expected_code=str(code or ""))
+        price = validation.price
 
-        if not code or not price or code in self._checking:
+        if not code or not validation.valid or code in self._checking:
+            if code and not validation.valid:
+                logger.debug("忽略不安全实时止损行情 %s: %s", code, validation.reason)
             return
 
         # 检查是否持仓
@@ -31,11 +35,16 @@ class StopLossHandler:
 
         self._checking.add(code)
         try:
-            # 止损检查
-            signals = self.account.check_stop_conditions({code: price})
+            # 实时传感器只能评估并广播；成交必须经过自动执行链路。
+            evaluate = getattr(self.account, "evaluate_stop_conditions", None)
+            if not callable(evaluate):
+                logger.error("实时止损传感器拒绝运行：账户未提供纯判断 evaluate_stop_conditions")
+                return
+            signals = evaluate({code: price})
 
             for signal in signals:
-                action = signal.get("action")
+                # PaperAccount 的纯评估契约使用 type；兼容旧账户适配器的 action。
+                action = signal.get("type") or signal.get("action")
                 if action in ("stop_loss", "take_profit", "trailing_stop"):
                     pos = positions[code]
                     shares = pos.get("shares", 0)

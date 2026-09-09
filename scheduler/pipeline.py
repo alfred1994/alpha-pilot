@@ -26,6 +26,7 @@ import hashlib
 import uuid
 from datetime import datetime
 from scheduler.market_calendar import _now_bj
+from data.quote_validation import validate_quote
 from dataclasses import dataclass, field
 from typing import List, Dict, Optional
 import concurrent.futures
@@ -774,14 +775,31 @@ def fast_scan(
 
             try:
                 # 可转债持仓专属退出巡检（-3% 严格止损、正股炸板等），与股票通用策略隔离
-                from strategy.cb_t0_strategy import is_cb_code, should_sell as cb_should_sell
+                from strategy.cb_t0_strategy import (
+                    get_cb_exit_market_context,
+                    is_cb_code,
+                    should_sell as cb_should_sell,
+                )
+                _cb_positions = {
+                    _code: _info
+                    for _code, _info in _positions_sell.items()
+                    if is_cb_code(_code) or _info.get("allow_t0") or _info.get("trade_unit") == 10
+                }
+                # 全市场可转债快照一次即可补足所有持仓的正股涨幅和溢价；
+                # 取数失败时仍以账户现价执行严格价格止损。
+                _cb_context_by_code = get_cb_exit_market_context(_cb_positions)
                 for _cb_code, _cb_info in _positions_sell.items():
                     if not (is_cb_code(_cb_code) or _cb_info.get("allow_t0") or _cb_info.get("trade_unit") == 10):
                         continue
                     _cb_buy_price = float(_cb_info.get("buy_price", 0) or 0)
-                    _cb_current_price = float(_cb_info.get("current_price", 0) or 0)
+                    _cb_current_data = dict(_cb_context_by_code.get(_cb_code) or {})
+                    _cb_current_price = float(_cb_current_data.get("cb_price", 0) or 0)
+                    if _cb_current_price <= 0:
+                        _cb_current_price = float(_cb_info.get("current_price", 0) or 0)
+                        if _cb_current_price > 0:
+                            _cb_current_data["cb_price"] = _cb_current_price
                     if _cb_buy_price > 0 and _cb_current_price > 0:
-                        _cb_exit = cb_should_sell(_cb_code, _cb_current_price, _cb_buy_price)
+                        _cb_exit = cb_should_sell(_cb_code, _cb_current_data, _cb_buy_price)
                         if _cb_exit.get("sell"):
                             plan.orders.append(TradeOrder(
                                 code=_cb_code,
@@ -1121,11 +1139,11 @@ def _default_realtime_func():
     return _quote_provider
 
 
-def _collect_position_prices(codes: list, realtime_func) -> dict:
+def _collect_position_prices(codes: list, realtime_func, *, allow_historical: bool = False) -> dict:
     """批量优先收集持仓最新价；批量未覆盖的逐个回退查询。
 
-    批量结果按 quote.code 归并；注入的 fake 行情(无 .code 属性)或
-    部分缺失时，自动落入原有的逐个 realtime_func([code]) 路径。
+    批量结果按 quote.code 归并；自动执行会传入 ``allow_historical=False``，
+    因而拒绝过期、错标的和非法价格。历史回放必须显式保留兼容模式。
     """
     prices = {}
     if not codes:
@@ -1133,9 +1151,11 @@ def _collect_position_prices(codes: list, realtime_func) -> dict:
     try:
         for quote in (realtime_func(codes) or []):
             code = str(getattr(quote, "code", "") or "").strip()
-            price = getattr(quote, "price", 0) or 0
-            if code and price > 0:
-                prices[code] = price
+            validation = validate_quote(
+                quote, expected_code=code, allow_historical=allow_historical,
+            )
+            if code and validation.valid:
+                prices[code] = validation.price
     except Exception as exc:
         logger.debug("批量获取持仓价格失败，回退逐个查询: %s", exc)
     for code in codes:
@@ -1143,8 +1163,12 @@ def _collect_position_prices(codes: list, realtime_func) -> dict:
             continue
         try:
             quotes = realtime_func([code])
-            if quotes and quotes[0].price > 0:
-                prices[code] = quotes[0].price
+            if quotes:
+                validation = validate_quote(
+                    quotes[0], expected_code=code, allow_historical=allow_historical,
+                )
+                if validation.valid:
+                    prices[code] = validation.price
         except Exception as exc:
             logger.debug(f"获取 {code} 实时价格失败: {exc}")
     return prices
@@ -1208,7 +1232,9 @@ def execute_trade_plan(
     drawdown_controller=None,
     system_risk_controller=None,
     update_memory: bool = True,
-    allow_historical_plan: bool = True,
+    allow_historical_plan: bool = False,
+    allow_historical_quotes: bool = None,
+    cb_market_context: dict = None,
 ) -> PipelineResult:
     """
     执行指定 TradePlan
@@ -1221,13 +1247,17 @@ def execute_trade_plan(
         drawdown_controller: 回撤控制器，None时创建默认实例
         system_risk_controller: 系统风控控制器，None时创建默认实例
         update_memory: 是否执行决策结果回填
-        allow_historical_plan: 是否允许历史计划重放；自动执行时必须为False
+        allow_historical_plan: 是否允许历史计划重放；默认拒绝，回放必须显式为True
+        allow_historical_quotes: 是否允许历史行情回放；None时跟随计划回放开关
+        cb_market_context: 历史回放使用的可转债退出上下文；默认不请求实时源
 
     Returns:
         PipelineResult
     """
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
+    if allow_historical_quotes is None:
+        allow_historical_quotes = allow_historical_plan
 
     if not plan_data:
         result.errors.append("无TradePlan，无法执行")
@@ -1357,11 +1387,22 @@ def execute_trade_plan(
 
         if positions:
             # 获取持仓股票实时价格（批量优先，逐个回退）
-            prices = _collect_position_prices(list(positions), realtime_func)
+            prices = _collect_position_prices(
+                list(positions), realtime_func,
+                allow_historical=allow_historical_quotes,
+            )
+
+            market_context = cb_market_context or {}
+            if not allow_historical_quotes and cb_market_context is None:
+                try:
+                    from strategy.cb_t0_strategy import get_cb_exit_market_context
+                    market_context = get_cb_exit_market_context(list(positions))
+                except Exception as exc:
+                    logger.warning("可转债止损上下文获取失败，仅执行价格止损: %s", exc)
 
             # 检查止损条件（内部会自动执行卖出）
             stop_trades = broker.check_stop_conditions(
-                prices, trade_date=plan_data["date"],
+                prices, trade_date=plan_data["date"], market_context=market_context,
             )
 
             # 记录止损执行结果
@@ -1420,11 +1461,17 @@ def execute_trade_plan(
                 continue
             try:
                 rt = realtime_func([code])
-                price = rt[0].price if rt and rt[0].price > 0 else 0
-                if price <= 0:
-                    result.errors.append(f"{code} 卖出失败: 无法获取价格")
-                    _audit_order(result, order, "failed", "无法获取卖出价格")
+                validation = validate_quote(
+                    rt[0] if rt else None,
+                    expected_code=code,
+                    allow_historical=allow_historical_quotes,
+                )
+                if not validation.valid:
+                    reason = f"卖出行情不可用: {validation.reason}"
+                    result.errors.append(f"{code} {reason}")
+                    _audit_order(result, order, "blocked", reason)
                     continue
+                price = validation.price
                 reason = order.get("reason", "LLM卖出建议")
                 positions = broker.get_positions()
                 shares = min(int(positions[code]["shares"]), int(sellable_shares))
@@ -1464,17 +1511,21 @@ def execute_trade_plan(
             # 获取实时价格
             try:
                 realtime = realtime_func([code])
-                current_price = realtime[0].price if realtime else 0
-                if current_price <= 0 and realtime:
-                    current_price = realtime[0].close_prev
+                validation = validate_quote(
+                    realtime[0] if realtime else None,
+                    expected_code=code,
+                    allow_historical=allow_historical_quotes,
+                )
             except Exception:
-                current_price = 0
+                validation = None
 
-            if current_price <= 0:
-                logger.warning(f"{code} 无法获取实时价格，跳过")
-                result.errors.append(f"{code} 跳过: 无法获取价格")
-                _audit_order(result, order, "failed", "无法获取买入价格")
+            if validation is None or not validation.valid:
+                reason = "无法获取买入价格" if validation is None else f"买入行情不可用: {validation.reason}"
+                logger.warning("%s %s，跳过", code, reason)
+                result.errors.append(f"{code} 跳过: {reason}")
+                _audit_order(result, order, "blocked", reason)
                 continue
+            current_price = validation.price
 
             # 检查价格限制（允许适度偏离，避免盘后/波动误杀）
             if max_price > 0:

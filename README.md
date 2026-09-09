@@ -273,10 +273,11 @@ BROKER_MODE=paper
 
 ## 测试
 
-项目使用本地 Python 脚本作为契约测试：
+项目使用本地 Python 脚本作为契约测试，完整离线回归与 CI 共用自动发现入口：
 
 ```bash
 python3 -m compileall -q web scheduler strategy execution data main.py config.py tests
+python3 scripts/run_tests.py
 python3 tests/test_web_public_dashboard.py
 python3 tests/test_agent_driver_contract.py
 python3 tests/test_auto_control.py
@@ -292,7 +293,7 @@ python3 tests/test_order_audit_lessons.py
 python3 tests/test_web_dashboard_data.py
 ```
 
-更宽的测试取决于你的行情、LLM 和本地环境配置。
+`scripts/run_tests.py` 自动发现 `tests/test_*.py`，每个脚本独立运行并设置超时，强制模拟盘测试模式，阻止测试进程直接访问外部行情或 LLM 网络。新增离线回归脚本无需再修改 CI 名单；`--list` 可查看清单。`test_low_position.py` 与 `test_phase1.py` 是依赖真实行情或可选长桥连接的手工集成测试，明确排除，需在授权环境单独执行。
 
 ## 路线图
 

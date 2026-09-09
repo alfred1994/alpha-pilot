@@ -9,6 +9,7 @@
     4. Baostock（兜底）
 """
 import baostock as bs
+import math
 import multiprocessing as mp
 import os
 import pandas as pd
@@ -24,9 +25,113 @@ logger = logging.getLogger("data.history")
 # 不能因为区间内存在旧记录就永久复用整段旧数据。
 HISTORY_CACHE_MAX_STALE_DAYS = int(os.environ.get("HISTORY_CACHE_MAX_STALE_DAYS", "3"))
 
+# 日线端点可跨越周末及连续节假日，但不能把数月前的一根记录当作完整历史。
+# 起点缺口会被保留为显式的 incomplete 标记；这既能如实反映晚上市/长期停牌
+# 的可用历史，也让要求完整样本的研究任务继续尝试其他数据源。
+HISTORY_COVERAGE_GRACE_DAYS = int(os.environ.get("HISTORY_COVERAGE_GRACE_DAYS", "10"))
+HISTORY_COVERAGE_MIN_DENSITY = float(os.environ.get("HISTORY_COVERAGE_MIN_DENSITY", "0.20"))
+
 # 字段映射
 DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
 DAILY_SIMPLE_FIELDS = "date,code,open,high,low,close,volume,amount,turn,pctChg"
+
+
+def _assess_daily_coverage(df: pd.DataFrame, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
+    """校验日线的日期、价格和请求区间端点，并把结果写入 attrs。
+
+    日线不会假设每个工作日都有记录：周末、节假日、停牌和晚上市都会留下空档。
+    但超过节假日容忍窗口的内部空档或明显稀疏的样本会保守标记 incomplete；
+    结束端严重滞后、日期越界/重复或 OHLC 非法的数据不能作为新鲜行情。
+    """
+    if df is None or df.empty or "date" not in df.columns:
+        return None
+    try:
+        def parse_requested_day(value):
+            text = str(value).strip().replace("-", "").replace("/", "")
+            return datetime.strptime(text[:8], "%Y%m%d")
+
+        requested_start = parse_requested_day(start_date)
+        requested_end = parse_requested_day(end_date)
+    except (TypeError, ValueError):
+        return None
+    if requested_start > requested_end:
+        return None
+
+    frame = df.copy()
+    dates = pd.to_datetime(
+        frame["date"].astype(str).str.slice(0, 10), format="%Y-%m-%d", errors="coerce"
+    )
+    if dates.isna().any() or dates.duplicated().any():
+        return None
+    frame["date"] = dates.dt.strftime("%Y-%m-%d")
+
+    for column in ("open", "high", "low", "close"):
+        if column not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[column], errors="coerce")
+        if values.isna().any() or not values.map(math.isfinite).all() or (values <= 0).any():
+            return None
+        frame[column] = values
+    if "close" not in frame.columns:
+        return None
+    if {"high", "low", "open"}.issubset(frame.columns):
+        if ((frame["high"] < frame[["open", "low", "close"]].max(axis=1)) |
+                (frame["low"] > frame[["open", "high", "close"]].min(axis=1))).any():
+            return None
+
+    earliest = dates.min().to_pydatetime()
+    latest = dates.max().to_pydatetime()
+    if earliest < requested_start or latest > requested_end:
+        return None
+    missing_start_days = max(0, (earliest - requested_start).days)
+    end_gap_days = max(0, (requested_end - latest).days)
+    ordered_dates = dates.sort_values().reset_index(drop=True)
+    internal_gaps = ordered_dates.diff().dt.days.dropna()
+    max_internal_gap_days = int(internal_gaps.max()) if not internal_gaps.empty else 0
+    # 密度必须相对完整请求窗口计算，而不是已返回数据的首尾；否则一根
+    # 位于短窗口中间的数据会把分母缩成 1 并被误判为完整。使用工作日只是
+    # 无网络的保守下界：节假日/停牌会被标记 incomplete，而不会伪造齐全。
+    expected_weekdays = max(1, len(pd.bdate_range(requested_start.date(), requested_end.date())))
+    observed_density = len(frame) / expected_weekdays
+    status = "ok"
+    if end_gap_days > HISTORY_COVERAGE_GRACE_DAYS:
+        status = "stale"
+    elif (missing_start_days > HISTORY_COVERAGE_GRACE_DAYS
+          or max_internal_gap_days > HISTORY_COVERAGE_GRACE_DAYS
+          or observed_density < HISTORY_COVERAGE_MIN_DENSITY):
+        status = "incomplete"
+    frame = frame.sort_values("date").reset_index(drop=True)
+    frame.attrs.update(getattr(df, "attrs", {}))
+    frame.attrs.update(
+        coverage_status=status,
+        coverage_earliest=earliest.strftime("%Y-%m-%d"),
+        coverage_latest=latest.strftime("%Y-%m-%d"),
+        coverage_end_gap_days=end_gap_days,
+        coverage_max_internal_gap_days=max_internal_gap_days,
+        coverage_expected_weekdays=expected_weekdays,
+        coverage_observed_density=observed_density,
+        missing_start_days=missing_start_days,
+    )
+    return frame
+
+
+def _coverage_status(df: Optional[pd.DataFrame]) -> str:
+    return str(getattr(df, "attrs", {}).get("coverage_status") or "invalid")
+
+
+def _prefer_daily_coverage(frames):
+    """从降级结果中选端点最新、起点缺口最小的那一份，且保留不完整标记。"""
+    usable = [frame for frame in frames if frame is not None and not frame.empty]
+    if not usable:
+        return None
+    return min(
+        usable,
+        key=lambda frame: (
+            int(frame.attrs.get("coverage_end_gap_days") or 0),
+            int(frame.attrs.get("missing_start_days") or 0),
+            -len(frame),
+        ),
+    )
 
 
 def _query_history_rows(bs_code: str, fields: str, start_date: str, end_date: str,
@@ -205,24 +310,16 @@ def _try_cache(code: str, start_date: str, end_date: str,
                 for col in ["source"]:
                     if col in df.columns:
                         df = df.drop(columns=[col])
-                latest_date = str(df["date"].max()) if "date" in df.columns else ""
-                earliest_date = str(df["date"].min()) if "date" in df.columns else ""
-                try:
-                    requested_end = datetime.strptime(end_date, "%Y-%m-%d")
-                    cached_end = datetime.strptime(latest_date[:10], "%Y-%m-%d")
-                    stale_days = max(0, (requested_end - cached_end).days)
-                except (TypeError, ValueError):
-                    stale_days = HISTORY_CACHE_MAX_STALE_DAYS + 1
-
-                try:
-                    requested_start = datetime.strptime(start_date, "%Y-%m-%d")
-                    cached_start = datetime.strptime(earliest_date[:10], "%Y-%m-%d")
-                    missing_start_days = max(0, (cached_start - requested_start).days)
-                except (TypeError, ValueError):
-                    missing_start_days = 0
+                df = _assess_daily_coverage(df, start_date, end_date)
+                if df is None:
+                    logger.warning("历史缓存数据无效: %s", system_code)
+                    return None
+                latest_date = str(df.attrs.get("coverage_latest") or "")
+                stale_days = int(df.attrs.get("coverage_end_gap_days") or 0)
+                missing_start_days = int(df.attrs.get("missing_start_days") or 0)
 
                 if stale_days <= HISTORY_CACHE_MAX_STALE_DAYS and (
-                    not require_full_range or missing_start_days <= 3
+                    not require_full_range or _coverage_status(df) == "ok"
                 ):
                     logger.info(
                         f"缓存命中: {system_code} {len(df)}条 latest={latest_date} "
@@ -338,6 +435,28 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
 
     # 简单字段模式才走缓存和长桥（完整字段需要PE/PB等，长桥不一定有）
     stale_cache = None
+    degraded = []
+
+    def accept_source(candidate: Optional[pd.DataFrame], source: str) -> Optional[pd.DataFrame]:
+        """仅把端点覆盖合格的数据当作当前源成功，其他结果留作诚实降级。"""
+        frame = _assess_daily_coverage(candidate, start_date, end_date)
+        if frame is None:
+            logger.warning("历史数据无效: %s source=%s", code, source)
+            return None
+        frame.attrs["source"] = source
+        status = _coverage_status(frame)
+        # 常规查询允许晚上市股票返回可用的部分历史，但 attrs 必须明确标出；
+        # 研究任务要求全区间时，会继续回退到其他源补齐。
+        if status == "ok" or (status == "incomplete" and not require_full_range):
+            return frame
+        logger.warning(
+            "历史数据覆盖不足: %s source=%s status=%s latest=%s end_gap=%sd start_gap=%sd",
+            code, source, status, frame.attrs.get("coverage_latest"),
+            frame.attrs.get("coverage_end_gap_days"), frame.attrs.get("missing_start_days"),
+        )
+        degraded.append(frame)
+        return None
+
     if simple:
         # 1. 先查SQLite缓存
         df = _try_cache(code, start_date, end_date, adjust,
@@ -349,23 +468,25 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
                                  allow_stale=True,
                                  require_full_range=require_full_range)
 
-        df = _try_hithink(code, start_date, end_date, adjust)
+        df = accept_source(_try_hithink(code, start_date, end_date, adjust), "hithink")
         if df is not None:
             _save_to_cache(code, df, adjust, source="hithink")
             return df
 
         # 同花顺未配置、失败或不支持时，保持原有回退。
-        df = _try_longbridge(code, start_date, end_date, adjust)
+        df = accept_source(_try_longbridge(code, start_date, end_date, adjust), "longport")
         if df is not None:
             _save_to_cache(code, df, adjust, source="longport")
             return df
 
     # 3. 回退到Baostock
-    df = _fetch_baostock(code, start_date, end_date, adjust, simple)
+    df = accept_source(_fetch_baostock(code, start_date, end_date, adjust, simple), "baostock")
 
     # 保存到缓存（仅简单字段模式）
     if simple and df is not None and not df.empty:
         _save_to_cache(code, df, adjust, source="baostock")
+    if df is not None:
+        return df
 
     if (df is None or df.empty) and stale_cache is not None:
         logger.warning(
@@ -373,9 +494,15 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
             f"latest={stale_cache.attrs.get('stale_cache_latest', '')} "
             f"stale_days={stale_cache.attrs.get('stale_cache_days', '?')}"
         )
-        return stale_cache
+        degraded.append(stale_cache)
 
-    return df
+    # 所有源都未达到请求区间时，仍返回最完整的一份并显式标记，供研究同步
+    # 报告 incomplete/stale，而不是将它伪装为成功或丢失可诊断的覆盖信息。
+    fallback = _prefer_daily_coverage(degraded)
+    if fallback is not None:
+        return fallback
+
+    return pd.DataFrame()
 
 
 def _fetch_baostock(code: str, start_date: str, end_date: str,

@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -193,11 +194,13 @@ def test_expire_stale_ab_tests():
             """)
             db.conn.execute(
                 "INSERT INTO ab_tests (test_id, created_at, control_params, treatment_params)"
-                " VALUES ('ab_old', '2026-07-01T10:00:00', '{}', '{}')"
+                " VALUES ('ab_old', ?, '{}', '{}')",
+                ((datetime.now() - timedelta(days=30)).isoformat(),),
             )
             db.conn.execute(
                 "INSERT INTO ab_tests (test_id, created_at, control_params, treatment_params)"
-                " VALUES ('ab_new', '2026-08-21T10:00:00', '{}', '{}')"
+                " VALUES ('ab_new', ?, '{}', '{}')",
+                ((datetime.now() - timedelta(days=1)).isoformat(),),
             )
             db.conn.commit()
             expired = expire_stale_ab_tests(db, max_age_days=14)

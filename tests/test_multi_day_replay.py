@@ -10,6 +10,7 @@ import sys
 import tempfile
 from dataclasses import asdict
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -82,6 +83,7 @@ def main():
             drawdown_controller=DrawdownController(state_file=drawdown_path),
             system_risk_controller=SystemRiskController(state_file=system_risk_path),
             update_memory=False,
+            allow_historical_plan=True,
         )
         assert_true(not buy_result.errors, f"买入执行无错误: {buy_result.errors}")
         assert_true(broker.has_position("600519"), "第一日买入后生成持仓")
@@ -112,6 +114,7 @@ def main():
             drawdown_controller=DrawdownController(state_file=drawdown_path),
             system_risk_controller=SystemRiskController(state_file=system_risk_path),
             update_memory=False,
+            allow_historical_plan=True,
         )
         assert_true(not sell_result.errors, f"卖出执行无错误: {sell_result.errors}")
         assert_true(not broker.has_position("600519"), "第二日卖出后清仓")
@@ -132,11 +135,12 @@ def main():
         review_data = asdict(review_result)
         assert_true(review_result.win_trades == 1, "复盘识别1笔盈利卖出")
 
-        lesson_count = extract_and_save_lessons(
-            review_data,
-            llm_analysis="多日回放复盘: 低位买入后按计划止盈，继续记录该模式。",
-            db_path=db_path,
-        )
+        with patch("review.llm_review._analyze_lessons_with_llm", return_value=[]):
+            lesson_count = extract_and_save_lessons(
+                review_data,
+                llm_analysis="多日回放复盘: 低位买入后按计划止盈，继续记录该模式。",
+                db_path=db_path,
+            )
         assert_true(lesson_count >= 1, f"复盘提取教训: {lesson_count}条")
 
         with TradeMemory(db_path=db_path) as memory:
@@ -152,6 +156,7 @@ def main():
             ).fetchone()
         assert_true(len(trades) == 2, "SQLite记录买入和卖出两笔交易")
         assert_true(len(lessons) >= 1, "SQLite教训库已沉淀复盘教训")
+        assert_true(any("+8.0%" in lesson["content"] for lesson in lessons), "教训使用8%收益口径，不缩小100倍")
         assert_true(review_snapshot is not None, "SQLite复盘快照已写入")
 
         print("多日模拟回放闭环测试通过")

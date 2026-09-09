@@ -8,10 +8,12 @@ data/kt_realtime.py），保证无凭证环境（纸面模式）也有实时行�
 import asyncio
 import logging
 import os
+import re
 from typing import Set, Callable
 from datetime import datetime
 
 from realtime.event_bus import Event, get_event_bus
+from data.quote_validation import normalize_quote_code, validate_quote
 
 logger = logging.getLogger("realtime.quote_monitor")
 
@@ -47,6 +49,7 @@ class QuoteMonitor:
             )
             self._ctx = QuoteContext(config)
             self._SubType = SubType
+            self._mode = "longport"
             logger.info("长桥QuoteContext初始化成功")
             return True
         except ImportError:
@@ -71,17 +74,50 @@ class QuoteMonitor:
         )
         return True
 
+    @staticmethod
+    def _to_longport_symbol(code) -> str:
+        """将账户的六位 A 股代码转换为 Longport 的 ``600519.SH`` 格式。"""
+        text = str(code or "").strip().upper()
+        matched = re.fullmatch(r"(\d{6})\.(SH|SZ|BJ)", text)
+        if matched:
+            return f"{matched.group(1)}.{matched.group(2)}"
+        normalized = normalize_quote_code(text)
+        if not normalized:
+            return ""
+        if normalized.startswith(("110", "111", "113", "118", "50", "51", "56", "58", "600", "601", "603", "605", "688", "900")):
+            market = "SH"
+        elif normalized.startswith(("123", "127", "128", "15", "16", "18", "000", "001", "002", "003", "200", "300", "301", "399")):
+            market = "SZ"
+        elif normalized.startswith(("4", "8", "920")):
+            market = "BJ"
+        else:
+            return ""
+        return f"{normalized}.{market}"
+
+    def _longport_symbols(self, codes: list) -> list:
+        symbols = []
+        for code in codes:
+            symbol = self._to_longport_symbol(code)
+            if not symbol:
+                logger.warning("无法转换为Longport证券代码，跳过订阅: %r", code)
+                continue
+            if symbol not in symbols:
+                symbols.append(symbol)
+        return symbols
+
     def subscribe(self, codes: list):
         """订阅股票实时行情"""
         if not codes:
             return
 
-        self._subscribed_codes.update(codes)
+        self._subscribed_codes.update(str(code) for code in codes)
         logger.info(f"订阅实时行情 ({self._mode or 'pending'}): {len(codes)}只")
 
         if self._mode == "longport" and self._ctx:
             try:
-                self._ctx.subscribe(codes, self._SubType.QUOTE, is_first_push=True)
+                symbols = sorted(self._longport_symbols(codes))
+                if symbols:
+                    self._ctx.subscribe(symbols, [self._SubType.Quote])
             except Exception as e:
                 logger.error(f"订阅失败: {e}")
         elif self._mode == "polling":
@@ -94,9 +130,11 @@ class QuoteMonitor:
 
         self._subscribed_codes -= set(codes)
 
-        if self._ctx:
+        if self._mode == "longport" and self._ctx:
             try:
-                self._ctx.unsubscribe(codes, self._SubType.QUOTE)
+                symbols = sorted(self._longport_symbols(codes))
+                if symbols:
+                    self._ctx.unsubscribe(symbols, [self._SubType.Quote])
             except Exception as e:
                 logger.error(f"取消订阅失败: {e}")
 
@@ -127,6 +165,17 @@ class QuoteMonitor:
 
     def _on_poll_tick(self, row: dict):
         """轮询tick回调（在轮询线程执行）→ 发布与长桥同构的行情事件"""
+        if not row.get("data_valid", False):
+            logger.debug("忽略无效新浪轮询快照: %s", row.get("invalid_reason") or row.get("code"))
+            return
+        validation = validate_quote({
+            "code": row.get("code"),
+            "price": row.get("price"),
+            "timestamp": row.get("time"),
+        }, expected_code=str(row.get("code") or ""))
+        if not validation.valid:
+            logger.debug("忽略不安全新浪轮询快照 %s: %s", row.get("code"), validation.reason)
+            return
         volume = row.get("volume_hand")
         try:
             volume = int(float(volume)) if volume == volume else 0
@@ -150,16 +199,29 @@ class QuoteMonitor:
         )
         self._event_bus.publish_sync(event)
 
-    def _on_quote(self, quote):
-        """行情回调"""
+    def _on_quote(self, symbol: str, quote):
+        """Longport行情回调；SDK回调形状为 ``(symbol, PushQuote)``。"""
+        code = normalize_quote_code(symbol)
+        if not code:
+            logger.debug("忽略无法还原代码的长桥行情: %r", symbol)
+            return
+        validation = validate_quote({
+            "code": symbol,
+            "price": getattr(quote, "last_done", None),
+            "timestamp": getattr(quote, "timestamp", None),
+        }, expected_code=code)
+        if not validation.valid:
+            logger.debug("忽略不安全长桥行情 %s: %s", symbol, validation.reason)
+            return
         event = Event(
             type="quote_update",
             data={
-                "code": quote.symbol,
-                "price": float(quote.last_done),
+                "code": code,
+                "price": validation.price,
                 "volume": int(quote.volume),
                 "turnover": float(quote.turnover),
-                "timestamp": quote.timestamp,
+                "timestamp": str(validation.timestamp.isoformat()),
+                "source": "longport",
             }
         )
         self._event_bus.publish_sync(event)
@@ -174,15 +236,16 @@ class QuoteMonitor:
             logger.error("长桥初始化失败且轮询回退不可用，实时行情不可用")
             return
 
+        # 长桥首推可能紧随订阅到达，必须先注册回调再订阅。
+        if self._mode == "longport":
+            self._ctx.set_on_quote(self._on_quote)
+
         # 兼容先subscribe后start的调用顺序（EventDrivenTrader就是先订阅）
         if self._subscribed_codes:
-            self.subscribe(list(self._subscribed_codes))
+            self.subscribe(sorted(self._subscribed_codes))
 
         self._running = True
         logger.info(f"实时行情监控启动 ({self._mode})")
-
-        if self._mode == "longport":
-            self._ctx.set_on_quote(self._on_quote)
 
         # 保持任务存活（轮询模式由KT后台线程推送事件）
         while self._running:

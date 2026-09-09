@@ -548,56 +548,56 @@ class PaperAccount:
                 self.positions[code]["highest_price"] = price
                 self._save()
 
-    def check_stop_conditions(
+    def evaluate_stop_conditions(
         self,
         prices: Dict[str, float],
         atr_map: Dict[str, float] = None,
-        trade_date: str = None,
+        market_context: Dict[str, dict] = None,
     ) -> List[dict]:
-        """
-        检查止损止盈条件（使用StopLossManager，支持ATR动态止损）
+        """纯止损评估：不更新持仓、不成交、不写入审计记录。
 
-        Args:
-            prices: {code: current_price}
-            atr_map: {code: atr_value} ATR值（可选，优先使用买入时ATR）
-            trade_date: 交易日期，默认当天
-
-        Returns:
-            触发的卖出交易列表
+        ``market_context`` 为可选的 ``{code: {cb_price,
+        stock_change_pct, premium_rate}}``。可转债缺少正股或溢价字段时，
+        只按当前价格执行严格止损；明确传入的 ``0`` 保留为有效行情值。
         """
         from risk.stop_loss import StopLossManager
+        from strategy.cb_t0_strategy import is_cb_code, should_sell as cb_should_sell
 
         slm = StopLossManager(
             atr_multiplier=ATR_MULTIPLIER,
             use_atr=USE_ATR_STOP,
         )
-
+        context_by_code = market_context or {}
         triggered = []
-        for code in list(self.positions.keys()):
+        for code, pos in list(self.positions.items()):
             if code not in prices:
                 continue
-
-            pos = self.positions[code]
-            current = prices[code]
-
-            # 更新最高价
-            self.update_highest_price(code, current)
-
-            # 可转债独立退出规则（-3% 严格止损，正股炸板等），与股票通用ATR止损解耦
-            from strategy.cb_t0_strategy import is_cb_code, should_sell as cb_should_sell
-            if is_cb_code(code) or pos.get("allow_t0") or pos.get("trade_unit") == 10:
-                cb_exit = cb_should_sell(code, current, pos["buy_price"])
-                if cb_exit.get("sell"):
-                    trade = self.sell(code, current, reason=cb_exit.get("reason", "可转债止损触发"), trade_date=trade_date)
-                    if trade:
-                        triggered.append(trade)
+            try:
+                current = float(prices[code])
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(current) or current <= 0:
                 continue
 
-            # 获取ATR：优先用买入时记录的，其次用外部传入的
+            if is_cb_code(code) or pos.get("allow_t0") or pos.get("trade_unit") == 10:
+                # 实时转债价格优先于可转债列表中的采样价格；仅补足正股和溢价。
+                cb_data = dict(context_by_code.get(code) or {})
+                cb_data["cb_price"] = current
+                cb_exit = cb_should_sell(code, cb_data, pos["buy_price"])
+                if cb_exit.get("sell"):
+                    triggered.append({
+                        "code": code,
+                        "name": pos.get("name", code),
+                        "price": current,
+                        "shares": pos.get("shares", 0),
+                        "reason": cb_exit.get("reason", "可转债止损触发"),
+                        "type": "stop_loss",
+                    })
+                continue
+
             atr = pos.get("atr_at_buy", 0)
             if not atr and atr_map:
                 atr = atr_map.get(code, 0)
-
             signal = slm.check_stop(
                 code=code,
                 name=pos.get("name", code),
@@ -606,12 +606,45 @@ class PaperAccount:
                 highest_price=pos.get("highest_price", pos["buy_price"]),
                 atr=atr if atr > 0 else None,
             )
-
             if signal:
-                trade = self.sell(code, current, reason=signal.reason, trade_date=trade_date)
-                if trade:
-                    triggered.append(trade)
+                triggered.append({
+                    "code": code,
+                    "name": pos.get("name", code),
+                    "price": current,
+                    "shares": pos.get("shares", 0),
+                    "reason": signal.reason,
+                    "type": "stop_loss",
+                })
+        return triggered
 
+    def check_stop_conditions(
+        self,
+        prices: Dict[str, float],
+        atr_map: Dict[str, float] = None,
+        trade_date: str = None,
+        market_context: Dict[str, dict] = None,
+    ) -> List[dict]:
+        """检查并执行止损止盈；行情上下文契约见 evaluate_stop_conditions。"""
+        for code in list(self.positions):
+            if code not in prices:
+                continue
+            try:
+                current = float(prices[code])
+            except (TypeError, ValueError):
+                continue
+            if math.isfinite(current) and current > 0:
+                self.update_highest_price(code, current)
+
+        triggered = []
+        for signal in self.evaluate_stop_conditions(
+            prices, atr_map=atr_map, market_context=market_context,
+        ):
+            trade = self.sell(
+                signal["code"], signal["price"], reason=signal["reason"],
+                trade_date=trade_date,
+            )
+            if trade:
+                triggered.append(trade)
         return triggered
 
     def reset(self):

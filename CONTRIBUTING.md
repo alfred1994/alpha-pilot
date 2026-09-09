@@ -33,6 +33,7 @@ Keep `BROKER_MODE=paper`.
 
 ```bash
 python3 -m compileall -q web scheduler strategy execution data main.py config.py tests
+python3 scripts/run_tests.py
 python3 tests/test_web_public_dashboard.py
 python3 tests/test_agent_driver_contract.py
 python3 tests/test_auto_control.py
@@ -43,8 +44,11 @@ python3 tests/test_paper_readiness.py
 python3 tests/test_paper_bootstrap.py
 ```
 
-Some tests depend on local credentials or market-data availability. If a test cannot
-run in your environment, document the reason in the pull request.
+CI and local checks use `scripts/run_tests.py` to discover offline `test_*.py`
+scripts, each in a separate process with a timeout. Mock external providers: the
+runner rejects direct external network access even when a test catches the error.
+`test_low_position.py` and `test_phase1.py` remain manual integrations because they
+can use live market data. Run those separately only in an authorized environment.
 
 ## Pull Request Checklist
 

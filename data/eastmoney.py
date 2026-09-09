@@ -48,24 +48,27 @@ class _CloakBrowserManager:
         with self._start_lock:
             if self._loop is not None and self._thread is not None and self._thread.is_alive():
                 return
-            self._ready.clear()
+            if self._thread is None or not self._thread.is_alive():
+                self._ready.clear()
 
-            def _worker():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                self._loop = loop
-                self._request_lock = asyncio.Lock()
-                self._ready.set()
-                loop.run_forever()
+                def _worker():
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    self._loop = loop
+                    self._request_lock = asyncio.Lock()
+                    self._ready.set()
+                    loop.run_forever()
 
-            self._thread = threading.Thread(
-                target=_worker,
-                name="eastmoney-cloakbrowser",
-                daemon=True,
-            )
-            self._thread.start()
-        if not self._ready.wait(timeout=5):
-            raise RuntimeError("CloakBrowser事件循环启动超时")
+                self._thread = threading.Thread(
+                    target=_worker,
+                    name="eastmoney-cloakbrowser",
+                    daemon=True,
+                )
+                self._thread.start()
+            # 首次启动尚未发布 self._loop 时，其他调用方也必须在同一启动锁
+            # 内等待 ready；否则会把第二个 loop/request_lock 绑定到共享状态。
+            if not self._ready.wait(timeout=5):
+                raise RuntimeError("CloakBrowser事件循环启动超时")
 
     async def _close_browser(self):
         browser, self._browser = self._browser, None

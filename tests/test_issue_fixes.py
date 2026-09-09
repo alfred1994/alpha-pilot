@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -192,7 +193,13 @@ def test_issue6_stock_picker_refinement():
     print("=== 测试6: 候选规则优化（消除名义低价与无检验涨停） ===")
     from strategy.low_position_picker import _get_early_stage_candidates
     # 验证低位候选函数能正常运行且不再按名义价格绝对值排序
-    candidates = _get_early_stage_candidates()
+    quote = SimpleNamespace(
+        code="600519", price=1500.0, change_pct=1.0,
+        pe=20.0, turnover=3.0, amount=5000.0,
+    )
+    with patch("strategy.stock_picker._get_active_stocks", return_value={"600519": "贵州茅台"}), \
+            patch("data.realtime.get_realtime_batch", return_value=[quote]):
+        candidates = _get_early_stage_candidates()
     assert isinstance(candidates, dict)
     ok("_get_early_stage_candidates 执行正常")
 

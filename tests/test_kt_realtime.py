@@ -13,6 +13,7 @@ KT实时行情适配器单元测试（离线，不访问网络）
 import os
 import sys
 import urllib.request
+from datetime import datetime
 from types import SimpleNamespace
 
 import pandas as pd
@@ -21,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import data.kt_realtime as kt
 from data.kt_realtime import KTRealtimeClient, get_realtime_quotes
+from data.quote_validation import BEIJING_TZ
 from scheduler.pipeline import _collect_position_prices, _default_realtime_func
 
 
@@ -46,14 +48,17 @@ class _FakeResponse:
         return False
 
 
-def _sina_payload() -> bytes:
+def _sina_payload(date_text=None, time_text=None) -> bytes:
     """构造 sh600519 新浪快照: 价格1330, 五档盘口, 有效时间戳。"""
+    now = datetime.now(BEIJING_TZ)
+    date_text = date_text or now.strftime("%Y-%m-%d")
+    time_text = time_text or now.strftime("%H:%M:%S")
     fields = [
         "贵州茅台", "1321.00", "1321.00", "1330.00", "1335.00", "1325.00",
         "1329.90", "1330.00", "4748700", "630000000",
         "100", "1329.82", "200", "1329.50", "300", "1329.00", "400", "1328.00", "500", "1327.00",
         "4626", "1330.00", "200", "1330.50", "300", "1331.00", "400", "1332.00", "500", "1333.00",
-        "2026-09-04", "15:00:03",
+        date_text, time_text,
     ]
     line = 'var hq_str_sh600519="' + ",".join(fields) + '";\n'
     return line.encode("gbk")
@@ -120,8 +125,22 @@ def test_sina_snapshot_parse():
     assert_true(row["volume_hand"] == 4748700 / 100, "成交量换算为手")
 
 
+def test_stale_sina_snapshot_rejected():
+    print("[3] 新浪过期快照拒绝")
+    original = urllib.request.urlopen
+    urllib.request.urlopen = lambda req, timeout=None: _FakeResponse(
+        _sina_payload("2000-01-01", "09:30:00")
+    )
+    try:
+        frame = KTRealtimeClient().get_realtime_tick(["600519"])
+    finally:
+        urllib.request.urlopen = original
+    assert_true(len(frame) == 1 and not bool(frame.iloc[0]["data_valid"]), "过期时间戳不得标为有效")
+    assert_true("过期" in str(frame.iloc[0]["invalid_reason"]), "过期原因可审计")
+
+
 def test_kline_parse():
-    print("[3] 腾讯分钟K线解析")
+    print("[4] 腾讯分钟K线解析")
     original = urllib.request.urlopen
     urllib.request.urlopen = lambda req, timeout=None: _FakeResponse(_kline_payload())
     try:
@@ -136,7 +155,7 @@ def test_kline_parse():
 
 
 def test_adapter_mapping():
-    print("[4] get_realtime_quotes 适配层")
+    print("[5] get_realtime_quotes 适配层")
     columns = KTRealtimeClient.TICK_COLUMNS
     valid = {c: None for c in columns}
     valid.update({
@@ -169,7 +188,7 @@ def test_adapter_mapping():
 
 
 def test_collect_position_prices():
-    print("[5] pipeline._collect_position_prices")
+    print("[6] pipeline._collect_position_prices")
     calls = []
 
     def fake_with_code(codes):
@@ -178,7 +197,7 @@ def test_collect_position_prices():
             return [SimpleNamespace(code="600519", price=10.0)]
         return [SimpleNamespace(code="000001", price=3.5)]
 
-    prices = _collect_position_prices(["600519", "000001"], fake_with_code)
+    prices = _collect_position_prices(["600519", "000001"], fake_with_code, allow_historical=True)
     assert_true(prices == {"600519": 10.0, "000001": 3.5}, f"批量+回退补齐: {prices}")
     assert_true(calls[0] == ["600519", "000001"], "第一次是批量调用")
     assert_true(calls[1] == ["000001"], "已覆盖的代码不再逐个查询")
@@ -189,21 +208,29 @@ def test_collect_position_prices():
         calls.append(list(codes))
         return [SimpleNamespace(price=7.7, close_prev=7.0)]
 
-    prices = _collect_position_prices(["600519", "000001"], fake_legacy)
+    prices = _collect_position_prices(["600519", "000001"], fake_legacy, allow_historical=True)
     assert_true(prices == {"600519": 7.7, "000001": 7.7}, f"无.code的fake回退逐个路径: {prices}")
     assert_true(len(calls) == 3, "批量1次+逐个2次")
 
     def fake_explode(codes):
         raise RuntimeError("network down")
 
-    prices = _collect_position_prices(["600519"], fake_explode)
+    prices = _collect_position_prices(["600519"], fake_explode, allow_historical=True)
     assert_true(prices == {}, "批量异常不外泄")
 
-    assert_true(_collect_position_prices([], fake_legacy) == {}, "空持仓直接返回")
+    assert_true(_collect_position_prices([], fake_legacy, allow_historical=True) == {}, "空持仓直接返回")
+
+    stale_quote = lambda codes: [SimpleNamespace(
+        code=codes[0], price=7.7, timestamp="2000-01-01 09:30:00",
+    )]
+    assert_true(
+        _collect_position_prices(["600519"], stale_quote, allow_historical=False) == {},
+        "自动执行收集器拒绝过期行情",
+    )
 
 
 def test_default_realtime_func_fallback():
-    print("[6] _default_realtime_func 双源回退")
+    print("[7] _default_realtime_func 双源回退")
     import data.realtime as rt_module
 
     original_kt = kt.get_realtime_quotes
@@ -241,6 +268,7 @@ def main():
     print("=" * 60)
     test_normalize_security()
     test_sina_snapshot_parse()
+    test_stale_sina_snapshot_rejected()
     test_kline_parse()
     test_adapter_mapping()
     test_collect_position_prices()

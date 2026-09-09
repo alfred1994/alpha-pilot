@@ -58,9 +58,16 @@ class BrokerAdapter(ABC):
         """卖出"""
 
     @abstractmethod
+    def evaluate_stop_conditions(self, prices: Dict[str, float],
+                                 atr_map: Dict[str, float] = None,
+                                 market_context: Dict[str, dict] = None) -> List[dict]:
+        """纯评估止损止盈，不得成交或修改账户状态。"""
+
+    @abstractmethod
     def check_stop_conditions(self, prices: Dict[str, float],
                               atr_map: Dict[str, float] = None,
-                              trade_date: str = None) -> List[dict]:
+                              trade_date: str = None,
+                              market_context: Dict[str, dict] = None) -> List[dict]:
         """检查并执行止损止盈"""
 
 
@@ -128,9 +135,18 @@ class PaperBrokerAdapter(BrokerAdapter):
 
     def check_stop_conditions(self, prices: Dict[str, float],
                               atr_map: Dict[str, float] = None,
-                              trade_date: str = None) -> List[dict]:
+                              trade_date: str = None,
+                              market_context: Dict[str, dict] = None) -> List[dict]:
         return self.account.check_stop_conditions(
             prices, atr_map=atr_map, trade_date=trade_date,
+            market_context=market_context,
+        )
+
+    def evaluate_stop_conditions(self, prices: Dict[str, float],
+                                 atr_map: Dict[str, float] = None,
+                                 market_context: Dict[str, dict] = None) -> List[dict]:
+        return self.account.evaluate_stop_conditions(
+            prices, atr_map=atr_map, market_context=market_context,
         )
 
 
@@ -175,9 +191,15 @@ class RealBrokerAdapter(BrokerAdapter):
              market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
         raise NotImplementedError
 
+    def evaluate_stop_conditions(self, prices: Dict[str, float],
+                                 atr_map: Dict[str, float] = None,
+                                 market_context: Dict[str, dict] = None) -> List[dict]:
+        raise NotImplementedError
+
     def check_stop_conditions(self, prices: Dict[str, float],
                               atr_map: Dict[str, float] = None,
-                              trade_date: str = None) -> List[dict]:
+                              trade_date: str = None,
+                              market_context: Dict[str, dict] = None) -> List[dict]:
         raise NotImplementedError
 
 

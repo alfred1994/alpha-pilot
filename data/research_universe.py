@@ -178,22 +178,34 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
 def _sync_one(item: Dict, start_date: str, end_date: str) -> Dict:
     code = str(item.get("code") or "")
     try:
-        from data.history import get_daily
+        from data.history import _assess_daily_coverage, get_daily
         df = get_daily(
             code, start_date=start_date, end_date=end_date,
             require_full_range=True,
         )
         if df is None or df.empty:
             return {"code": code, "status": "empty", "rows": 0}
-        stale = int(getattr(df, "attrs", {}).get("stale_cache_days") or 0)
-        missing_start = int(getattr(df, "attrs", {}).get("missing_start_days") or 0)
+        # 不能只相信缓存遗留属性：任何源返回的数据都按本次请求重新核验。
+        df = _assess_daily_coverage(df, start_date, end_date)
+        if df is None:
+            return {"code": code, "status": "incomplete", "rows": 0,
+                    "error": "invalid_daily_coverage"}
+        attrs = getattr(df, "attrs", {})
+        coverage_status = str(attrs.get("coverage_status") or "incomplete")
+        cache_stale = int(attrs.get("stale_cache_days") or 0)
+        stale = int(attrs.get("coverage_end_gap_days") or cache_stale or 0)
+        missing_start = int(attrs.get("missing_start_days") or 0)
+        if coverage_status == "ok" and cache_stale:
+            coverage_status = "stale"
         return {
             "code": code,
-            "status": "incomplete" if missing_start > 3 else ("stale" if stale else "ok"),
+            "status": coverage_status,
             "rows": int(len(df)),
             "latest": str(df["date"].max()) if "date" in df.columns else "",
             "stale_days": stale,
             "missing_start_days": missing_start,
+            "max_internal_gap_days": int(attrs.get("coverage_max_internal_gap_days") or 0),
+            "observed_density": float(attrs.get("coverage_observed_density") or 0),
         }
     except Exception as exc:
         return {"code": code, "status": "error", "error": str(exc)[:160], "rows": 0}
@@ -327,14 +339,31 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
             if str(code) in {str(item.get("code") or "") for item in codes}
         ))
         by_code = {str(item.get("code") or ""): item for item in codes}
-        batch = [by_code[code] for code in retry_codes if code in by_code][:batch_size]
+        # 重试不能占满批次：保留常规游标配额，避免持续失败的少数股票让
+        # 研究池其他股票永久得不到同步。单条批次则在重试与常规轮转间交替。
+        if batch_size == 1 and retry_codes:
+            retry_slots = 1 if bool(payload.get("retry_next", True)) else 0
+        else:
+            retry_slots = min(len(retry_codes), max(1, batch_size // 2)) if retry_codes else 0
+        retry_set = set(retry_codes)
+        batch = [by_code[code] for code in retry_codes if code in by_code][:retry_slots]
         selected_retry_codes = {str(item.get("code") or "") for item in batch}
         selected_from_cursor = 0
         while len(batch) < batch_size and selected_from_cursor < len(codes):
             item = codes[(cursor + selected_from_cursor) % len(codes)]
             selected_from_cursor += 1
-            if str(item.get("code") or "") not in {str(row.get("code") or "") for row in batch}:
+            item_code = str(item.get("code") or "")
+            if item_code not in retry_set and item_code not in selected_retry_codes:
                 batch.append(item)
+        # 若整个研究池都在重试队列中，不能空跑；此时才用其余重试项补足。
+        # 正常股票存在时，上面的游标扫描已经优先保留了它们的名额。
+        if len(batch) < batch_size:
+            for code in retry_codes:
+                if len(batch) >= batch_size:
+                    break
+                if code not in selected_retry_codes and code in by_code:
+                    batch.append(by_code[code])
+                    selected_retry_codes.add(code)
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=history_days)).strftime("%Y-%m-%d")
         results = []
@@ -344,6 +373,11 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
             _heartbeat_lock(lock_path)
 
         payload["cursor"] = (cursor + selected_from_cursor) % len(codes)
+        if batch_size == 1 and retry_codes:
+            # 本轮跑重试，下轮必跑常规；本轮跑常规，下轮再给重试一次机会。
+            payload["retry_next"] = not bool(selected_retry_codes)
+        else:
+            payload["retry_next"] = True
         # 不能因单次预算不足而丢弃尚未轮到的失败标的；已尝试且成功的标的
         # 从队列移除，失败的标的回到队尾，防止永久优先级饥饿。
         failed_codes = [str(row["code"]) for row in results if row.get("status") != "ok"]

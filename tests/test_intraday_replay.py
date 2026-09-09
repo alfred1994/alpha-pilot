@@ -84,6 +84,7 @@ def main():
             drawdown_controller=DrawdownController(state_file=drawdown_path),
             system_risk_controller=SystemRiskController(state_file=system_risk_path),
             update_memory=False,
+            allow_historical_plan=True,
         )
 
         assert_true(not result.errors, f"执行无错误: {result.errors}")
@@ -115,6 +116,7 @@ def main():
             drawdown_controller=DrawdownController(state_file=drawdown_path),
             system_risk_controller=SystemRiskController(state_file=system_risk_path),
             update_memory=False,
+            allow_historical_plan=True,
         )
         assert_true(not duplicate.executed_orders, "重复TradePlan不会再次生成成交")
         assert_true(any("已被执行" in error for error in duplicate.errors), "重复TradePlan返回幂等阻断信息")
@@ -144,6 +146,7 @@ def main():
             drawdown_controller=DrawdownController(state_file=drawdown_path),
             system_risk_controller=SystemRiskController(state_file=system_risk_path),
             update_memory=False,
+            allow_historical_plan=True,
         )
         assert_true(not same_day_sell.executed_orders, "同日SELL计划不产生模拟成交")
         assert_true(same_day_sell.order_audit[0]["status"] == "blocked", "同日SELL审计记录阻断状态")
@@ -177,6 +180,7 @@ def main():
             drawdown_controller=DrawdownController(state_file=drawdown_path),
             system_risk_controller=SystemRiskController(state_file=system_risk_path),
             update_memory=False,
+            allow_historical_plan=True,
         )
         assert_true(blocked.order_audit[0]["status"] == "blocked", "订单审计记录阻断状态")
         assert_true(blocked.order_audit[0]["reason"] == "超过硬限价", "订单审计记录阻断原因")

@@ -39,31 +39,7 @@ jobs:
           python -m pip check
 
       - name: Compile project
-        run: python -m compileall -q web scheduler strategy execution data portfolio main.py config.py tests
+        run: python -m compileall -q web scheduler strategy execution data portfolio realtime risk review signals scripts main.py config.py tests
 
       - name: Run deterministic regression suite
-        run: |
-          python tests/test_paper_account_integrity.py
-          python tests/test_backtest_integrity.py
-          python tests/test_technical_strategy_library.py
-          python tests/test_llm_trader_integrity.py
-          python tests/test_account_pnl_consistency.py
-          python tests/test_intraday_replay.py
-          python tests/test_web_dashboard_data.py
-          python tests/test_web_public_dashboard.py
-          python tests/test_agent_driver_contract.py
-          python tests/test_timeout_budgets.py
-          python tests/test_runtime_recovery.py
-          python tests/test_history_cache_freshness.py
-          python tests/test_counterfactual.py
-          python tests/test_research_universe.py
-          python tests/test_pooled_ml.py
-          python tests/test_regime_hysteresis.py
-          python tests/test_intraday_watch.py
-          python tests/test_layered_memory.py
-          python tests/test_auto_control.py
-          python tests/test_auto_watchdog.py
-          python tests/test_auto_doctor.py
-          python tests/test_auto_trader.py
-          python tests/test_paper_readiness.py
-          python tests/test_paper_bootstrap.py
+        run: python scripts/run_tests.py
