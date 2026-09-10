@@ -115,6 +115,87 @@ class PatternTests(unittest.TestCase):
         a.set_params({"period": 10})
         self.assertEqual(get_strategy("rps_breakout").params["period"], 60)
 
+    def turtle_breakout_frame(self):
+        # 20日横盘后放量阳线突破，成交额 > 1亿
+        closes = [10.0] * 21 + [11.2]
+        volumes = [2_000_000] * 21 + [12_000_000]
+        df = bars(closes, volumes)
+        df["amount"] = df["close"] * df["volume"]
+        # 最后一日显式写入超额成交额，确保过1亿门槛
+        df.loc[len(df) - 1, "amount"] = 150_000_000
+        # 让最后一天明显为阳线
+        df.loc[len(df) - 1, "open"] = 10.05
+        df.loc[len(df) - 1, "high"] = 11.3
+        df.loc[len(df) - 1, "low"] = 10.0
+        df.loc[len(df) - 1, "close"] = 11.2
+        return df
+
+    def test_turtle_entry_breakout(self):
+        signal = get_strategy("turtle_trade").generate_signals(
+            "x", self.turtle_breakout_frame(), total_assets=1_000_000,
+        )
+        self.assertEqual(signal.action, "BUY")
+        self.assertTrue(signal.metadata["conditions"]["breakout"])
+        self.assertTrue(signal.metadata["conditions"]["amount_filter"])
+        self.assertGreater(signal.metadata["atr"], 0)
+        self.assertGreater(signal.metadata["unit_shares"], 0)
+
+    def test_turtle_amount_filter_blocks(self):
+        df = self.turtle_breakout_frame()
+        df["amount"] = df["close"] * df["volume"] * 0.001  # 远低于1亿
+        signal = get_strategy("turtle_trade").generate_signals("x", df)
+        self.assertEqual(signal.action, "HOLD")
+        self.assertFalse(signal.metadata["conditions"]["amount_filter"])
+
+    def test_turtle_exit_below_window_low(self):
+        closes = [12.0] * 25
+        closes[-1] = 8.0
+        volumes = [3_000_000] * 25
+        df = bars(closes, volumes)
+        df["amount"] = df["close"] * df["volume"] * 1_000
+        signal = get_strategy("turtle_trade").generate_signals("x", df)
+        self.assertEqual(signal.action, "SELL")
+        self.assertTrue(signal.metadata["conditions"]["exit_break"])
+
+    def test_uptrend_limit_down_reversal(self):
+        n = 70
+        closes = list(np.linspace(10, 16, n - 2))
+        closes.append(closes[-1] * 0.905)  # 跌停
+        closes.append(closes[-2] * 1.02)   # 反包阳线回到跌停前上方
+        volumes = [1_000_000] * n
+        df = bars(closes, volumes)
+        # 跌停日：低开收在近跌停
+        df.loc[n - 2, ["open", "high", "low", "close"]] = [15.0, 15.1, 13.9, 13.95]
+        # 反包日：低开高走吞没
+        df.loc[n - 1, ["open", "high", "low", "close"]] = [13.8, 15.6, 13.7, 15.5]
+        df.loc[n - 1, "volume"] = 1_500_000
+        signal = get_strategy("uptrend_limit_down").generate_signals("x", df)
+        self.assertEqual(signal.action, "BUY")
+        self.assertTrue(signal.metadata["conditions"]["limit_down_shakeout"])
+        self.assertTrue(signal.metadata["conditions"]["bullish_engulfing"])
+
+    def test_uptrend_limit_down_requires_trend(self):
+        n = 70
+        closes = list(np.linspace(16, 10, n - 2))
+        closes.append(closes[-1] * 0.905)
+        closes.append(closes[-2] * 1.02)
+        df = bars(closes, [1_000_000] * n)
+        df.loc[n - 2, ["open", "high", "low", "close"]] = [11.0, 11.1, 10.0, 10.05]
+        df.loc[n - 1, ["open", "high", "low", "close"]] = [10.0, 11.3, 9.95, 11.2]
+        signal = get_strategy("uptrend_limit_down").generate_signals("x", df)
+        self.assertEqual(signal.action, "HOLD")
+        self.assertFalse(signal.metadata["conditions"]["prior_uptrend"])
+
+    def test_registry_contains_full_sequoia_set(self):
+        from strategy.strategies import STRATEGY_REGISTRY
+        for name in ("high_tight_flag", "rps_breakout", "turtle_trade", "uptrend_limit_down"):
+            self.assertIn(name, STRATEGY_REGISTRY)
+
+    def test_technical_screen_includes_new_patterns(self):
+        from strategy.technical_screen import STRATEGIES
+        self.assertIn("turtle_trade", STRATEGIES)
+        self.assertIn("uptrend_limit_down", STRATEGIES)
+
 
 if __name__ == "__main__":
     unittest.main()

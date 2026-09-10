@@ -5,6 +5,7 @@ LLM 深度复盘分析
 import json
 import os
 import logging
+import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
@@ -225,10 +226,115 @@ def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None
 
     if result:
         logger.info("LLM复盘分析完成")
-        return result
+        return clean_llm_review_text(result)
     else:
         logger.warning("LLM分析失败，返回基础摘要")
         return _generate_fallback_summary(review_data)
+
+
+def clean_llm_review_text(text: str) -> str:
+    """清洗LLM复盘开场白与客套话，保留正文结构。"""
+    if not text:
+        return ""
+    cleaned = str(text).strip()
+    # 去掉 think/code fence 包装
+    cleaned = re.sub(r"```(?:json|markdown|text)?\s*", "", cleaned)
+    cleaned = cleaned.replace("```", "").strip()
+    # 逐段剥离对话式开场白
+    politeness_prefixes = (
+        r"^(好的[，,。！!]?\s*)",
+        r"^(没问题[，,。！!]?\s*)",
+        r"^(当然[可以]?(可以)?[，,。！!]?\s*)",
+        r"^(基于您提供的[^\n]{0,80}?[，,。]\s*)",
+        r"^(根据您提供的[^\n]{0,80}?[，,。]\s*)",
+        r"^(以下是(?:基于[^\n]{0,40}的)?)",
+        r"^(这是(?:基于(?:您)?[^\n]{0,60}的)?[^\n]{0,20}?(?:分析|报告|内容)[。！!]\s*)",
+        r"^(我将(?:为您)?[^\n]{0,20}?[，,]\s*)",
+        r"^(作为(?:资深)?[^\n]{0,20}?[，,]\s*)",
+        r"^(尊敬的用户[，,]\s*)",
+        r"^(您好[，,。！!]?\s*)",
+        r"^(希望以下分析[^\n]{0,30}[。！!]\s*)",
+        r"^(如果您[^\n]{0,40}[。！!]\s*)",
+        r"^(如您需要[^\n]{0,40}[。！!]\s*)",
+    )
+    for _ in range(5):
+        changed = False
+        for pattern in politeness_prefixes:
+            new_text = re.sub(pattern, "", cleaned, count=1, flags=re.IGNORECASE)
+            if new_text != cleaned:
+                cleaned = new_text.lstrip()
+                changed = True
+        if not changed:
+            break
+    # 整行客套开场白：首行既无小标题也无列表标记时，若匹配客套句式则整行丢弃
+    lines = cleaned.splitlines()
+    if lines:
+        first = lines[0].strip()
+        is_content_line = first.startswith(("#", "###", "-", "*", "|", "1.", "1、", "一、", "【"))
+        looks_polite = bool(re.search(
+            r"(基于您提供|根据您提供|专业复盘分析|以下是|复盘如下|分析如下|希望(?:以上|本)|如有(?:其他|更多)问题|随时(?:向我)?(?:提问|咨询))",
+            first,
+        ))
+        if (not is_content_line) and looks_polite and len(lines) > 1:
+            cleaned = "\n".join(lines[1:]).lstrip()
+    # 去掉尾部客套收尾
+    cleaned = re.sub(
+        r"\n+(?:希望(?:以上|本)分析[^\n]{0,60}[。！!]\s*)$",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+    return cleaned
+
+
+def _normalize_lesson_key(content: str) -> str:
+    """教训去重键：压缩空白，保留核心语义。"""
+    text = re.sub(r"\s+", " ", str(content or "")).strip()
+    # 去掉动态数字/日期，避免同类告警因数值微差被当作不同教训
+    text = re.sub(r"\d+(?:\.\d+)?%?", "#", text)
+    text = re.sub(r"\d+", "#", text)
+    return text[:200]
+
+
+def _has_recent_duplicate_lesson(memory, content: str, days: int = 3) -> bool:
+    """检查近N天是否已存在语义相同的教训。"""
+    try:
+        db = memory._get_db()
+        rows = db.conn.execute(
+            """
+            SELECT content FROM lessons
+            WHERE date >= date('now', ?)
+            ORDER BY id DESC LIMIT 200
+            """,
+            (f"-{int(days)} days",),
+        ).fetchall()
+        target = _normalize_lesson_key(content)
+        if not target:
+            return True
+        for row in rows:
+            existing = row["content"] if isinstance(row, dict) else row[0]
+            if _normalize_lesson_key(existing) == target:
+                return True
+    except Exception as exc:
+        logger.debug(f"教训去重检查失败(放行入库): {exc}")
+    return False
+
+
+def _save_lesson_dedup(memory, category: str, content: str, importance: int = 3,
+                       related_trades: list = None) -> bool:
+    """带近N日去重的教训入库；重复则跳过。"""
+    if not content:
+        return False
+    if _has_recent_duplicate_lesson(memory, content):
+        logger.info(f"教训去重跳过: {content[:60]}...")
+        return False
+    memory.save_lesson(
+        category=category,
+        content=content,
+        importance=importance,
+        related_trades=related_trades,
+    )
+    return True
 
 
 def _generate_fallback_summary(review_data: dict) -> str:
@@ -342,13 +448,14 @@ def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
                 lesson_text = item.get("lesson", "")
                 category = item.get("category", "general")
                 if lesson_text:
-                    memory.save_lesson(
+                    if _save_lesson_dedup(
+                        memory,
                         category=category,
                         content=lesson_text,
                         importance=4 if category in ("risk", "exit") else 3,
-                    )
-                    saved_count += 1
-                    logger.info(f"LLM教训保存: {lesson_text[:50]}...")
+                    ):
+                        saved_count += 1
+                        logger.info(f"LLM教训保存: {lesson_text[:50]}...")
         else:
             # 规则降级提取
             saved_count = _extract_lessons_by_rules(
@@ -361,18 +468,19 @@ def extract_and_save_lessons(review_data: dict, llm_analysis: str = None,
         if adaptive_data and adaptive_data.get("status") == "ok":
             for s in adaptive_data.get("suggestions", [])[:3]:
                 if "⚠️" in s or "胜率" in s:
-                    memory.save_lesson(category="general", content=s, importance=3)
-                    saved_count += 1
+                    if _save_lesson_dedup(memory, category="general", content=s, importance=3):
+                        saved_count += 1
 
         # LLM分析摘要
         if llm_analysis:
-            summary = llm_analysis[:200].replace("\n", " ")
-            memory.save_lesson(
+            summary = clean_llm_review_text(llm_analysis)[:200].replace("\n", " ")
+            if _save_lesson_dedup(
+                memory,
                 category="general",
                 content=f"LLM复盘摘要: {summary}",
                 importance=2,
-            )
-            saved_count += 1
+            ):
+                saved_count += 1
 
         logger.info(f"从复盘中提取并保存了{saved_count}条教训")
     except Exception as e:
@@ -418,13 +526,14 @@ def _extract_order_audit_lessons(memory, order_audit: list) -> int:
         )
         if score or target_weight:
             content += f"；score={score} target_weight={target_weight}"
-        memory.save_lesson(
+        if _save_lesson_dedup(
+            memory,
             category=category,
             content=content,
             importance=4 if status == "failed" else 3,
             related_trades=[code] if code else None,
-        )
-        saved += 1
+        ):
+            saved += 1
     return saved
 
 

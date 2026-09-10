@@ -14,7 +14,12 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-STRATEGIES = ("high_tight_flag", "rps_breakout")
+STRATEGIES = (
+    "high_tight_flag",
+    "rps_breakout",
+    "uptrend_limit_down",
+    "turtle_trade",
+)
 
 
 def completed_daily_cutoff(now=None):

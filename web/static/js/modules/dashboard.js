@@ -247,13 +247,42 @@ export class DashboardTab {
         if (!dom || !window.echarts) return;
         if (!this.chart) this.chart = window.echarts.init(dom);
         const values = performance.map(item => Number(item.total_assets || 0));
+        const firstAssets = values.find(v => v > 0) || 0;
+        const hasBenchmark = performance.some(item => Number(item.benchmark_pnl_pct || 0) !== 0);
+        const benchmarkValues = hasBenchmark && firstAssets > 0
+            ? performance.map(item => firstAssets * (1 + Number(item.benchmark_pnl_pct || 0)))
+            : [];
+        const series = [
+            {
+                name: '账户净值',
+                type: 'line',
+                data: values,
+                smooth: true,
+                symbol: 'none',
+                lineStyle: { color: '#c66b3d', width: 3 },
+                areaStyle: { color: 'rgba(198,107,61,.12)' },
+            },
+        ];
+        if (benchmarkValues.length) {
+            series.push({
+                name: '沪深300基准',
+                type: 'line',
+                data: benchmarkValues,
+                smooth: true,
+                symbol: 'none',
+                lineStyle: { color: '#7a8f6f', width: 2, type: 'dashed' },
+            });
+        }
         this.chart.setOption({
             backgroundColor: 'transparent',
+            legend: hasBenchmark
+                ? { data: ['账户净值', '沪深300基准'], textStyle: { color: '#6f725e', fontSize: 9 }, top: 0, right: 0 }
+                : undefined,
             tooltip: { trigger: 'axis', backgroundColor: '#344234', borderWidth: 0, textStyle: { color: '#e8dcc7' } },
-            grid: { left: 10, right: 16, top: 28, bottom: 18, containLabel: true },
+            grid: { left: 10, right: 16, top: hasBenchmark ? 36 : 28, bottom: 18, containLabel: true },
             xAxis: { type: 'category', data: performance.map(item => item.date?.slice(5)), axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, axisLabel: { color: '#6f725e', fontSize: 9 } },
             yAxis: { type: 'value', scale: true, axisLabel: { color: '#6f725e', fontSize: 9, formatter: value => `${(value / 10000).toFixed(0)}万` }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.1)' } } },
-            series: [{ type: 'line', data: values, smooth: true, symbol: 'none', lineStyle: { color: '#c66b3d', width: 3 }, areaStyle: { color: 'rgba(198,107,61,.12)' } }],
+            series,
         });
         setTimeout(() => this.chart?.resize(), 50);
     }

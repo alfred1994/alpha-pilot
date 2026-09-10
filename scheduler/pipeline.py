@@ -175,6 +175,46 @@ class PipelineResult:
         return sum(1 for d in self.decisions if d.action == "SELL")
 
 
+def _estimate_total_assets() -> float:
+    """估算账户总资产，用于计划阶段的一手可买性预算校验。"""
+    try:
+        from execution.paper_account import PaperAccount
+        return float(PaperAccount().total_assets() or 0.0)
+    except Exception:
+        return 0.0
+
+
+def min_lot_affordable(
+    price: float,
+    target_weight: float,
+    total_assets: float = None,
+    position_scale: float = 1.0,
+    trade_unit: int = 100,
+) -> bool:
+    """判断按目标权重分配的金额是否至少买得起1手。
+
+    价格、资产或权重无效时返回 True，交由执行层最终裁决，
+    避免在数据缺失时误杀可交易机会。
+    """
+    try:
+        price = float(price or 0)
+        target_weight = float(target_weight or 0)
+        trade_unit = max(1, int(trade_unit or 100))
+        position_scale = float(position_scale or 0)
+    except (TypeError, ValueError):
+        return True
+    if price <= 0 or target_weight <= 0:
+        return True
+    assets = _estimate_total_assets() if total_assets is None else float(total_assets or 0)
+    if assets <= 0:
+        return True
+    if position_scale <= 0:
+        position_scale = 1.0
+    budget = assets * target_weight * position_scale
+    min_lot_cost = price * trade_unit
+    return budget + 1e-6 >= min_lot_cost
+
+
 # ═══════════════════════════════════════════════════════════════════
 # 慢链路：盘前数据预热
 # ═══════════════════════════════════════════════════════════════════
@@ -728,6 +768,19 @@ def fast_scan(
         if llm_action not in ("BUY", "SELL"):
             plan.hold_reasons[s["code"]] = f"HOLD_NO_BUY_DECISION({llm_reason[:50]})"
             continue
+        # 前置一手可买性校验：高价股在缩仓/小权重下买不满1手时直接跳过，
+        # 避免 LLM 深度研判后在执行层被“不足100单位”白白阻断。
+        if llm_action == "BUY":
+            _plan_price = float(s.get("latest_price", 0) or 0)
+            if _plan_price > 0 and not min_lot_affordable(_plan_price, weight, trade_unit=100):
+                plan.hold_reasons[s["code"]] = (
+                    f"HOLD_MIN_LOT(price={_plan_price:.2f}, weight={weight:.3f})"
+                )
+                logger.info(
+                    f"[快链路] 一手预算不足跳过: {s['code']} {s.get('name','')} "
+                    f"价格={_plan_price:.2f} 目标仓位={weight:.3f}"
+                )
+                continue
         plan.orders.append(TradeOrder(
             code=s["code"],
             name=s["name"],
@@ -801,6 +854,14 @@ def fast_scan(
                     if _cb_buy_price > 0 and _cb_current_price > 0:
                         _cb_exit = cb_should_sell(_cb_code, _cb_current_data, _cb_buy_price)
                         if _cb_exit.get("sell"):
+                            # 止损触发后登记当日冷却，防止15分钟内反手接盘被再次洗劫
+                            _exit_reason = str(_cb_exit.get("reason", "") or "")
+                            if "止损" in _exit_reason:
+                                try:
+                                    from strategy.cb_t0_strategy import mark_stopped_out
+                                    mark_stopped_out(_cb_code, trade_date=plan.date)
+                                except Exception as _mark_err:
+                                    logger.warning(f"[快链路-可转债] 止损冷却登记失败 {_cb_code}: {_mark_err}")
                             plan.orders.append(TradeOrder(
                                 code=_cb_code,
                                 name=_cb_info.get("name", _cb_code),
@@ -829,6 +890,16 @@ def fast_scan(
                     # 可转债由专用退出规则管理，跳过股票LLM持仓卖出评估
                     if is_cb_code(_pos_code) or _pos_info.get("allow_t0") or _pos_info.get("trade_unit") == 10:
                         continue
+
+                    # T+1锁定：当日买入的普通A股不送LLM做卖出评估，直接记录观察
+                    try:
+                        from strategy.llm_trader import is_t1_locked
+                        if is_t1_locked(_pos_info, today=scan_date):
+                            plan.hold_reasons[_pos_code] = "HOLD_T1_LOCKED(当日买入不可卖)"
+                            logger.info(f"[快链路-卖出] T+1锁定跳过LLM: {_pos_code}")
+                            continue
+                    except Exception:
+                        pass
 
                     try:
                         from strategy.decision import compute_dimension_scores, DimensionScore as _DS2
@@ -931,6 +1002,15 @@ def fast_scan(
                         continue
                     decision = should_buy(cb, max_single_weight=_directive_max_weight)
                     cb_target_weight = min(float(decision.get("position_pct", 0)), _directive_max_weight, 0.08)
+                    cb_price = float(cb.get("cb_price", 0) or 0)
+                    if cb_price > 0 and not min_lot_affordable(
+                        cb_price, cb_target_weight, trade_unit=10
+                    ):
+                        logger.info(
+                            f"[快链路-可转债] 一手预算不足跳过: {cb_code} "
+                            f"价格={cb_price:.2f} 目标仓位={cb_target_weight:.3f}"
+                        )
+                        continue
                     plan.orders.append(TradeOrder(
                         code=cb_code,
                         name=cb.get("cb_name", cb_code),
@@ -1557,8 +1637,13 @@ def execute_trade_plan(
             # 计算可买数量：普通A股100股一手，可转债等T+0品种10张一手。
             shares = int(buy_amount / current_price / trade_unit) * trade_unit
             if shares < trade_unit:
+                min_lot_cost = current_price * trade_unit
+                reason = (
+                    f"不足{trade_unit}单位: 可买{buy_amount:.0f}元 < "
+                    f"1手成本{min_lot_cost:.0f}元"
+                )
                 _audit_order(
-                    result, order, "blocked", f"不足{trade_unit}单位",
+                    result, order, "blocked", reason,
                     price=current_price,
                     buy_amount=round(buy_amount, 2),
                     shares=shares,

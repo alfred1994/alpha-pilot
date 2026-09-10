@@ -208,7 +208,22 @@ def clean_reasoning(text: str) -> str:
     # 移除提示词中关于格式要求的引用
     text = re.sub(r'严格按照.*?格式.*?', '', text)
     text = re.sub(r'返回\s*JSON.*?', '', text)
-    return text.strip()
+    return _strip_json_fragments(text.strip())
+
+
+def _strip_json_fragments(text: str) -> str:
+    """移除残缺 JSON 片段，避免成交原因字段残留原始响应碎片。"""
+    if not text:
+        return ""
+    cleaned = str(text)
+    # 完整 JSON 对象/数组
+    cleaned = re.sub(r'\{[^{}]*\}', '', cleaned)
+    cleaned = re.sub(r'\[[^\[\]]*\]', '', cleaned)
+    # 未闭合的 JSON 起始片段，如 {"action": "HOLD", ...
+    cleaned = re.sub(r'\{.*$', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'\[.*$', '', cleaned, flags=re.DOTALL)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip(" ，,;；")
+    return cleaned or "结构化响应解析失败"
 
 
 def _extract_from_dict(data: dict) -> tuple:
@@ -278,7 +293,7 @@ def _parse_decision_response(raw: Optional[str]) -> tuple:
 
     # 4. 安全兜底：交易动作必须来自结构化响应；若无法解析合法JSON，一律保持安全观望(HOLD)，严禁猜单
     try:
-        clean_text = clean_reasoning(raw)
+        clean_text = _strip_json_fragments(clean_reasoning(raw))
         reason_summary = clean_text[:200]
         if len(clean_text) > 200:
             reason_summary += "..."
@@ -355,11 +370,15 @@ def _build_decision_prompt(
     # === P1-5: 已持仓股的卖出分析 ===
     has_position = current_positions and code in current_positions
     sell_analysis = ""
+    t1_locked = False
     if has_position:
         pos = current_positions[code]
         buy_price = pos.get('buy_price', 0)
         shares = pos.get('shares', 0)
-        buy_date = pos.get('buy_date', '')
+        buy_date = str(pos.get('buy_date', '') or '')
+        allow_t0 = bool(pos.get('allow_t0', False))
+        today = datetime.now().strftime("%Y-%m-%d")
+        t1_locked = (not allow_t0) and bool(buy_date) and buy_date >= today
         # 尝试从dimensions中获取当前价格估算盈亏
         pnl_text = ""
         if buy_price > 0:
@@ -372,6 +391,11 @@ def _build_decision_prompt(
 【⚠ 持仓卖出分析 - {name}({code})】
 当前持有: {shares}股 {pnl_text}
 ** 请重点分析该持仓股是否应该卖出（止盈/减仓/清仓）**
+"""
+        if t1_locked:
+            sell_analysis += """
+【T+1硬约束】该持仓为今日买入的普通A股，今天不可卖出。
+请只做日内观察，返回 HOLD，严禁生成 SELL 信号。
 """
 
     # 华泰诊断信息
@@ -467,6 +491,19 @@ def _build_decision_prompt(
         pass
 
     return prompt
+
+
+def is_t1_locked(position: dict, today: str = None) -> bool:
+    """判断普通A股持仓是否因T+1锁定而当日不可卖。"""
+    if not position:
+        return False
+    if bool(position.get("allow_t0", False)):
+        return False
+    buy_date = str(position.get("buy_date", "") or "")
+    if not buy_date:
+        return False
+    effective_today = today or datetime.now().strftime("%Y-%m-%d")
+    return buy_date >= effective_today
 
 
 def make_decision(
@@ -584,6 +621,13 @@ def make_decision(
     else:
         raw = _call_llm(prompt, retries=llm_retries, http_timeout=llm_timeout)
     action, confidence, reasoning = _parse_decision_response(raw)
+
+    # T+1硬约束：即使模型违规输出SELL，也强制改写为HOLD
+    if action == "SELL" and is_t1_locked((current_positions or {}).get(code)):
+        logger.info(f"T+1锁定过滤: {code} 当日买入不可卖，SELL改写为HOLD")
+        action = "HOLD"
+        confidence = 0.0
+        reasoning = f"T+1限制: 当日买入普通A股不可卖出。{reasoning}"[:200]
 
     # 构建决策对象（composite已提前计算）
     decision = TradeDecision(

@@ -322,6 +322,16 @@ def check_stops_once() -> dict:
     from strategy.cb_t0_strategy import get_cb_exit_market_context
     market_context = get_cb_exit_market_context(list(positions))
     trades = broker.check_stop_conditions(prices, market_context=market_context)
+    # 闭环止损命中可转债时同步登记日内冷却，防止后续扫描立刻反手接盘。
+    try:
+        from strategy.cb_t0_strategy import is_cb_code, mark_stopped_out
+        for trade in trades or []:
+            code = str((trade or {}).get("code", "") or "").strip()
+            reason = str((trade or {}).get("reason", "") or "")
+            if code and is_cb_code(code) and "止损" in reason:
+                mark_stopped_out(code)
+    except Exception as mark_err:
+        logger.warning(f"可转债止损冷却登记失败(非致命): {mark_err}")
     return {"checked": len(positions), "sold": len(trades), "trades": trades}
 
 

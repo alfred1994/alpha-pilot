@@ -36,6 +36,10 @@ logger = logging.getLogger("strategy.cb_t0")
 _EXIT_CONTEXT_CACHE = {"fetched_at": 0.0, "by_code": {}, "refreshing": False}
 _EXIT_CONTEXT_LOCK = threading.Lock()
 
+# 日内止损冷却：同一交易日止损后禁止再次开仓，避免震荡洗盘连续接刀。
+_STOP_OUT_LOCK = threading.Lock()
+_STOPPED_OUT_TODAY = {"date": "", "codes": set()}
+
 
 # ── 评分权重 ─────────────────────────────────────────────────
 WEIGHTS = {
@@ -185,6 +189,9 @@ def scan_and_score() -> List[dict]:
     # 预筛选: 排除明显不合格的
     candidates = []
     for cb in cbs:
+        # 当日已止损冷却中的品种直接跳过
+        if is_stop_out_blocked(str(cb.get("cb_code", "") or "").strip()):
+            continue
         # 排除溢价>30%
         if cb.get("premium_rate", 100) > CB_MAX_PREMIUM * 100:
             continue
@@ -218,6 +225,43 @@ def is_cb_code(code: str) -> bool:
     ))
 
 
+def _ensure_stop_out_date(trade_date: str = None) -> str:
+    """跨日清空止损冷却表；返回当前冷却日。"""
+    today = trade_date or datetime.now().strftime("%Y-%m-%d")
+    with _STOP_OUT_LOCK:
+        if _STOPPED_OUT_TODAY["date"] != today:
+            _STOPPED_OUT_TODAY["date"] = today
+            _STOPPED_OUT_TODAY["codes"] = set()
+    return today
+
+
+def mark_stopped_out(code: str, trade_date: str = None) -> None:
+    """记录该转债当日已触发止损，禁止当日再次开仓。"""
+    c = str(code or "").strip()
+    if not c:
+        return
+    _ensure_stop_out_date(trade_date)
+    with _STOP_OUT_LOCK:
+        _STOPPED_OUT_TODAY["codes"].add(c)
+    logger.warning("可转债日内止损冷却生效: %s 当日禁止再次开仓", c)
+
+
+def is_stop_out_blocked(code: str, trade_date: str = None) -> bool:
+    """返回该转债是否处于当日止损冷却。"""
+    c = str(code or "").strip()
+    if not c:
+        return False
+    _ensure_stop_out_date(trade_date)
+    with _STOP_OUT_LOCK:
+        return c in _STOPPED_OUT_TODAY["codes"]
+
+
+def get_stop_out_codes() -> set:
+    _ensure_stop_out_date()
+    with _STOP_OUT_LOCK:
+        return set(_STOPPED_OUT_TODAY["codes"])
+
+
 def should_buy(cb: dict, max_single_weight: Optional[float] = None) -> dict:
     """
     买入决策
@@ -231,6 +275,15 @@ def should_buy(cb: dict, max_single_weight: Optional[float] = None) -> dict:
     """
     score = cb.get("total_score", 0)
     premium = cb.get("premium_rate", 100)
+
+    # 日内止损冷却：今日已止损的品种禁止反手接盘
+    cb_code = str(cb.get("cb_code", "") or "").strip()
+    if cb_code and is_stop_out_blocked(cb_code):
+        return {
+            "buy": False,
+            "reason": "日内止损冷却: 今日已止损，禁止再次开仓",
+            "position_pct": 0,
+        }
 
     # 溢价>30%不追
     if premium > CB_MAX_PREMIUM * 100:

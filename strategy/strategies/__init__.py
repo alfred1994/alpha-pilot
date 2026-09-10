@@ -17,11 +17,15 @@ from strategy.strategies.kdj_reversal import KDJReversalStrategy
 from strategy.strategies.technical_ensemble import TechnicalEnsembleStrategy
 from strategy.strategies.high_tight_flag import HighTightFlagStrategy
 from strategy.strategies.rps_breakout import RPSBreakoutStrategy
+from strategy.strategies.uptrend_limit_down import UptrendLimitDownStrategy
+from strategy.strategies.turtle_trade import TurtleTradeStrategy
 
 # 策略注册表
 STRATEGY_REGISTRY = {
     "high_tight_flag": HighTightFlagStrategy,
     "rps_breakout": RPSBreakoutStrategy,
+    "uptrend_limit_down": UptrendLimitDownStrategy,
+    "turtle_trade": TurtleTradeStrategy,
     "zt_reversal": ZTReversalStrategy,
     "ma_cross": MACrossStrategy,
     "rsi_bounce": RSIBounceStrategy,
@@ -38,6 +42,8 @@ STRATEGY_REGISTRY = {
 STRATEGY_PROFILES = {
     "high_tight_flag": {"category": "趋势整理突破", "regimes": ["bull"], "risk": "high"},
     "rps_breakout": {"category": "横截面动量", "regimes": ["bull", "rebound"], "risk": "high"},
+    "uptrend_limit_down": {"category": "情绪反转", "regimes": ["bull", "rebound"], "risk": "high"},
+    "turtle_trade": {"category": "趋势突破", "regimes": ["bull", "rebound"], "risk": "medium"},
     "zt_reversal": {"category": "形态反转", "regimes": ["rebound", "sideways"], "risk": "high"},
     "ma_cross": {"category": "趋势跟踪", "regimes": ["bull", "rebound"], "risk": "medium"},
     "rsi_bounce": {"category": "均值回归", "regimes": ["sideways", "rebound"], "risk": "medium"},

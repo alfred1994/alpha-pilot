@@ -9,10 +9,13 @@ import pandas as pd
 
 from strategy.strategies.base import BaseStrategy, Signal
 from strategy.strategies.bollinger_squeeze import BollingerSqueezeStrategy
+from strategy.strategies.high_tight_flag import HighTightFlagStrategy
 from strategy.strategies.kdj_reversal import KDJReversalStrategy
 from strategy.strategies.ma_cross import MACrossStrategy
 from strategy.strategies.macd_trend import MACDTrendStrategy
 from strategy.strategies.rsi_bounce import RSIBounceStrategy
+from strategy.strategies.turtle_trade import TurtleTradeStrategy
+from strategy.strategies.uptrend_limit_down import UptrendLimitDownStrategy
 from strategy.strategies.volume_breakout import VolumeBreakoutStrategy
 
 
@@ -20,7 +23,7 @@ class TechnicalEnsembleStrategy(BaseStrategy):
     """多策略一致性筛选器，降低单一指标误触发概率。"""
 
     name = "技术策略组合"
-    version = "1.0"
+    version = "1.1"
     params = {
         "buy_min_votes": 2,
         "sell_min_votes": 2,
@@ -32,9 +35,12 @@ class TechnicalEnsembleStrategy(BaseStrategy):
             (MACrossStrategy(), "trend"),
             (MACDTrendStrategy(), "trend"),
             (VolumeBreakoutStrategy(), "breakout"),
+            (TurtleTradeStrategy(), "breakout"),
+            (HighTightFlagStrategy(), "breakout"),
             (BollingerSqueezeStrategy(), "breakout"),
             (RSIBounceStrategy(), "reversal"),
             (KDJReversalStrategy(), "reversal"),
+            (UptrendLimitDownStrategy(), "reversal"),
         ]
 
     def generate_signals(self, code: str, df: pd.DataFrame, **kwargs) -> Signal:

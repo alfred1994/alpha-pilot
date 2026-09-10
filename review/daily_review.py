@@ -18,6 +18,47 @@ logger = logging.getLogger("review.daily")
 REVIEW_DIR = os.path.join(DATA_DIR, "reviews")
 
 
+def _fetch_hs300_daily_pct(date: str = None) -> Optional[float]:
+    """获取沪深300指定日期日涨跌幅（小数）。失败返回 None。"""
+    try:
+        from data.history import get_daily
+        end = (date or datetime.now().strftime("%Y-%m-%d")).replace("-", "")
+        df = get_daily("000300", start_date="20240101", end_date=end)
+        if df is None or len(df) < 2 or "close" not in df.columns:
+            return None
+        closes = df["close"].astype(float)
+        cur, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
+        if prev <= 0:
+            return None
+        # 若最后一根K线不是目标日期，仍使用可用最新一根作为基准参考
+        return (cur / prev) - 1.0
+    except Exception as exc:
+        logger.warning(f"沪深300基准获取失败(不影响复盘): {exc}")
+        return None
+
+
+def _compute_benchmark_pnl_pct(date: str, review_dir: str = None) -> float:
+    """计算并累计沪深300基准收益率（相对复盘序列起点）。"""
+    daily = _fetch_hs300_daily_pct(date)
+    if daily is None:
+        return 0.0
+    directory = review_dir or REVIEW_DIR
+    prev_bm = 0.0
+    try:
+        if os.path.exists(directory):
+            files = sorted(
+                f for f in os.listdir(directory)
+                if f.startswith("review_") and f.endswith(".json")
+                and f.replace("review_", "").replace(".json", "") < date
+            )
+            if files:
+                with open(os.path.join(directory, files[-1]), "r", encoding="utf-8") as f:
+                    prev_bm = float(json.load(f).get("benchmark_pnl_pct") or 0.0)
+    except Exception:
+        prev_bm = 0.0
+    return (1.0 + prev_bm) * (1.0 + daily) - 1.0
+
+
 @dataclass
 class DailyPnL:
     """单只股票日盈亏"""
@@ -371,6 +412,7 @@ class DailyReviewer:
             "daily_pnl_pct": result.daily_pnl_pct,
             "cumulative_pnl": result.cumulative_pnl,
             "cumulative_pnl_pct": result.cumulative_pnl_pct,
+            "benchmark_pnl_pct": _compute_benchmark_pnl_pct(result.date, self.review_dir),
             "cash": result.cash,
             "market_value": result.market_value,
             "position_count": result.position_count,

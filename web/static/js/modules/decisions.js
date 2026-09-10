@@ -133,8 +133,24 @@ export class DecisionsTab {
         const keys = ['technical', 'capital', 'sentiment', 'emotion', 'fundamental', 'ml'];
         const labels = ['技术面', '资金面', '舆情面', '情绪面', '基本面', '机器学习'];
         const available = keys.map((key, index) => ({ key, label: labels[index] })).filter(item => dimensions[item.key]);
-        const rows = available.length ? available : keys.slice(0, 5).map((key, index) => ({ key, label: labels[index] }));
+        if (!available.length) {
+            // 无多维评分数据时显示占位，避免全 0 塌陷雷达
+            this.radarChart.clear();
+            this.radarChart.setOption({
+                title: {
+                    text: '该决策未包含多维评分数据',
+                    left: 'center',
+                    top: 'middle',
+                    textStyle: { color: '#6f725e', fontSize: 12, fontWeight: 400 },
+                },
+                series: [],
+            });
+            setTimeout(() => this.radarChart?.resize(), 50);
+            return;
+        }
+        const rows = available;
         this.radarChart.setOption({
+            title: { text: '' },
             radar: { indicator: rows.map(item => ({ name: item.label, max: 100 })), splitArea: { areaStyle: { color: ['rgba(139,157,131,.04)', 'rgba(139,157,131,.12)'] } }, axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.14)' } }, name: { color: '#6f725e', fontSize: 9 } },
             series: [{ type: 'radar', data: [{ value: rows.map(item => Number(dimensions[item.key]?.score || 0)), areaStyle: { color: 'rgba(198,107,61,.2)' }, lineStyle: { color: '#c66b3d', width: 2 }, itemStyle: { color: '#c66b3d' } }] }],
         });
