@@ -238,6 +238,8 @@ python3 main.py --linux-unattended-status
 python3 main.py --research-sync
 python3 main.py --train-pooled-model
 python3 main.py --pooled-ml-status
+python3 main.py --backfill-kline --backfill-universe all --backfill-full
+python3 main.py --db-maintenance
 ```
 
 ## Linux / Hermes 无人值守模式

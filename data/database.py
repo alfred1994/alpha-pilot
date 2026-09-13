@@ -387,6 +387,11 @@ class Database:
             CREATE INDEX IF NOT EXISTS idx_strategy_directives_effective
             ON strategy_directives (effective_date, id)
         """)
+        # k_minute 保留期清理与区间查询依赖时间索引
+        c.execute("""
+            CREATE INDEX IF NOT EXISTS idx_k_minute_period_datetime
+            ON k_minute (period, datetime)
+        """)
 
         self.conn.commit()
         logger.debug(f"数据库初始化完成: {self.db_path}")

@@ -11,7 +11,7 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
 
 from config import (
@@ -37,6 +37,11 @@ INTRADAY_KLINE_BARS = 30
 INTRADAY_KLINE_CACHE_TTL = 60.0
 _kline_cache = {}
 _kline_cache_lock = threading.Lock()
+
+# 1分钟K线落盘: k_minute 表保留天数（0=不清理），每天最多清理一次。
+MINUTE_BARS_RETENTION_DAYS = int(os.environ.get("K_MINUTE_RETENTION_DAYS", "30"))
+_minute_prune_state = {"last_date": None}
+_minute_prune_lock = threading.Lock()
 
 
 def _today(now: datetime = None) -> str:
@@ -237,6 +242,72 @@ def _analyze_intraday_bars(frame) -> Dict:
         return result
 
 
+def _persist_minute_bars(code: str, frame, db_path: str = None) -> int:
+    """把盘中1分钟K线落盘到 k_minute 表（INSERT OR REPLACE 幂等，失败不影响看盘）。
+
+    让盘后复盘可以回放"当时为什么这么决策"的分钟级现场。
+    """
+    try:
+        if frame is None or getattr(frame, "empty", True):
+            return 0
+        required = {"datetime", "open", "high", "low", "close"}
+        if not required.issubset(set(frame.columns)):
+            return 0
+        records = []
+        for _, row in frame.iterrows():
+            dt_value = str(row.get("datetime") or "")
+            if len(dt_value) < 13:
+                continue
+            data_valid = row.get("data_valid", True)
+            if data_valid is not None and not bool(data_valid):
+                continue
+            records.append({
+                "code": code,
+                "datetime": dt_value[:16],
+                "open": float(row.get("open") or 0),
+                "high": float(row.get("high") or 0),
+                "low": float(row.get("low") or 0),
+                "close": float(row.get("close") or 0),
+                "volume": float(row.get("volume_hand") or 0),
+                "amount": float(row.get("amount_yuan") or 0),
+            })
+        if not records:
+            return 0
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            db.insert_k_minute(records, period="1m")
+        _prune_minute_bars_if_needed(db_path=db_path)
+        return len(records)
+    except Exception as exc:
+        logger.debug(f"1分钟K线落盘失败(不影响看盘): {exc}")
+        return 0
+
+
+def _prune_minute_bars_if_needed(db_path: str = None) -> None:
+    """每个进程每天最多执行一次：清理超过保留期的1分钟K线，防止 k_minute 无限膨胀。"""
+    if MINUTE_BARS_RETENTION_DAYS <= 0:
+        return
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _minute_prune_lock:
+        if _minute_prune_state.get("last_date") == today:
+            return
+        _minute_prune_state["last_date"] = today
+    try:
+        cutoff = (
+            datetime.now() - timedelta(days=MINUTE_BARS_RETENTION_DAYS)
+        ).strftime("%Y-%m-%d %H:%M")
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            c = db.conn.cursor()
+            c.execute("DELETE FROM k_minute WHERE period='1m' AND datetime < ?", (cutoff,))
+            deleted = c.rowcount
+            db.conn.commit()
+        if deleted:
+            logger.info(f"k_minute保留期清理: 删除{deleted}条早于{cutoff}的1分钟K线")
+    except Exception as exc:
+        logger.debug(f"k_minute清理失败(不影响看盘): {exc}")
+
+
 def _default_intraday_kline_analyzer(code: str, now_ts: float = None) -> Dict:
     """拉取并分析标的1分钟K线；带TTL缓存，失败不影响看盘主流程。"""
     now_ts = now_ts if now_ts is not None else time.time()
@@ -249,6 +320,7 @@ def _default_intraday_kline_analyzer(code: str, now_ts: float = None) -> Dict:
         frame = get_kt_client().get_kline(code, "1m", count=INTRADAY_KLINE_BARS)
     except Exception as exc:
         return {"valid": False, "bars": 0, "source": "kt_1m", "reason": f"1分钟线获取失败 ({type(exc).__name__})"}
+    _persist_minute_bars(code, frame)
     analysis = _analyze_intraday_bars(frame)
     with _kline_cache_lock:
         _kline_cache[code] = (now_ts, analysis)

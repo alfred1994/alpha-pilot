@@ -232,6 +232,33 @@ def cmd_research_sync(args):
     return {"errors": ["research_sync"] if result.get("status") != "success" else []}
 
 
+def cmd_backfill_kline(args):
+    """全市场/研究池日线回填到本地 k_daily（资源自适应，不参与交易）。"""
+    from data.universe_backfill import run_backfill
+
+    result = run_backfill(
+        universe=args.backfill_universe or "pool",
+        full=args.backfill_full,
+        start_date=args.backfill_start or "20160101",
+        workers=args.backfill_workers,
+    )
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    # 系统性失败（失败数≥成功数）才返回非零，个别 incomplete/failed 属于
+    # 正常数据质量波动，留给 --backfill-full 修复，不把定时任务打成永久红。
+    failed = result.get("failed", 0)
+    ok = result.get("ok", 0)
+    return {"errors": ["backfill_kline"] if failed > 0 and failed >= ok else []}
+
+
+def cmd_db_maintenance(args):
+    """数据库维护：完整性检查 + 在线备份 + 运维日志清理。"""
+    from data.db_maintenance import run_db_maintenance
+
+    result = run_db_maintenance(vacuum=bool(getattr(args, "db_vacuum", False)))
+    print(json.dumps(result, ensure_ascii=False, indent=2, default=str))
+    return {"errors": [] if result.get("status") == "ok" else ["db_maintenance"]}
+
+
 def cmd_shadow_report(args):
     """影子策略排行榜与晋级候选（只读，不改变任何策略参数）。"""
     from data.database import Database
@@ -827,8 +854,15 @@ def main():
     group.add_argument("--optimize", action="store_true", help="策略优化模式")
     group.add_argument("--after-market", action="store_true", help="收盘后分析（外围市场+新闻）")
     group.add_argument("--research-sync", action="store_true", help="盘后增量同步宽股票池研究数据，不参与交易")
+    group.add_argument("--backfill-kline", action="store_true", help="全市场/研究池日线回填到本地库（资源自适应，不参与交易）")
+    group.add_argument("--backfill-universe", choices=["pool", "all", "active"], default=None, help="回填股票池: pool=研究池 all=全部A股 active=活跃股，默认pool")
+    group.add_argument("--backfill-full", action="store_true", help="全区间重拉并修复中间缺口（默认只补尾部增量）")
+    group.add_argument("--backfill-start", default=None, help="全区间起点 YYYYMMDD，默认20160101")
+    group.add_argument("--backfill-workers", type=int, default=None, help="回填并发数，默认按CPU/内存自适应")
     group.add_argument("--train-pooled-model", action="store_true", help="盘后训练 pooled ML 影子模型，不参与交易")
     group.add_argument("--pooled-ml-status", action="store_true", help="查看 pooled ML 影子模型状态")
+    group.add_argument("--db-maintenance", action="store_true", help="数据库维护：完整性检查+在线备份+运维日志清理，不参与交易")
+    group.add_argument("--db-vacuum", action="store_true", help="DB维护时执行VACUUM回收空间（建议每周一次）")
     group.add_argument("--shadow-report", action="store_true", help="查看影子策略排行榜与晋级候选(JSON)")
     group.add_argument("--stop-check", action="store_true", help="盘中止损巡检")
     group.add_argument("--auto", action="store_true", help="自动盯盘交易员（循环运行，默认模拟盘）")
@@ -930,6 +964,10 @@ def main():
         result = cmd_after_market()
     elif args.research_sync:
         result = cmd_research_sync(args)
+    elif args.backfill_kline:
+        result = cmd_backfill_kline(args)
+    elif args.db_maintenance:
+        result = cmd_db_maintenance(args)
     elif args.train_pooled_model:
         result = cmd_train_pooled_model(args)
     elif args.pooled_ml_status:

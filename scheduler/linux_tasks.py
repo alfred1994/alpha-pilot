@@ -9,6 +9,7 @@ Linux/Hermes无人值守任务脚本生成器
   - run_status.sh: 生成一页式运维状态
   - run_research_sync.sh: 盘后宽股票池研究数据增量同步
   - run_pooled_ml.sh: 盘后训练 pooled ML 影子模型
+  - run_db_maintenance.sh: 每日数据库维护（备份/巡检/清理）
   - install_systemd_user.sh: 安装并启用用户级systemd服务/定时器
   - uninstall_systemd_user.sh: 停用并删除用户级systemd服务/定时器
 
@@ -38,6 +39,7 @@ SCRIPT_KEYS = [
     "run_closure_repair",
     "run_research_sync",
     "run_pooled_ml",
+    "run_db_maintenance",
     "install",
     "uninstall",
 ]
@@ -55,6 +57,8 @@ SERVICE_KEYS = [
     "research_timer",
     "pooled_ml_service",
     "pooled_ml_timer",
+    "maintenance_service",
+    "maintenance_timer",
 ]
 LOG_NAMES = {
     "Auto": "auto.log",
@@ -64,6 +68,7 @@ LOG_NAMES = {
     "Status": "ops_status.log",
     "Research": "research_sync.log",
     "PooledML": "pooled_ml.log",
+    "Maintenance": "db_maintenance.log",
 }
 
 
@@ -360,6 +365,7 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "run_closure_repair": join(output_dir, "run_closure_repair.sh"),
         "run_research_sync": join(output_dir, "run_research_sync.sh"),
         "run_pooled_ml": join(output_dir, "run_pooled_ml.sh"),
+        "run_db_maintenance": join(output_dir, "run_db_maintenance.sh"),
         "install": join(output_dir, "install_systemd_user.sh"),
         "uninstall": join(output_dir, "uninstall_systemd_user.sh"),
         "units_dir": units_dir,
@@ -378,6 +384,8 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "research_timer": join(units_dir, _unit_name(service_prefix, "research", "timer")),
         "pooled_ml_service": join(units_dir, _unit_name(service_prefix, "pooled-ml")),
         "pooled_ml_timer": join(units_dir, _unit_name(service_prefix, "pooled-ml", "timer")),
+        "maintenance_service": join(units_dir, _unit_name(service_prefix, "db-maintenance")),
+        "maintenance_timer": join(units_dir, _unit_name(service_prefix, "db-maintenance", "timer")),
     })
     return paths
 
@@ -398,6 +406,8 @@ def _install_script(config: LinuxTaskConfig, paths: Dict[str, str]) -> str:
         os.path.basename(paths["research_timer"]),
         os.path.basename(paths["pooled_ml_service"]),
         os.path.basename(paths["pooled_ml_timer"]),
+        os.path.basename(paths["maintenance_service"]),
+        os.path.basename(paths["maintenance_timer"]),
     ]
     unit_lines = "\n".join(
         f"install -m 0644 { _sh_quote(_join_target_path(paths['units_dir'], unit)) } \"$SYSTEMD_USER_DIR/{unit}\""
@@ -409,7 +419,7 @@ set -euo pipefail
 SYSTEMD_USER_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 
-chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])} {_sh_quote(paths['run_pooled_ml'])}
+chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])} {_sh_quote(paths['run_pooled_ml'])} {_sh_quote(paths['run_db_maintenance'])}
 {unit_lines}
 
 systemctl --user daemon-reload
@@ -420,6 +430,7 @@ systemctl --user enable --now {os.path.basename(paths['report_timer'])}
 systemctl --user enable --now {os.path.basename(paths['status_timer'])}
 systemctl --user enable --now {os.path.basename(paths['research_timer'])}
 systemctl --user enable --now {os.path.basename(paths['pooled_ml_timer'])}
+systemctl --user enable --now {os.path.basename(paths['maintenance_timer'])}
 
 cat <<'EOF'
 AlphaPilot systemd --user tasks installed.
@@ -451,6 +462,8 @@ def _uninstall_script(service_prefix: str) -> str:
         _unit_name(service_prefix, "research", "timer"),
         _unit_name(service_prefix, "pooled-ml"),
         _unit_name(service_prefix, "pooled-ml", "timer"),
+        _unit_name(service_prefix, "db-maintenance"),
+        _unit_name(service_prefix, "db-maintenance", "timer"),
     ]
     units_text = " ".join(units)
     return f"""#!/usr/bin/env bash
@@ -518,6 +531,7 @@ def generate_linux_task_scripts(
         paths["run_closure_repair"]: _runner_script(project_dir, python_cmd, "--closure-repair", "closure_repair.log", hermes_env_file),
         paths["run_research_sync"]: _runner_script(project_dir, python_cmd, "--research-sync", "research_sync.log", hermes_env_file, timeout_seconds=900),
         paths["run_pooled_ml"]: _runner_script(project_dir, python_cmd, "--train-pooled-model", "pooled_ml.log", hermes_env_file, timeout_seconds=900),
+        paths["run_db_maintenance"]: _runner_script(project_dir, python_cmd, "--db-maintenance", "db_maintenance.log", hermes_env_file, timeout_seconds=600),
         paths["install"]: _install_script(config, target_paths),
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
@@ -540,6 +554,8 @@ def generate_linux_task_scripts(
         paths["research_timer"]: _calendar_timer_unit("AlphaPilot 盘后宽股票池研究同步", os.path.basename(paths["research_service"]), "Mon..Fri *-*-* 19:10:00"),
         paths["pooled_ml_service"]: _oneshot_service_unit("AlphaPilot 盘后 pooled ML 影子训练", target_paths["run_pooled_ml"], timeout_start_sec=900, resource_limits=True),
         paths["pooled_ml_timer"]: _calendar_timer_unit("AlphaPilot 盘后 pooled ML 影子训练", os.path.basename(paths["pooled_ml_service"]), "Mon..Fri *-*-* 21:10:00"),
+        paths["maintenance_service"]: _oneshot_service_unit("AlphaPilot 数据库维护(备份/巡检/清理)", target_paths["run_db_maintenance"], timeout_start_sec=900, resource_limits=True),
+        paths["maintenance_timer"]: _calendar_timer_unit("AlphaPilot 每日数据库维护", os.path.basename(paths["maintenance_service"]), "*-*-* 23:40:00"),
     }
     for path, content in {**scripts, **units}.items():
         with open(path, "w", encoding="utf-8", newline="\n") as f:
