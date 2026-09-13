@@ -145,10 +145,10 @@ def test_universe_all_eastmoney_pagination():
                 {"f12": "300750", "f14": "宁德时代"},
                 {"f12": "510300", "f14": "ETF"},
             ]
-            total = 3
+            total = 201  # 强制进入第2页
         else:
             diff = [{"f12": "000001", "f14": "平安银行"}]
-            total = 3
+            total = 201
         return _Resp({"data": {"total": total, "diff": diff}})
 
     import requests as requests_mod
