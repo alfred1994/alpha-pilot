@@ -114,15 +114,18 @@ class SystemRiskController:
         """
         每日更新：传入当日总资产，计算盈亏并更新风控状态
 
+        同一交易日内多次调用（盘中每轮执行都会触发）只会刷新当日估值记录，
+        不会重复计入单日盈亏或连续亏损统计；风控规则基于全部日记录幂等重算。
+
         Args:
-            total_assets: 当日收盘后总资产
+            total_assets: 当日总资产（盘中为最新估值，收盘后为最终值）
             date: 日期字符串（默认今天）
 
         Returns:
             {
                 daily_pnl: float,          # 当日盈亏比例
                 consecutive_loss: int,      # 连续亏损天数
-                forbid_new_buy: bool,       # 是否禁止开新仓（明日生效）
+                forbid_new_buy: bool,       # 是否禁止开新仓
                 reduce_position: bool,      # 是否降仓
                 system_halted: bool,        # 系统是否停机
             }
@@ -130,46 +133,59 @@ class SystemRiskController:
         if date is None:
             date = datetime.now().strftime("%Y-%m-%d")
 
-        # 计算当日盈亏
-        daily_pnl = 0.0
-        if self.state.daily_records:
-            prev_assets = self.state.daily_records[-1]["total_assets"]
-            if prev_assets > 0:
-                daily_pnl = (total_assets - prev_assets) / prev_assets
+        records = self.state.daily_records
+        same_day = bool(records) and records[-1].get("date") == date
 
-        # 记录当日资产
-        self.state.daily_records.append({
-            "date": date,
-            "total_assets": total_assets,
-            "daily_pnl": daily_pnl,
-        })
+        if same_day:
+            # 盘中多次执行：只刷新当日记录，不新增（否则日内波动会虚增连亏天数、
+            # 并把"日频"规则跑成"每执行一次"的高频规则）
+            prev_assets = records[-2]["total_assets"] if len(records) >= 2 else 0.0
+            daily_pnl = (total_assets - prev_assets) / prev_assets if prev_assets > 0 else 0.0
+            records[-1]["total_assets"] = total_assets
+            records[-1]["daily_pnl"] = daily_pnl
+        else:
+            prev_assets = records[-1]["total_assets"] if records else 0.0
+            daily_pnl = (total_assets - prev_assets) / prev_assets if prev_assets > 0 else 0.0
+            records.append({
+                "date": date,
+                "total_assets": total_assets,
+                "daily_pnl": daily_pnl,
+            })
 
-        # 重置昨日的禁止开新仓标记（次日生效后需清除）
-        # 注意：这里不立即清除，由 is_new_buy_allowed 判断日期
-
-        # --- 规则1: 单日亏损超过阈值，次日禁止开新仓 ---
+        # --- 规则1: 单日亏损超过阈值，禁止开新仓 ---
+        # 盘中估值回到阈值上方时解除；跨日之后由 is_new_buy_allowed 的日期滚动逻辑兜底清除。
         if daily_pnl <= self.daily_loss_limit:
             self.state.forbid_new_buy = True
             self.state.forbid_new_buy_reason = (
                 f"单日亏损{daily_pnl:+.2%}，超过阈值{self.daily_loss_limit:+.2%}，"
-                f"次日({date})禁止开新仓"
+                f"({date})禁止开新仓"
             )
             logger.warning(f"!!! 单日亏损熔断 !!! {self.state.forbid_new_buy_reason}")
+        elif self.state.forbid_new_buy:
+            self.state.forbid_new_buy = False
+            self.state.forbid_new_buy_reason = ""
+            logger.info(f"当日盈亏修复至{daily_pnl:+.2%}，解除禁止开新仓标记")
 
-        # --- 规则2: 连续亏损统计 ---
-        if daily_pnl < 0:
-            self.state.consecutive_loss_days += 1
-        else:
-            self.state.consecutive_loss_days = 0
+        # --- 规则2: 连续亏损从日记录幂等重算（而非累加计数） ---
+        streak = 0
+        for record in reversed(records[-60:]):
+            pnl = record.get("daily_pnl")
+            if pnl is None:
+                break
+            if pnl < 0:
+                streak += 1
+            else:
+                break
+        self.state.consecutive_loss_days = streak
 
-        # 连续亏损达到阈值，触发降仓
-        if self.state.consecutive_loss_days >= self.consecutive_loss_days_threshold:
+        if streak >= self.consecutive_loss_days_threshold:
+            if not self.state.reduce_position:
+                logger.warning(
+                    f"!!! 连续亏损降仓 !!! 连续{streak}日亏损，"
+                    f"仓位降至{self.position_reduce_ratio:.0%}"
+                )
             self.state.reduce_position = True
             self.state.reduce_position_ratio = self.position_reduce_ratio
-            logger.warning(
-                f"!!! 连续亏损降仓 !!! 连续{self.state.consecutive_loss_days}日亏损，"
-                f"仓位降至{self.state.reduce_position_ratio:.0%}"
-            )
         else:
             self.state.reduce_position = False
             self.state.reduce_position_ratio = 1.0

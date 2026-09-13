@@ -1588,6 +1588,16 @@ def execute_trade_plan(
                 _audit_order(result, order, "blocked", f"禁止开新仓: {buy_allowed['reason']}")
                 continue
 
+            # 组合级仓位风控（PositionManager）: 持仓数上限/单票重复开仓硬约束，
+            # 提前拦截并留审计记录；账户层 buy 内还有单票金额上限兜底钳制。
+            position_check = pm.check_position_limit(
+                code, broker.get_positions(), total_assets
+            )
+            if not position_check["allowed"]:
+                logger.info(f"BUY跳过: {code} - {position_check['reason']}")
+                _audit_order(result, order, "blocked", f"仓位风控: {position_check['reason']}")
+                continue
+
             # 获取实时价格
             try:
                 realtime = realtime_func([code])

@@ -366,6 +366,24 @@ class PaperAccount:
                 logger.warning(f"资金不足以买入1手 {name}")
                 return None
 
+            # 单票仓位上限（MAX_SINGLE_PCT）对显式传入股数的路径同样强制生效，
+            # 防止 LLM target_weight 或外部调用绕过约束。
+            account_total = self.total_assets()
+            cap_value = account_total * MAX_SINGLE_PCT
+            requested_cost = shares * price
+            if account_total > 0 and requested_cost > cap_value:
+                capped_shares = int(cap_value / price / unit) * unit
+                if capped_shares < shares:
+                    logger.warning(
+                        f"单票仓位上限触发: {name}({code}) 请求{shares}股"
+                        f"(约{requested_cost:.0f}元, 占总资产{requested_cost / account_total:.1%}) "
+                        f"超过上限{MAX_SINGLE_PCT:.0%}, 缩减至{capped_shares}股"
+                    )
+                shares = max(0, capped_shares)
+                if shares < unit:
+                    logger.warning(f"单票仓位上限内不足以买入1手 {name}")
+                    return None
+
             # 计算实际成本（含佣金）
             cost = shares * price
             commission = max(cost * COMMISSION_RATE, 5)  # 最低5元
