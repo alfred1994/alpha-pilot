@@ -283,10 +283,13 @@ def _backfill_one(code: str, start_date: str, end_date: str,
     start_fmt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
     end_fmt = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
     try:
+        # require_full_range 恒为 False：同花顺上游历史普遍带少量内部缺口，
+        # 强制全区间会把每股结果都拒收并落到慢速源且不落缓存。
+        # 回填接受"诚实降级"结果，缺口状态在报告中如实标记，供后续修复。
         df = get_daily(
             code, start_date=start_date, end_date=end_date,
             adjust="qfq", simple=True,
-            require_full_range=full,
+            require_full_range=False,
         )
         if df is None or df.empty:
             return {"code": code, "status": "empty", "rows": 0, "latest": ""}
@@ -297,6 +300,17 @@ def _backfill_one(code: str, start_date: str, end_date: str,
         if "date" in df.columns and len(df) > 0:
             latest = str(df["date"].iloc[-1])
         status = str(df.attrs.get("coverage_status") or "ok")
+        # get_daily 只在接受的源内落缓存；降级兜底结果需显式落库，
+        # 否则带缺口的股票永远进不了本地库。
+        # 缓存命中帧的 attrs["source"] 是 list，说明数据已在库里，跳过重写。
+        source_attr = df.attrs.get("source")
+        if not isinstance(source_attr, list):
+            try:
+                from data.history import _save_to_cache
+                _save_to_cache(code, df, "qfq",
+                               source=str(source_attr or "backfill"))
+            except Exception as exc:
+                logger.debug("显式落缓存失败 %s: %s", code, exc)
         return {
             "code": code,
             "status": status,
@@ -307,6 +321,7 @@ def _backfill_one(code: str, start_date: str, end_date: str,
         logger.debug("回填失败 %s: %s", code, exc)
         return {"code": code, "status": "error", "rows": 0, "latest": "",
                 "error": str(exc)[:200]}
+
 
 
 def run_backfill(
