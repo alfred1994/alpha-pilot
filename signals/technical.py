@@ -100,8 +100,10 @@ def ichimoku_signal(
     cur_close = close.iloc[-1]
     cur_tenkan = tenkan.iloc[-1]
     cur_kijun = kijun.iloc[-1]
-    cur_sa = senkou_a.iloc[-displacement] if len(df) > displacement else np.nan  # 当前 K 线对应的云
-    cur_sb = senkou_b.iloc[-displacement] if len(df) > displacement else np.nan
+    # senkou 已 shift(displacement)：其 iloc[-1] 才是当前 K 线对应的云位
+    # （旧实现取 iloc[-displacement]，相当于拿 26 天前的云判断今天的价云关系）
+    cur_sa = senkou_a.iloc[-1]
+    cur_sb = senkou_b.iloc[-1]
     prev_tenkan = tenkan.iloc[-2]
     prev_kijun = kijun.iloc[-2]
 
@@ -514,9 +516,13 @@ def wyckoff_signal(
     cur_price = close[-1]
 
     # --- 识别横盘区间 (Trading Range) ---
-    # 用最近 lookback 的最高/最低来定义区间
-    range_high = np.max(high)
-    range_low = np.min(low)
+    # 区间高/低点只取检测窗口之前的 K 线：若区间包含最近 spring_window 根 K 线，
+    # 探测当日的 low/high 本身就是区间极值，`low[i] < range_low` 与
+    # `high[i] > range_high` 恒为 False，Spring/Upthrust 分支永远不可达。
+    spring_window = min(20, n // 3)
+    range_span = max(10, n - spring_window)
+    range_high = np.max(high[:range_span])
+    range_low = np.min(low[:range_span])
     range_mid = (range_high + range_low) / 2
     range_width_pct = (range_high - range_low) / range_mid * 100
 
@@ -540,7 +546,6 @@ def wyckoff_signal(
     # --- Spring 检测 (积累 Phase C) ---
     # Spring: 价格短暂跌破区间低点后快速拉回
     # 寻找: 最近 N 天内，low 跌破 range_low，但 close 收回 range_low 之上
-    spring_window = min(20, n // 3)
     spring_detected = False
     for i in range(n - spring_window, n):
         if i < 1:

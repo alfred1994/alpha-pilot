@@ -7,7 +7,7 @@
 """
 import pandas as pd
 import numpy as np
-from strategy.strategies.base import BaseStrategy, Signal
+from strategy.strategies.base import BaseStrategy, Signal, board_limit_pct
 
 
 class LimitDownReversalStrategy(BaseStrategy):
@@ -16,12 +16,12 @@ class LimitDownReversalStrategy(BaseStrategy):
     name = "跌停反转"
     version = "1.0"
     params = {
-        "limit_down_pct": -0.095,   # 跌停阈值（-9.5%以上视为跌停）
+        "limit_down_pct": None,     # 跌停阈值；None=按板块自适应(主板-9.5%/创业科创-19.5%/北交-29.5%)
         "min_down_days": 2,         # 最少连续跌停天数
         "max_down_days": 5,         # 最多连续跌停天数（超过不抄底）
         "vol_shrink": 0.5,          # 止跌日成交量需低于前日的50%（缩量）
         "body_pct": 0.03,           # 止跌日实体振幅≤3%（十字星）
-        "recovery_pct": 0.02,       # 止跌日需收阳或微涨≥-2%
+        "recovery_pct": 0.02,       # 止跌日涨幅需≥+2%（确认止跌回升）
     }
 
     def generate_signals(self, code, df, **kwargs):
@@ -39,8 +39,11 @@ class LimitDownReversalStrategy(BaseStrategy):
         # 日涨跌幅
         pct = c / c.shift(1) - 1
 
-        # 跌停判断
-        is_limit_down = pct <= p["limit_down_pct"]
+        # 跌停判断（阈值按板块自适应）
+        limit_down_pct = p.get("limit_down_pct")
+        if limit_down_pct is None:
+            limit_down_pct = -(board_limit_pct(code, kwargs.get("name", "")) - 0.005)
+        is_limit_down = pct <= limit_down_pct
 
         # 连续跌停天数（从今天往前数）
         consecutive = pd.Series(0, index=df.index, dtype=int)
@@ -60,9 +63,6 @@ class LimitDownReversalStrategy(BaseStrategy):
         small_body = body <= p["body_pct"]
         # 3. 没有继续跌停
         not_down = pct >= p["recovery_pct"]
-
-        # 也可以是阳线反弹
-        is_green = c > o
 
         buy_signal = had_limit_down & not_too_long & (vol_shrink | small_body) & not_down
 

@@ -1,5 +1,5 @@
 """上升趋势中的跌停反包：趋势未破坏时的恐慌洗盘反转。"""
-from .base import BaseStrategy, Signal
+from .base import BaseStrategy, Signal, board_limit_pct
 from .pattern_data import daily_window
 
 
@@ -12,7 +12,7 @@ class UptrendLimitDownStrategy(BaseStrategy):
         "ma_fast": 20,
         "ma_slow": 60,
         "min_trend_rise": 0.08,    # 近60日至少上涨8%
-        "limit_down_pct": -0.095,  # 视为跌停
+        "limit_down_pct": None,    # 视为跌停；None=按板块自适应(主板-9.5%/创业科创-19.5%)
         "max_drop_pct": 0.18,       # 从高点最大回撤（正数）
         "engulf_min_body": 0.02,   # 反包日实体至少2%
         "require_above_ma": True,
@@ -41,7 +41,10 @@ class UptrendLimitDownStrategy(BaseStrategy):
             return Signal(date, code, "HOLD", 0, "均线窗口不足")
 
         pct = close / close.shift(1) - 1
-        limit_down = pct <= p["limit_down_pct"]
+        limit_down_pct = p.get("limit_down_pct")
+        if limit_down_pct is None:
+            limit_down_pct = -(board_limit_pct(code, kwargs.get("name", "")) - 0.005)
+        limit_down = pct <= limit_down_pct
 
         # 反包日（最新一根）：阳线吞没前一根跌停实体
         prev = frame.iloc[-2]

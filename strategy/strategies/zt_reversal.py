@@ -13,7 +13,7 @@
 """
 import pandas as pd
 import numpy as np
-from .base import BaseStrategy, Signal
+from .base import BaseStrategy, Signal, board_limit_pct
 
 
 class ZTReversalStrategy(BaseStrategy):
@@ -27,7 +27,7 @@ class ZTReversalStrategy(BaseStrategy):
     name = "涨停洗盘"
     version = "1.0"
     params = {
-        "zt_pct": 0.098,           # 涨停阈值（9.8%）
+        "zt_pct": None,            # 涨停阈值；None=按板块自适应(主板9.8%/创业科创19.8%/北交29.8%)
         "body_pct": 0.03,          # 中子实体最大振幅（3%）
         "vol_ratio_max": 3.0,      # 次日量/涨停日量 最大倍数
         "ma_short": 5,             # 短期均线
@@ -67,9 +67,12 @@ class ZTReversalStrategy(BaseStrategy):
 
         # ── 计算条件 ──
 
-        # 1. 涨停：涨幅≥9.8% 且 收盘=最高
+        # 1. 涨停：涨幅达到板块涨停阈值(留0.2%容差) 且 收盘=最高
+        zt_pct = p.get("zt_pct")
+        if zt_pct is None:
+            zt_pct = board_limit_pct(code, kwargs.get("name", "")) - 0.002
         pct_chg = close / close.shift(1) - 1
-        zt = (pct_chg >= p["zt_pct"]) & (close >= high * 0.999)
+        zt = (pct_chg >= zt_pct) & (close >= high * 0.999)
 
         # 2. 中子形态：实体振幅≤3%，带上下影线
         body = (open_ - close).abs() / close

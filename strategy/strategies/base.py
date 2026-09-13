@@ -8,6 +8,31 @@ from typing import List, Dict, Optional
 import pandas as pd
 
 
+def board_limit_pct(code: str, name: str = "") -> float:
+    """
+    按板块返回 A 股涨跌停幅度（涨停/跌停识别基准）:
+
+    - 创业板(300/301)/科创板(688/689): 20%
+    - 北交所(43/82/83/87/88/920 开头): 30%
+    - ST/*ST: 5%
+    - 主板(60x/00x): 10%
+    """
+    clean = str(code or "").strip()
+    for prefix in ("sh", "sz", "bj", "SH", "SZ", "BJ"):
+        if clean.startswith(prefix):
+            clean = clean[len(prefix):]
+    clean = clean.split(".")[0]
+    if clean.startswith(("300", "301", "688", "689")):
+        base = 0.20
+    elif clean.startswith(("43", "82", "83", "87", "88", "92")):
+        base = 0.30
+    else:
+        base = 0.10
+    if "ST" in str(name or "").upper():
+        base = 0.05
+    return base
+
+
 @dataclass
 class Signal:
     """交易信号"""
