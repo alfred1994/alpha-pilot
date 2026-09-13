@@ -158,11 +158,36 @@ def _fetch_all_universe_eastmoney() -> list:
     return sorted(set(codes))
 
 
+def _fetch_all_universe_baostock_daily() -> list:
+    """Baostock 单交易日全证券快照（query_all_stock）。
+
+    比 query_stock_basic 快一个量级（单日~5400行 vs 全量含退市证券）；
+    非交易日返回空，从今天向前最多探测10天覆盖节假日。
+    """
+    from data.history import query_baostock_all_stock
+
+    for offset in range(0, 10):
+        day = (datetime.now() - timedelta(days=offset)).strftime("%Y-%m-%d")
+        raw = query_baostock_all_stock(day)
+        if not raw or raw.get("error_code") != "0" or not raw.get("data"):
+            continue
+        codes = []
+        for row in raw["data"]:
+            code = str(row[0] if row else "")
+            clean = code.split(".")[-1]
+            if code.startswith(("sh.", "sz.")) and clean.startswith(ALL_UNIVERSE_CODE_PREFIXES):
+                codes.append(clean)
+        if codes:
+            logger.info("Baostock单日快照(%s): %d只", day, len(set(codes)))
+            return sorted(set(codes))
+    return []
+
+
 def _fetch_all_universe() -> list:
     """全部A股（主板+创业板，排除科创/北交所/指数/ETF）。
 
-    优先东财分页（快、无需登录）；Baostock 全量 stock_basic 查询在
-    低配服务器上经常超过75s超时，仅作兜底。
+    优先东财分页（快、无需登录）；东财不可用（如502）时回退
+    Baostock单日快照，最后才是Baostock全量stock_basic（易超时）。
     """
     try:
         codes = _fetch_all_universe_eastmoney()
@@ -170,6 +195,10 @@ def _fetch_all_universe() -> list:
             return codes
     except Exception as exc:
         logger.warning("东财全市场列表失败，回退Baostock: %s", type(exc).__name__)
+
+    codes = _fetch_all_universe_baostock_daily()
+    if codes:
+        return codes
 
     from data.history import get_stock_list
 

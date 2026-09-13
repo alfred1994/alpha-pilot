@@ -165,6 +165,19 @@ def _query_stock_basic_rows() -> dict:
         bs.logout()
 
 
+def _query_all_stock_rows(day: str) -> dict:
+    """在当前进程内执行Baostock指定交易日全证券快照查询（比stock_basic快得多）。"""
+    lg = bs.login()
+    try:
+        rs = bs.query_all_stock(day=day)
+        data = []
+        while rs.error_code == "0" and rs.next():
+            data.append(rs.get_row_data())
+        return {"fields": rs.fields, "data": data, "error_code": rs.error_code, "error_msg": rs.error_msg}
+    finally:
+        bs.logout()
+
+
 def _query_trade_dates_rows(start_date: str, end_date: str) -> dict:
     """在当前进程内执行Baostock交易日历查询。"""
     lg = bs.login()
@@ -185,6 +198,8 @@ def _baostock_worker(kind: str, args: tuple, result_queue):
             result = _query_history_rows(*args)
         elif kind == "stock_basic":
             result = _query_stock_basic_rows()
+        elif kind == "all_stock":
+            result = _query_all_stock_rows(*args)
         elif kind == "trade_dates":
             result = _query_trade_dates_rows(*args)
         else:
@@ -202,6 +217,8 @@ def _run_baostock(kind: str, args: tuple = (), timeout: int = BAOSTOCK_TIMEOUT) 
                 return _query_history_rows(*args)
             if kind == "stock_basic":
                 return _query_stock_basic_rows()
+            if kind == "all_stock":
+                return _query_all_stock_rows(*args)
             if kind == "trade_dates":
                 return _query_trade_dates_rows(*args)
         except Exception as e:
@@ -249,6 +266,11 @@ def query_baostock_history_rows(bs_code: str, fields: str, start_date: str = "",
 def query_baostock_stock_basic(timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
     """对外提供带超时保护的Baostock股票列表原始查询。"""
     return _run_baostock("stock_basic", timeout=timeout)
+
+
+def query_baostock_all_stock(day: str, timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
+    """对外提供带超时保护的Baostock指定交易日全证券快照查询。"""
+    return _run_baostock("all_stock", (day,), timeout=timeout)
 
 
 def query_baostock_trade_dates(start_date: str, end_date: str,
