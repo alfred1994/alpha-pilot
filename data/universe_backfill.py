@@ -183,18 +183,37 @@ def _fetch_all_universe_baostock_daily() -> list:
     return []
 
 
+def _fetch_all_universe_hithink() -> list:
+    """同花顺研究快照分页（服务器已配置key时的可靠路径，~60页覆盖全市场）。"""
+    try:
+        from data.research_universe import _hithink_active_stocks
+        stocks = _hithink_active_stocks(100000)
+        codes = [c for c in stocks if c.startswith(ALL_UNIVERSE_CODE_PREFIXES)]
+        if codes:
+            logger.info("同花顺全市场列表: %d只", len(set(codes)))
+        return sorted(set(codes))
+    except Exception as exc:
+        logger.warning("同花顺全市场列表失败: %s", type(exc).__name__)
+        return []
+
+
 def _fetch_all_universe() -> list:
     """全部A股（主板+创业板，排除科创/北交所/指数/ETF）。
 
-    优先东财分页（快、无需登录）；东财不可用（如502）时回退
-    Baostock单日快照，最后才是Baostock全量stock_basic（易超时）。
+    回退顺序：东财分页（最快，但push2偶发502）→ 同花顺研究快照分页
+    （需key，已验证可用）→ Baostock单日快照 → Baostock全量stock_basic
+    （易超时，最后手段）。
     """
     try:
         codes = _fetch_all_universe_eastmoney()
         if codes:
             return codes
     except Exception as exc:
-        logger.warning("东财全市场列表失败，回退Baostock: %s", type(exc).__name__)
+        logger.warning("东财全市场列表失败，回退同花顺: %s", type(exc).__name__)
+
+    codes = _fetch_all_universe_hithink()
+    if codes:
+        return codes
 
     codes = _fetch_all_universe_baostock_daily()
     if codes:
