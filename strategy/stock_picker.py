@@ -629,6 +629,9 @@ def pick_stocks(
         # 过滤退市
         if "退" in name:
             return False
+        # 过滤 ST（风险警示板，5%涨跌幅且含退市风险）
+        if "ST" in name:
+            return False
         # 过滤名称过短（可能是异常数据）
         if len(c.name.strip()) < 2:
             return False
@@ -637,6 +640,9 @@ def pick_stocks(
             return False
         # 过滤科创板（688开头，无权限）
         if code.startswith("688"):
+            return False
+        # 成交额过滤：来源明确给出成交额且低于全局下限(PICKER_MIN_AMOUNT)时剔除
+        if 0 < c.amount < PICKER_MIN_AMOUNT:
             return False
         return True
 
@@ -776,13 +782,16 @@ def pick_stocks_by_strategy(
     return results
 
 
-def _get_active_stocks(min_amount: float = 5000, limit: int = 500) -> Dict[str, str]:
+def _get_active_stocks(min_amount: float = None, limit: int = 500) -> Dict[str, str]:
     """
     从东方财富获取今日活跃股（按成交额排序）
     返回 {code: name} 字典
 
-    过滤: ST/北交所/科创板/成交额低于阈值
+    过滤: ST/北交所/科创板/成交额低于阈值/动态PE超上限
+    min_amount 为 None 时使用全局配置 PICKER_MIN_AMOUNT（万元）
     """
+    if min_amount is None:
+        min_amount = PICKER_MIN_AMOUNT
     stocks = {}
     try:
         # 东方财富实时行情接口（按成交额排序）
@@ -796,7 +805,7 @@ def _get_active_stocks(min_amount: float = 5000, limit: int = 500) -> Dict[str, 
             "invt": 2,
             "fid": "f6",       # 按成交额排序
             "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",  # 沪深A股
-            "fields": "f12,f14,f6",  # 代码,名称,成交额
+            "fields": "f12,f14,f6,f9",  # 代码,名称,成交额,动态PE
         }
         resp = requests.get(url, params=params, timeout=15)
         data = resp.json()
@@ -824,8 +833,21 @@ def _get_active_stocks(min_amount: float = 5000, limit: int = 500) -> Dict[str, 
             if amount_wan < min_amount:
                 continue
 
-            # 过滤退市
-            if "退" in name:
+            # 动态PE过滤（亏损股PE为负，不在此处理，仅过滤高估正PE）
+            try:
+                pe_raw = item.get("f9")
+                pe_value = float(pe_raw) if pe_raw not in (None, "", "-") else None
+            except (TypeError, ValueError):
+                pe_value = None
+            if pe_value is not None and pe_value > PICKER_MAX_PE:
+                logger.debug(f"活跃股PE超上限剔除 {code}: PE={pe_value}")
+                continue
+
+            # 过滤退市/ST
+            name_upper = name.upper()
+            if "退" in name_upper:
+                continue
+            if "ST" in name_upper:
                 continue
             if code.startswith(("8", "4", "920")):  # 北交所
                 continue

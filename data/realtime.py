@@ -58,7 +58,9 @@ def _parse_tencent_line(line: str) -> Optional[RealtimeQuote]:
             turnover=float(parts[38]) if parts[38] else 0,
             pe=float(parts[39]) if parts[39] else 0,
             market_cap=float(parts[45]) / 10000 if parts[45] else 0,  # 万→亿
-            timestamp=parts[30] if parts[30] else datetime.now().strftime("%Y%m%d%H%M%S"),
+            # 缺时间戳时留空（validate_quote 会 fail-closed 拒绝），
+            # 不得用当前时间顶替——那会让过期快照绕过新鲜度校验。
+            timestamp=parts[30] if parts[30] else "",
         )
     except (ValueError, IndexError):
         return None

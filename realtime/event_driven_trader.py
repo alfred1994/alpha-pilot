@@ -45,20 +45,24 @@ class EventDrivenTrader:
         """低频定时任务（复盘、市场环境识别）"""
         from scheduler.pipeline import run_review
 
+        last_review_date = None
         while self._running:
             market = get_market_status()
             now = datetime.now()
 
-            # 收盘后复盘
-            if market == "closed" and now.hour == 15 and now.minute >= 5:
+            # 收盘后复盘: get_market_status() 返回中文状态("盘后"/"休市"等)，
+            # 15:05 之后触发，每个交易日最多一次。
+            if (
+                market == "盘后"
+                and (now.hour, now.minute) >= (15, 5)
+                and last_review_date != now.strftime("%Y-%m-%d")
+            ):
+                last_review_date = now.strftime("%Y-%m-%d")
                 try:
                     logger.info("触发收盘复盘")
                     await asyncio.to_thread(run_review)
                 except Exception as e:
                     logger.error(f"复盘失败: {e}")
-
-                # 复盘后等待到次日
-                await asyncio.sleep(3600)
 
             await asyncio.sleep(60)
 
