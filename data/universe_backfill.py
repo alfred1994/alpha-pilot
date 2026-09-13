@@ -117,8 +117,60 @@ def _load_pool_universe() -> list:
     return sorted(set(codes))
 
 
+# 沪深A股主板+创业板代码前缀（排除科创688/689、北交所、B股、指数、ETF）
+ALL_UNIVERSE_CODE_PREFIXES = (
+    "600", "601", "603", "605",          # 沪主板
+    "000", "001", "002", "003",          # 深主板
+    "300", "301", "302",                 # 创业板
+)
+
+
+def _fetch_all_universe_eastmoney() -> list:
+    """东财 clist 分页拉全市场A股列表（无需登录，约30页）。"""
+    import requests
+
+    codes = []
+    url = "https://push2.eastmoney.com/api/qt/clist/get"
+    page_size = 200
+    pn, total = 1, None
+    while True:
+        params = {
+            "pn": pn, "pz": page_size, "po": 0, "np": 1, "fltt": 2, "invt": 2,
+            "fid": "f12",  # 按代码排序，分页稳定
+            "fs": "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23",  # 沪深A股
+            "fields": "f12,f14",
+        }
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json() or {}
+        payload = data.get("data") or {}
+        diff = payload.get("diff") or []
+        if total is None:
+            total = payload.get("total") or 0
+        for item in diff:
+            code = str(item.get("f12", ""))
+            if code.startswith(ALL_UNIVERSE_CODE_PREFIXES):
+                codes.append(code)
+        if not diff or pn * page_size >= total:
+            break
+        pn += 1
+        time.sleep(0.2)
+    logger.info("东财全市场列表: %d只 (%d页)", len(set(codes)), pn)
+    return sorted(set(codes))
+
+
 def _fetch_all_universe() -> list:
-    """Baostock 全部 A 股（主板+创业板，排除科创/北交所/指数/ETF）。"""
+    """全部A股（主板+创业板，排除科创/北交所/指数/ETF）。
+
+    优先东财分页（快、无需登录）；Baostock 全量 stock_basic 查询在
+    低配服务器上经常超过75s超时，仅作兜底。
+    """
+    try:
+        codes = _fetch_all_universe_eastmoney()
+        if codes:
+            return codes
+    except Exception as exc:
+        logger.warning("东财全市场列表失败，回退Baostock: %s", type(exc).__name__)
+
     from data.history import get_stock_list
 
     df = get_stock_list()
@@ -127,9 +179,7 @@ def _fetch_all_universe() -> list:
     codes = []
     for raw in df["code"].astype(str):
         clean = raw.split(".")[-1]
-        if raw.startswith("sh.6") and not raw.startswith("sh.688"):
-            codes.append(clean)
-        elif raw.startswith("sz.0") or raw.startswith("sz.3"):
+        if clean.startswith(ALL_UNIVERSE_CODE_PREFIXES):
             codes.append(clean)
     return sorted(set(codes))
 

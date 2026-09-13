@@ -124,11 +124,48 @@ def test_universe_all_filter():
     assert_true(codes.count("000001") == 1, "指数与股票不混淆")
 
 
+def test_universe_all_eastmoney_pagination():
+    print("测试5: 东财分页全市场列表与板块过滤")
+    calls = []
+
+    class _Resp:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, params=None, timeout=None):
+        calls.append(params["pn"])
+        pn = params["pn"]
+        if pn == 1:
+            diff = [
+                {"f12": "600000", "f14": "浦发银行"},
+                {"f12": "688001", "f14": "科创板"},
+                {"f12": "300750", "f14": "宁德时代"},
+                {"f12": "510300", "f14": "ETF"},
+            ]
+            total = 3
+        else:
+            diff = [{"f12": "000001", "f14": "平安银行"}]
+            total = 3
+        return _Resp({"data": {"total": total, "diff": diff}})
+
+    import requests as requests_mod
+    with mock.patch.object(requests_mod, "get", side_effect=fake_get):
+        codes = ub._fetch_all_universe_eastmoney()
+    assert_true(calls == [1, 2], f"分页到总数为止({calls})")
+    assert_true("600000" in codes and "300750" in codes and "000001" in codes, "A股保留")
+    assert_true("688001" not in codes, "科创板剔除")
+    assert_true("510300" not in codes, "ETF剔除")
+
+
 def main():
     test_resource_detection()
     test_disk_guard()
     test_incremental_and_full_modes()
     test_universe_all_filter()
+    test_universe_all_eastmoney_pagination()
     print("\n全市场回填工具测试通过")
 
 
