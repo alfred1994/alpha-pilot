@@ -114,7 +114,9 @@ def test_universe_all_filter():
         "type": ["1"] * 8,
         "status": ["1"] * 8,
     })
-    with mock.patch("data.history.get_stock_list", return_value=fake):
+    # 强制东财路径返回空，走 Baostock 兜底（测试运行器禁网，不能真发请求）
+    with mock.patch.object(ub, "_fetch_all_universe_eastmoney", return_value=[]), \
+         mock.patch("data.history.get_stock_list", return_value=fake):
         codes = ub._fetch_all_universe()
     assert_true("600000" in codes and "601398" in codes, "沪深主板保留")
     assert_true("000001" in codes and "300750" in codes, "深主板/创业板保留")
