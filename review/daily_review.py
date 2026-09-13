@@ -38,10 +38,11 @@ def _fetch_hs300_daily_pct(date: str = None) -> Optional[float]:
 
 
 def _compute_benchmark_pnl_pct(date: str, review_dir: str = None) -> float:
-    """计算并累计沪深300基准收益率（相对复盘序列起点）。"""
-    daily = _fetch_hs300_daily_pct(date)
-    if daily is None:
-        return 0.0
+    """计算并累计沪深300基准收益率（相对复盘序列起点）。
+
+    当日基准取数失败时延续上一日的累计值（曲线保持连续），
+    而不是归零重算——旧实现会把缺失日之后的基准曲线整体作废。
+    """
     directory = review_dir or REVIEW_DIR
     prev_bm = 0.0
     try:
@@ -56,7 +57,25 @@ def _compute_benchmark_pnl_pct(date: str, review_dir: str = None) -> float:
                     prev_bm = float(json.load(f).get("benchmark_pnl_pct") or 0.0)
     except Exception:
         prev_bm = 0.0
+
+    daily = _fetch_hs300_daily_pct(date)
+    if daily is None:
+        logger.warning(f"沪深300基准当日({date})取数失败，延续上一日累计基准 {prev_bm:+.4f}")
+        return prev_bm
     return (1.0 + prev_bm) * (1.0 + daily) - 1.0
+
+
+def _parse_dimensions(raw) -> dict:
+    """解析成交记录中的六维信号快照（DB 中为 JSON 字符串，容错解析）。"""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except (ValueError, TypeError):
+            return {}
+    return {}
 
 
 @dataclass
@@ -88,6 +107,8 @@ class TradeReview:
     signal_score: float = 0.0
     result_pct: float = 0.0  # 如果是卖出，记录盈亏
     hit: bool = True         # 信号是否命中（盈利=命中）
+    market_regime: str = ""  # 成交时的市场环境（用于分环境归因）
+    dimensions: dict = None  # 六维信号得分快照（用于信号质量归因）
 
 
 @dataclass
@@ -301,6 +322,8 @@ class DailyReviewer:
                 signal_score=t.get("signal_score") or 0,
                 result_pct=pnl_pct,
                 hit=hit,
+                market_regime=str(t.get("market_regime") or ""),
+                dimensions=_parse_dimensions(t.get("dimensions")),
             ))
 
         total_trades = win_count + lose_count
@@ -432,6 +455,9 @@ class DailyReviewer:
                     "code": t.code, "name": t.name,
                     "action": t.action, "price": t.price,
                     "shares": t.shares, "reason": t.reason,
+                    "signal_score": t.signal_score,
+                    "market_regime": t.market_regime,
+                    "dimensions": t.dimensions or {},
                     "result_pct": t.result_pct, "hit": t.hit,
                 }
                 for t in result.trade_reviews
@@ -468,7 +494,7 @@ class DailyReviewer:
         逻辑:
         1. 查找指定日期所有llm_decisions记录（outcome为空的）
         2. 对BUY决策：通过code关联trades表，找到对应的卖出交易
-        3. 计算盈亏百分比，更新outcome='WIN'/'LOSS'和outcome_pct
+        3. 计算盈亏百分比，更新outcome='win'/'lose'/'breakeven'和outcome_pct
         4. 对SELL决策：通过code关联trades表，找到卖出交易的profit_pct
 
         Args:
@@ -483,7 +509,7 @@ class DailyReviewer:
         updated_count = 0
         try:
             from data.database import Database
-            with Database() as db:
+            with Database(db_path=self.db_path) as db:
                 # 1. 查找今日outcome为空的决策记录
                 decisions = db.get_llm_decisions(start_date=date, end_date=date, limit=200)
                 # 过滤出outcome为空的
@@ -532,7 +558,7 @@ class DailyReviewer:
                             sell_price = sell_trade.get("price", 0)
                             if buy_price > 0:
                                 outcome_pct = (sell_price - buy_price) / buy_price * 100
-                                outcome = "WIN" if outcome_pct > 0 else ("LOSS" if outcome_pct < 0 else "BREAKEVEN")
+                                outcome = "win" if outcome_pct > 0 else ("lose" if outcome_pct < 0 else "breakeven")
 
                     elif dec_action == "SELL":
                         # SELL决策：直接用交易记录的pnl_pct/profit_pct
@@ -550,7 +576,7 @@ class DailyReviewer:
                                     raw_pnl = None
                             if raw_pnl is not None:
                                 outcome_pct = float(raw_pnl) * 100.0
-                                outcome = "WIN" if outcome_pct > 0 else ("LOSS" if outcome_pct < 0 else "BREAKEVEN")
+                                outcome = "win" if outcome_pct > 0 else ("lose" if outcome_pct < 0 else "breakeven")
 
                     if outcome is not None:
                         db.update_llm_decision(dec_id, {
@@ -659,8 +685,8 @@ class DailyReviewer:
                         if buy_price > 0 and sell_price > 0:
                             # 已清仓：用卖出价与买入价计算盈亏
                             outcome_pct = (sell_price - buy_price) / buy_price * 100
-                            outcome = "WIN" if outcome_pct > 0 else (
-                                "LOSS" if outcome_pct < 0 else "BREAKEVEN"
+                            outcome = "win" if outcome_pct > 0 else (
+                                "lose" if outcome_pct < 0 else "breakeven"
                             )
 
                     elif dec_action == "SELL":
@@ -681,8 +707,8 @@ class DailyReviewer:
                                     raw_pnl = None
                             if raw_pnl is not None:
                                 outcome_pct = float(raw_pnl) * 100.0
-                                outcome = "WIN" if outcome_pct > 0 else (
-                                    "LOSS" if outcome_pct < 0 else "BREAKEVEN"
+                                outcome = "win" if outcome_pct > 0 else (
+                                    "lose" if outcome_pct < 0 else "breakeven"
                                 )
 
                     # 5. 写回数据库
