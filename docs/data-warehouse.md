@@ -34,7 +34,7 @@ python3 main.py --backfill-kline --backfill-universe all
 - `--backfill-universe pool|all|active`：股票池，默认 pool
 - `--backfill-full`：全区间重拉（默认从 20160101 起），可修复历史中间缺口；
   覆盖不足的股票会在 `get_daily` 内部继续回退到下一数据源
-- `--backfill-start YYYYMMDD`：全区间起点，默认 20160101
+- `--backfill-start YYYYMMDD`：全区间起点，默认 20200101（同花顺日线接口窗口上限10年，超出会被自动钳制）
 - `--backfill-workers N`：并发数；默认按资源自适应
 
 ### 资源自适应

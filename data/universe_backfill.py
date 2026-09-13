@@ -34,8 +34,11 @@ BACKFILL_REPORT_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "backfill_report.json"
 )
 
-# 全区间回填默认起点（约10年交易日 ≈ 2420根/只）
-DEFAULT_BACKFILL_START = "20160101"
+# 全区间回填默认起点。同花顺日线接口窗口上限10年（hithink.py 契约），
+# 2020年距今约6.7年，为各数据源留出余量。
+DEFAULT_BACKFILL_START = "20200101"
+# 单次请求窗口上限（自然日）：同花顺日线契约最大10年，留一个月余量
+MAX_REQUEST_WINDOW_DAYS = 3620
 # 增量模式：最新K线距请求末端超过该自然日数才视为需要补拉
 INCREMENTAL_STALE_DAYS = 3
 # 磁盘安全系数：预估需求 × 该系数 > 空闲空间则拒绝运行
@@ -271,6 +274,11 @@ def _backfill_one(code: str, start_date: str, end_date: str,
                   full: bool) -> dict:
     """回填单只股票，返回 {code, status, rows, latest}。"""
     from data.history import get_daily, _assess_daily_coverage
+
+    # 钳制请求窗口：超出同花顺10年上限会让每股请求都失败并落到慢速源
+    window_floor = (datetime.now() - timedelta(days=MAX_REQUEST_WINDOW_DAYS)).strftime("%Y%m%d")
+    if len(start_date) == 8 and start_date < window_floor:
+        start_date = window_floor
 
     start_fmt = f"{start_date[:4]}-{start_date[4:6]}-{start_date[6:8]}"
     end_fmt = f"{end_date[:4]}-{end_date[4:6]}-{end_date[6:8]}"
