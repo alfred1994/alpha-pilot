@@ -1,133 +1,59 @@
 # TODO 待办事项
 
-## 📅 2026-06-12 待完成
+> 2026-06 的旧清单已完成清理：Telegram Bot 控制面板整节未实施但暂缓；
+> 重构主线 Phase 2-7 实际早已落地（market_regime/llm_trader/regime_config/memory 均已存在）。
+> 当前遗留按优先级重写如下（2026-09-14 全面加固后），已完成项见 docs/hardening-2026-09-14.md。
 
-### 1. Telegram Bot 控制面板 🚧 [进行中]
-**需求**：通过 Telegram Bot 自定义面板控制量化系统
+## P2 研究能力（依赖全市场数据地基，收益最大）
 
-**功能设计**：
-- [ ] 自定义键盘（快捷操作按钮）
-  - 启动/停止自动盯盘
-  - 立即选股扫描
-  - 查看持仓/收益
-  - 手动买入/卖出
-  - 查看Top候选
-  
-- [ ] Inline 按钮（动态交互面板）
-  - 候选股票列表（点击查看详情）
-  - 持仓操作（止损/止盈/平仓）
-  - 策略配置切换（低位模式/混合模式）
-  
-- [ ] 命令系统
-  - `/start` - 显示主菜单
-  - `/status` - 系统状态（运行中/已暂停/账户概览）
-  - `/positions` - 当前持仓详情
-  - `/scan` - 立即扫描选股
-  - `/buy <code>` - 手动买入
-  - `/sell <code>` - 手动卖出
-  - `/config` - 查看/修改配置
-  - `/logs` - 最近日志
+- [ ] **walk-forward 回测**：fast_backtest 补 vectorbt 依赖并接 CLI，参数网格改为
+  滚动 train/validation 评估（当前 fast_backtest/optimizer 均为样本内过拟合，
+  全库无 walk-forward）
+- [ ] **回测与实盘打分口径统一**：SimpleBacktestEngine 把 sentiment/fundamental
+  填中性 50 分跳过（portfolio/backtest.py:810），实盘是五维+LLM+舆情，
+  `--backtest` 结论无法外推
+- [ ] **绩效接线**：PerformanceAnalyzer（夏普/索提诺/卡尔玛/最大回撤）接进
+  run_review 与 LLM 复盘 prompt；information_ratio 声明未实现
+- [ ] **基准进决策链**：benchmark_pnl_pct 目前只进 JSON 和 web 画图，
+  不进 LLM 复盘 prompt、不进策略指令 prompt（指令却要求"相对基准改善"）
+- [ ] **regime 归因**：`trades.market_regime` 列闲置，无分环境胜率归因；
+  `candidate_outcomes.regime` 未被聚合使用
+- [ ] **RPS 横截面激活**：数据地基就绪后把 rps_breakout 从"影子专用"纳入评分
 
-- [ ] 状态查询
-  - 账户余额、持仓、收益率
-  - 今日选股信号Top10
-  - 最新交易记录
-  - 风控状态（止损触发、熔断状态）
+## P2 执行与研究纪律
 
-**技术方案**：
-- 使用 `python-telegram-bot` 库
-- 创建 `scheduler/telegram_bot.py` 模块
-- 集成到 `main.py` 的自动盯盘循环
-- 通过 Bot 回调函数触发系统功能
+- [ ] **A/B 自动采用参数门槛过低**：ab_test 3 笔/2 天即可改写生产参数
+  （adaptive.enable_ab_testing 默认开启），应提高到与 shadow_eval 一致
+  （20 交易日/10 笔）并加显著性检验
+- [ ] **影子晋级人工闭环**：shadow_eval 晋级候选只写 `shadow_promotions`
+  candidate 行，缺 `--shadow-approve` 审批命令
+- [ ] **老 10 策略补 as_of 防穿越**：ma_cross/rsi_bounce 等不支持 `as_of`、
+  无 daily_window 校验（新 4 策略已有）
+- [ ] **撮合现实性**：涨跌停无法成交/一字板判断（需每日涨跌停价表）、
+  滑点模型、部分成交模拟；回测撮合层同缺
+- [ ] **复权因子表**：k_daily 只存 qfq 且基准固化在写入时刻，除权后旧历史
+  行混合复权风险；建议每年对持仓+研究池跑 `--backfill-full` 重置（临时方案），
+  长期补复权因子表
 
-**相关文件**：
-- `scheduler/notifier.py` - 现有通知模块（单向推送）
-- `config.py` - 配置参数（需添加Bot控制开关）
-- `main.py` - 主入口（需集成Bot循环）
+## P3 选股增强
 
-**环境变量**：
-```bash
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
-TELEGRAM_BOT_ENABLED=1             # 新增：是否启用Bot控制
-```
+- [ ] **行业维度**：Candidate.industry 当前存"量比3.5"类垃圾文本，舆情板块
+  加成用关键词匹配股票名称几乎不命中；需接真实行业数据后做行业中性化/集中度
+- [ ] **打分反馈闭环**：各池打分分段硬编码，无历史胜率回溯自动调权
+- [ ] **全市场技术扫描**：本地全量库就绪后，把形态扫描从活跃股 Top200
+  扩展到全市场（并行化）
+- [ ] **指标收敛**：RSI/MACD/ATR/KDJ/BOLL 各有 2-4 套实现且数值不一致，
+  收敛到 ths_indicators.py 向量化实现 + 常驻缓存层
+- [ ] **解禁/质押/商誉风险维度**深度集成（解禁目前仅活跃股前 30 只软惩罚）
 
----
+## P3 运维与数据质量
 
-## 📋 重构主线进度
-
-根据 `CLAUDE.md` 的7阶段重构计划：
-
-- [x] **Phase 1**: SQLite存储层 + 长桥数据源集成 ✅ (已完成)
-  - 提交: `2bba501 feat: 事件驱动架构 + Phase1数据源集成`
-
-- [ ] **Phase 2**: 市场环境识别器 🔜 (下一步)
-  - 创建 `strategy/market_regime.py`
-  - 识别：牛市/熊市/震荡/极端行情
-  - 输出：环境标签 + 置信度
-
-- [ ] **Phase 3**: LLM决策引擎
-  - 创建 `strategy/llm_trader.py`
-  - 替换现有加权打分逻辑
-  - 集成 MiMo LLM API
-
-- [ ] **Phase 4**: 交易记忆系统
-  - 创建 `strategy/memory.py`
-  - 存储历史决策 + 结果
-  - 反馈到LLM上下文
-
-- [ ] **Phase 5**: 策略配置中心
-  - 创建 `strategy/regime_config.py`
-  - 根据市场环境自动调整参数
-
-- [ ] **Phase 6**: 执行层+风控层改造
-  - 适配LLM决策输出
-  - 增强风控规则
-
-- [ ] **Phase 7**: 回测引擎改造
-  - 支持LLM决策回测
-  - 性能指标统计
-
----
-
-## 🎯 选股优化进度
-
-- [x] **低位选股器** ✅ (已完成)
-  - 提交: `e28e5ed feat: 新增低位潜力股选股器`
-  - 文件: `strategy/low_position_picker.py`
-  - 文档: `docs/选股优化说明.md`
-  
-- [ ] **测试验证** (待完成)
-  - [ ] 运行 `tests/test_low_position.py` 验证数据源
-  - [ ] 回测低位模式 vs 混合模式收益对比
-  - [ ] 调整评分权重（可能需要优化）
-
-- [ ] **后续优化方向** (已规划)
-  - [ ] 增加基本面筛选（PE/PB/ROE）
-  - [ ] 技术形态识别（MACD底背离、RSI超卖）
-  - [ ] 行业轮动分析
-  - [ ] 解禁预警集成
-
----
-
-## 🐛 已知问题
-
-1. **API稳定性**
-   - 东方财富部分接口偶尔超时
-   - 需增加重试机制和缓存
-
-2. **数据质量**
-   - 涨停板/龙虎榜数据可能缺失
-   - 需要多数据源验证
-
-3. **性能优化**
-   - 选股扫描速度慢（扫描100只需30-60秒）
-   - 考虑并发请求 + 数据预加载
-
----
-
-## 📝 备注
-
-- 优先级: **Telegram Bot** > Phase 2市场环境识别 > 测试验证
-- Hermes Agent 通过 Telegram 交互，Bot 面板是刚需
-- 重构主线可以并行推进，互不阻塞
+- [ ] **3 个存量禁网测试失败**：test_account_pnl_consistency /
+  test_issue_fixes / test_multi_day_replay 内部 mock 不完整
+- [ ] **k_daily 历史缺口修复**：同花顺上游 ~11 天缺口，可用 Baostock 逐股
+  定点补（夜间低峰执行）
+- [ ] **降级交易日历**：Baostock 失败时回退"周一至五全是交易日"（market_calendar.py:73），
+  可选本地节假日表兜底
+- [ ] **通知分级**：Telegram 无 severity 分层/重试/备用渠道，熔断/停机无主动推送
+- [ ] **event_driven 链路**：`--realtime` 事件进程无单实例锁、可与 --auto 并发写
+  共享状态（执行有 DB claim 兜底）
