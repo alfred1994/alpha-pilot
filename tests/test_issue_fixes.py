@@ -11,9 +11,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from data.database import Database
 from strategy.cb_t0_strategy import is_cb_code, should_buy, should_sell
 from execution.paper_account import PaperAccount
+import review.daily_review as daily_review_module
 from review.daily_review import DailyReviewer, TradeReview
 from strategy.llm_trader import _parse_decision_response
 from strategy.decision import _compute_capital_score, compute_dimension_scores, get_effective_signal_weights, DimensionScore
+
+# 禁网护栏: run_review 内的沪深300基准取数走真实数据源，离线回归统一 mock
+daily_review_module._fetch_hs300_daily_pct = lambda date=None: 0.001
 
 
 def ok(msg):

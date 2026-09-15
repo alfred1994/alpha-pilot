@@ -16,12 +16,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
 from execution.broker import PaperBrokerAdapter
+import review.daily_review as daily_review_module
 from review.daily_review import DailyReviewer
 from review.llm_review import extract_and_save_lessons
 from risk.drawdown import DrawdownController
 from risk.system_risk import SystemRiskController
 from scheduler.pipeline import execute_trade_plan
 from strategy.memory import TradeMemory
+
+# 禁网护栏: run_review 内的沪深300基准取数走真实数据源，离线回归统一 mock
+daily_review_module._fetch_hs300_daily_pct = lambda date=None: 0.001
 
 
 def assert_true(condition, message):

@@ -10,8 +10,12 @@ from data.database import Database
 from execution.paper_account import PaperAccount
 import execution.paper_account as paper_account_module
 import data.realtime as realtime_module
+import review.daily_review as daily_review_module
 from review.daily_review import DailyReviewer
 from web.routers import status as status_router
+
+# 禁网护栏: run_review 内的沪深300基准取数走真实数据源，离线回归统一 mock
+daily_review_module._fetch_hs300_daily_pct = lambda date=None: 0.001
 
 
 def assert_true(condition, message):
