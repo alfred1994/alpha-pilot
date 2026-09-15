@@ -4,6 +4,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 from unittest import mock
 
 import pandas as pd
@@ -35,7 +36,10 @@ def cleanup(*paths):
                 os.unlink(candidate)
 
 
-def _fake_daily_df(code, latest="2026-09-11"):
+def _fake_daily_df(code, latest=None):
+    # 默认取"今天"：新鲜窗口按自然日计算，硬编码日期会随时间腐坏
+    if latest is None:
+        latest = datetime.now().strftime("%Y-%m-%d")
     df = pd.DataFrame({
         "date": [latest],
         "open": [10.0], "high": [10.5], "low": [9.8],
@@ -73,10 +77,11 @@ def test_disk_guard():
 def test_incremental_and_full_modes():
     print("测试3: 增量/全区间任务编排")
     db_path = temp_path("_backfill.db")
+    today = datetime.now().strftime("%Y-%m-%d")
     try:
         with Database(db_path=db_path) as db:
             db.insert_k_daily([
-                {"code": "600001", "date": "2026-09-11", "open": 10, "high": 10.5,
+                {"code": "600001", "date": today, "open": 10, "high": 10.5,
                  "low": 9.8, "close": 10.2, "volume": 1000, "amount": 10200},
             ], source="test")
             # 600002 无数据 → 增量模式也纳入任务
