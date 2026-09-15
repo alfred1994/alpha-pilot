@@ -165,8 +165,69 @@ def promote_candidates(db, min_days: int = DEFAULT_MIN_DAYS,
     return {"candidates": sorted(candidates)}
 
 
-def expire_stale_ab_tests(db, max_age_days: int = 14) -> int:
-    """把超过最大年龄仍 running 的旧 A/B 实验标记 expired，返回清理数。"""
+def decide_candidate(db, variant_id: str, approve: bool, note: str = "") -> dict:
+    """人工审批晋级候选（影子晋级闭环的最后一步）。
+
+    approved 仅代表人工认可该变体的样本表现并记录在案；正式策略参数
+    切换仍需人工按 AI 策略指令流程显式生成新版本，本函数绝不自动改参。
+    审批行不存在时直接以当前指标建档（允许在 promote_candidates 提名前
+    主动批准/拒绝某个已知变体）。已 approved/rejected 的变体不会再被
+    promote_candidates 重新提名。
+
+    Args:
+        db: Database 实例
+        variant_id: 影子变体 ID（须在 SHADOW_VARIANT_IDS 中）
+        approve: True=批准(approved)，False=拒绝(rejected)
+        note: 人工备注
+
+    Returns:
+        {"ok": bool, "variant_id": ..., "status": ..., "error": ...}
+    """
+    ensure_tables(db)
+    _ensure_promotion_table(db)
+    variant_id = str(variant_id or "").strip()
+    if not variant_id:
+        return {"ok": False, "error": "variant_id_required"}
+    if variant_id not in SHADOW_VARIANT_IDS:
+        return {"ok": False, "error": f"unknown_variant:{variant_id}"}
+
+    now = datetime.now().isoformat()
+    new_status = "approved" if approve else "rejected"
+    row = db.conn.execute(
+        "SELECT status FROM shadow_promotions WHERE variant_id=?",
+        (variant_id,),
+    ).fetchone()
+    if row:
+        db.conn.execute(
+            "UPDATE shadow_promotions SET status=?, note=?, updated_at=?"
+            " WHERE variant_id=?",
+            (new_status, note, now, variant_id),
+        )
+    else:
+        metrics = compute_variant_metrics(db, variant_id)
+        baseline = compute_variant_metrics(db, "baseline")
+        db.conn.execute(
+            "INSERT INTO shadow_promotions"
+            " (variant_id, status, metrics, baseline_metrics, note, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (variant_id, new_status,
+             json.dumps(metrics, ensure_ascii=False),
+             json.dumps(baseline, ensure_ascii=False),
+             note, now, now),
+        )
+    db.conn.commit()
+    logger.info("[影子] 人工审批: %s → %s%s", variant_id, new_status,
+                f" (note={note})" if note else "")
+    return {"ok": True, "variant_id": variant_id, "status": new_status,
+            "note": note, "updated_at": now}
+
+
+def expire_stale_ab_tests(db, max_age_days: int = 45) -> int:
+    """把超过最大年龄仍 running 的旧 A/B 实验标记 expired，返回清理数。
+
+    默认 45 天：A/B 评估门槛已对齐影子评估（20 个交易日/10 笔样本），
+    过短的最大年龄会在实验成熟前将其误杀。
+    """
     table = db.conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='ab_tests'"
     ).fetchone()

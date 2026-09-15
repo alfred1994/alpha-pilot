@@ -243,7 +243,13 @@ class AdaptiveEngine:
                 abm = ABTestManager(db=ab_db)
                 concluded = abm.evaluate_all_running()
                 for test_result in concluded:
-                    if test_result.get("winner") == "treatment":
+                    # 自动采用双重门槛: 实验组胜出 且 Welch t 检验显著(p<0.05)。
+                    # evaluate_test 已把不显著实验判为平局，这里再显式校验一次，
+                    # 防止历史结论行缺显著性字段时被误采用。
+                    if (
+                        test_result.get("winner") == "treatment"
+                        and test_result.get("significant", False)
+                    ):
                         best = abm.get_test_params(test_result["test_id"], "treatment")
                         if best:
                             logger.info(

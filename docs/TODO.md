@@ -3,6 +3,8 @@
 > 2026-06 的旧清单已完成清理：Telegram Bot 控制面板整节未实施但暂缓；
 > 重构主线 Phase 2-7 实际早已落地（market_regime/llm_trader/regime_config/memory 均已存在）。
 > 当前遗留按优先级重写如下（2026-09-14 全面加固后），已完成项见 docs/hardening-2026-09-14.md。
+> 2026-09-16 复盘研究闭环批次：绩效接线/基准进决策链/regime 归因/A-B 门槛/影子晋级审批 已完成（勾选项，
+> 测试 tests/test_review_research_discipline.py）。
 
 ## P2 研究能力（依赖全市场数据地基，收益最大）
 
@@ -12,21 +14,26 @@
 - [ ] **回测与实盘打分口径统一**：SimpleBacktestEngine 把 sentiment/fundamental
   填中性 50 分跳过（portfolio/backtest.py:810），实盘是五维+LLM+舆情，
   `--backtest` 结论无法外推
-- [ ] **绩效接线**：PerformanceAnalyzer（夏普/索提诺/卡尔玛/最大回撤）接进
-  run_review 与 LLM 复盘 prompt；information_ratio 声明未实现
-- [ ] **基准进决策链**：benchmark_pnl_pct 目前只进 JSON 和 web 画图，
-  不进 LLM 复盘 prompt、不进策略指令 prompt（指令却要求"相对基准改善"）
-- [ ] **regime 归因**：`trades.market_regime` 列闲置，无分环境胜率归因；
-  `candidate_outcomes.regime` 未被聚合使用
+- [x] **绩效接线**（2026-09-16）：PerformanceAnalyzer 补齐 information_ratio
+  （基准累计净值对齐、跟踪误差），run_review 落盘 `performance` 块并进
+  format_review 与 LLM 复盘 prompt
+- [x] **基准进决策链**（2026-09-16）：benchmark_pnl_pct/超额/区间绩效/
+  分环境归因进 LLM 复盘 prompt 与策略指令 prompt（指令的"相对基准改善"
+  要求现在有数据可依）
+- [x] **regime 归因**（2026-09-16）：`trades.market_regime` 与
+  `candidate_outcomes.regime` 按环境聚合胜率/均盈（近90天），随复盘落盘
+  并进两类 prompt
 - [ ] **RPS 横截面激活**：数据地基就绪后把 rps_breakout 从"影子专用"纳入评分
 
 ## P2 执行与研究纪律
 
-- [ ] **A/B 自动采用参数门槛过低**：ab_test 3 笔/2 天即可改写生产参数
-  （adaptive.enable_ab_testing 默认开启），应提高到与 shadow_eval 一致
-  （20 交易日/10 笔）并加显著性检验
-- [ ] **影子晋级人工闭环**：shadow_eval 晋级候选只写 `shadow_promotions`
-  candidate 行，缺 `--shadow-approve` 审批命令
+- [x] **A/B 自动采用参数门槛过低**（2026-09-16）：评估门槛对齐影子评估
+  （20交易日/10笔），新增无依赖 Welch t 检验，p>=0.05 一律判平局；
+  adaptive 自动采用双重校验 `significant`；顺带修复 test_id 秒级碰撞
+  主键冲突静默失败；expire_stale_ab_tests 默认年龄 14→45 天
+- [x] **影子晋级人工闭环**（2026-09-16）：新增 `--shadow-approve VARIANT_ID`
+  / `--shadow-reject VARIANT_ID`（+`--shadow-note`），审批只改候选状态
+  （approved/rejected 不再被重新提名），正式参数切换仍走人工指令流程
 - [ ] **老 10 策略补 as_of 防穿越**：ma_cross/rsi_bounce 等不支持 `as_of`、
   无 daily_window 校验（新 4 策略已有）
 - [ ] **撮合现实性**：涨跌停无法成交/一字板判断（需每日涨跌停价表）、

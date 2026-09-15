@@ -16,9 +16,99 @@ import json
 import logging
 import math
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 logger = logging.getLogger("strategy.ab_test")
+
+# 评估门槛与影子评估(shadow_eval DEFAULT_MIN_DAYS/MIN_BUYS)对齐：
+# 低于该样本量得出的胜负差异大多是噪声，不允许据此改写生产参数。
+DEFAULT_MIN_TRADES = 10
+DEFAULT_MIN_DAYS = 20
+# Welch t 检验显著性水平：p >= 该值时按平局处理，不自动采用
+SIGNIFICANCE_ALPHA = 0.05
+
+
+def _betacf(a: float, b: float, x: float, max_iter: int = 300,
+            eps: float = 3e-12) -> float:
+    """正则化不完全贝塔函数的连分式（Lentz 算法）。"""
+    tiny = 1e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    h = d
+    for m in range(1, max_iter + 1):
+        m2 = 2 * m
+        aa = m * (b - m) * x / ((qam + m2) * (a + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        aa = -(a + m) * (qab + m) * x / ((a + m2) * (qap + m2))
+        d = 1.0 + aa * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + aa / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        h *= delta
+        if abs(delta - 1.0) < eps:
+            break
+    return h
+
+
+def _betainc(a: float, b: float, x: float) -> float:
+    """正则化不完全贝塔 I_x(a, b)。"""
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    log_front = (
+        math.lgamma(a + b) - math.lgamma(a) - math.lgamma(b)
+        + a * math.log(x) + b * math.log(1.0 - x)
+    )
+    front = math.exp(log_front)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _betacf(a, b, x) / a
+    return 1.0 - front * _betacf(b, a, 1.0 - x) / b
+
+
+def welch_t_test(samples_a: List[float], samples_b: List[float]) -> Tuple[float, float, float]:
+    """Welch t 检验（不依赖 scipy）。
+
+    Returns:
+        (t统计量, 自由度, 双尾p值)；任一组样本 <2 时返回 (0, 0, 1.0)。
+    """
+    n1, n2 = len(samples_a), len(samples_b)
+    if n1 < 2 or n2 < 2:
+        return 0.0, 0.0, 1.0
+
+    mean1 = sum(samples_a) / n1
+    mean2 = sum(samples_b) / n2
+    var1 = sum((x - mean1) ** 2 for x in samples_a) / (n1 - 1)
+    var2 = sum((x - mean2) ** 2 for x in samples_b) / (n2 - 1)
+
+    se = math.sqrt(var1 / n1 + var2 / n2)
+    if se <= 0:
+        return 0.0, 0.0, 1.0
+
+    t_stat = (mean1 - mean2) / se
+    numerator = (var1 / n1 + var2 / n2) ** 2
+    denominator = (var1 / n1) ** 2 / (n1 - 1) + (var2 / n2) ** 2 / (n2 - 1)
+    df = numerator / denominator if denominator > 0 else float(n1 + n2 - 2)
+    p_value = _betainc(df / 2.0, 0.5, df / (df + t_stat * t_stat))
+    return t_stat, df, p_value
 
 
 class ABTestManager:
@@ -52,8 +142,8 @@ class ABTestManager:
                 treatment_params TEXT NOT NULL,
                 control_regime TEXT,
                 treatment_regime TEXT,
-                min_trades INTEGER DEFAULT 5,
-                min_days INTEGER DEFAULT 3,
+                min_trades INTEGER DEFAULT 10,
+                min_days INTEGER DEFAULT 20,
                 result TEXT,
                 winner TEXT,
                 finished_at TEXT
@@ -85,7 +175,8 @@ class ABTestManager:
 
     def create_test(self, control_params: dict, treatment_params: dict,
                     control_regime: str = "", treatment_regime: str = "",
-                    min_trades: int = 5, min_days: int = 3) -> str:
+                    min_trades: int = DEFAULT_MIN_TRADES,
+                    min_days: int = DEFAULT_MIN_DAYS) -> str:
         """
         创建AB测试
 
@@ -100,7 +191,14 @@ class ABTestManager:
         Returns:
             test_id
         """
-        test_id = f"ab_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # 秒级时间戳在同秒创建多个实验时会主键冲突（冲突会被 except 静默
+        # 吞掉并返回已占用的 test_id），补微秒并查库确保唯一
+        test_id = f"ab_{datetime.now().strftime('%Y%m%d_%H%M%S%f')}"
+        if self.db:
+            while self.db.conn.execute(
+                "SELECT 1 FROM ab_tests WHERE test_id=? LIMIT 1", (test_id,)
+            ).fetchone():
+                test_id = f"ab_{datetime.now().strftime('%Y%m%d_%H%M%S%f')}1"
 
         if not self.db:
             return test_id
@@ -145,7 +243,8 @@ class ABTestManager:
         ).fetchone()
         if row:
             return row[0]
-        return self.create_test(control_params, treatment_params, regime, regime, min_trades=3, min_days=2)
+        return self.create_test(control_params, treatment_params, regime, regime,
+                                min_trades=DEFAULT_MIN_TRADES, min_days=DEFAULT_MIN_DAYS)
 
     def record_signal_once(self, test_id: str, group: str, code: str,
                            action: str, price: float):
@@ -197,7 +296,10 @@ class ABTestManager:
                 "control": {"trades": N, "win_rate": X, "avg_pnl": Y, "sharpe": Z},
                 "treatment": {"trades": N, "win_rate": X, "avg_pnl": Y, "sharpe": Z},
                 "winner": "control/treatment/tie",
-                "confidence": "high/medium/low"
+                "confidence": "high/medium/low",
+                "significant": True/False,  # Welch t 检验 p<0.05
+                "p_value": 双尾p值,
+                "t_stat": t统计量, "welch_df": 自由度,
             }
         """
         if not self.db:
@@ -232,8 +334,9 @@ class ABTestManager:
                 result["winner"] = row2[1]
             return result
 
-        # 统计两组表现
+        # 统计两组表现（保留逐笔收益样本供显著性检验）
         result = {"test_id": test_id, "status": "running"}
+        pnl_samples = {"control": [], "treatment": []}
 
         for group in ["control", "treatment"]:
             cursor = self.db.conn.execute(
@@ -260,6 +363,7 @@ class ABTestManager:
                 )
                 pnl_values = [r[0] for r in pnl_cursor.fetchall()
                               if r[0] is not None]
+                pnl_samples[group] = pnl_values
 
                 if len(pnl_values) > 1:
                     mean = sum(pnl_values) / len(pnl_values)
@@ -308,15 +412,26 @@ class ABTestManager:
 
             diff = abs(t_score - c_score)
 
+            # Welch t 检验：实验组与对照组逐笔收益差异是否显著。
+            # 不显著时一律按平局收场，防止噪声差异改写生产参数。
+            t_stat, welch_df, p_value = welch_t_test(
+                pnl_samples.get("treatment") or [],
+                pnl_samples.get("control") or [],
+            )
+            significant = p_value < SIGNIFICANCE_ALPHA
+
             if diff < 0.05:
+                winner = "tie"
+                confidence = "low"
+            elif not significant:
                 winner = "tie"
                 confidence = "low"
             elif t_score > c_score:
                 winner = "treatment"
-                confidence = "high" if diff > 0.2 else "medium"
+                confidence = "high"
             else:
                 winner = "control"
-                confidence = "high" if diff > 0.2 else "medium"
+                confidence = "high"
 
             result["winner"] = winner
             result["confidence"] = confidence
@@ -324,6 +439,10 @@ class ABTestManager:
             result["c_score"] = round(c_score, 4)
             result["t_score"] = round(t_score, 4)
             result["diff"] = round(diff, 4)
+            result["significant"] = significant
+            result["t_stat"] = round(t_stat, 4)
+            result["welch_df"] = round(welch_df, 2)
+            result["p_value"] = round(p_value, 6)
 
             # 更新数据库
             try:
@@ -339,7 +458,8 @@ class ABTestManager:
 
             logger.info(
                 f"AB测试结论: {test_id} → winner={winner} "
-                f"(confidence={confidence}, diff={diff:.4f})"
+                f"(confidence={confidence}, diff={diff:.4f}, "
+                f"p={p_value:.4f}, significant={significant})"
             )
 
         return result

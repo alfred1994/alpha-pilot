@@ -279,6 +279,20 @@ def cmd_shadow_report(args):
     }, ensure_ascii=False, indent=2))
 
 
+def cmd_shadow_decide(args):
+    """影子晋级候选人工审批：只改候选状态，不自动切换正式策略参数。"""
+    from data.database import Database
+    from strategy.shadow_eval import decide_candidate
+    approve = bool(args.shadow_approve)
+    variant_id = args.shadow_approve or args.shadow_reject
+    with Database() as db:
+        outcome = decide_candidate(
+            db, variant_id, approve=approve, note=args.shadow_note or ""
+        )
+    print(json.dumps(outcome, ensure_ascii=False, indent=2))
+    return {"errors": [] if outcome.get("ok") else ["shadow_decide"]}
+
+
 def cmd_train_pooled_model(args):
     """训练宽股票池 pooled ML 影子模型，不参与交易执行。"""
     from strategy.pooled_ml import train_pooled_model
@@ -864,6 +878,8 @@ def main():
     group.add_argument("--db-maintenance", action="store_true", help="数据库维护：完整性检查+在线备份+运维日志清理，不参与交易")
     group.add_argument("--db-vacuum", action="store_true", help="DB维护时执行VACUUM回收空间（建议每周一次）")
     group.add_argument("--shadow-report", action="store_true", help="查看影子策略排行榜与晋级候选(JSON)")
+    group.add_argument("--shadow-approve", metavar="VARIANT_ID", default=None, help="批准影子晋级候选（人工闭环，只记审批不改正式参数）")
+    group.add_argument("--shadow-reject", metavar="VARIANT_ID", default=None, help="拒绝影子晋级候选（人工闭环）")
     group.add_argument("--stop-check", action="store_true", help="盘中止损巡检")
     group.add_argument("--auto", action="store_true", help="自动盯盘交易员（循环运行，默认模拟盘）")
     group.add_argument("--auto-once", action="store_true", help="自动盯盘交易员（只运行一轮，用于测试）")
@@ -916,6 +932,7 @@ def main():
     parser.add_argument("--unattended-platform", choices=["windows", "linux"], default="windows", help="paper-ready/bootstrap使用的无人值守平台")
     parser.add_argument("--python-cmd", default="python3" if sys.platform != "win32" else "python", help="无人值守任务使用的Python命令")
     parser.add_argument("--reason", default="", help="暂停/恢复原因")
+    parser.add_argument("--shadow-note", default="", help="影子审批备注（配合 --shadow-approve/--shadow-reject）")
     parser.add_argument("--report-days", type=int, default=5, help="AI交易员报告回看天数")
     parser.add_argument("--report-end-date", default=None, help="AI交易员报告结束日期 YYYY-MM-DD，默认今天")
     parser.add_argument("--rehearsal-days", type=int, default=5, help="自动盯盘演练天数")
@@ -974,6 +991,8 @@ def main():
         result = cmd_pooled_ml_status()
     elif args.shadow_report:
         result = cmd_shadow_report(args)
+    elif args.shadow_approve or args.shadow_reject:
+        result = cmd_shadow_decide(args)
     elif args.review:
         result = cmd_review()
     elif args.account:
