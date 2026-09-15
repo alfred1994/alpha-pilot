@@ -7,7 +7,7 @@
 """
 import pandas as pd
 import numpy as np
-from strategy.strategies.base import BaseStrategy, Signal, board_limit_pct
+from strategy.strategies.base import BaseStrategy, Signal, truncate_as_of, board_limit_pct
 
 
 class LimitDownReversalStrategy(BaseStrategy):
@@ -28,7 +28,7 @@ class LimitDownReversalStrategy(BaseStrategy):
         if df is None or len(df) < 30:
             return Signal(date="", code=code, action="HOLD", score=0, reason="数据不足")
 
-        df = df.copy().sort_values("date").reset_index(drop=True)
+        df = truncate_as_of(df, kwargs.get("as_of"))
         c = df["close"].astype(float)
         o = df["open"].astype(float)
         h = df["high"].astype(float)

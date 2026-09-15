@@ -33,6 +33,25 @@ def board_limit_pct(code: str, name: str = "") -> float:
     return base
 
 
+def truncate_as_of(df: "pd.DataFrame", as_of=None) -> "pd.DataFrame":
+    """
+    老策略的防穿越输入口径：按日期排序并只保留 as_of（含）之前的K线。
+
+    与新策略的 pattern_data.daily_window（严格校验）不同，本函数只负责
+    截断，不改变各策略自身的列/长度校验。回测与研究调用方传入 as_of 时
+    可保证指标只用当日及以前的数据；as_of 为 None 时行为与排序等价。
+    """
+    frame = df.copy()
+    if as_of is None:
+        return frame.sort_values("date").reset_index(drop=True)
+    try:
+        cutoff = pd.Timestamp(as_of).normalize()
+        dates = pd.to_datetime(frame["date"], errors="coerce").dt.normalize()
+        return frame[dates <= cutoff].sort_values("date").reset_index(drop=True)
+    except (ValueError, TypeError, OverflowError):
+        return frame.sort_values("date").reset_index(drop=True)
+
+
 @dataclass
 class Signal:
     """交易信号"""

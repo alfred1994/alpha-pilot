@@ -7,7 +7,7 @@
 """
 import pandas as pd
 
-from strategy.strategies.base import BaseStrategy, Signal
+from strategy.strategies.base import BaseStrategy, Signal, truncate_as_of
 
 
 class BollingerSqueezeStrategy(BaseStrategy):
@@ -29,7 +29,7 @@ class BollingerSqueezeStrategy(BaseStrategy):
         if df is None or len(df) < 90 or not required.issubset(df.columns):
             return Signal(date="", code=code, action="HOLD", score=0, reason="数据不足")
 
-        data = df.copy().sort_values("date").reset_index(drop=True)
+        data = truncate_as_of(df, kwargs.get("as_of"))
         close = pd.to_numeric(data["close"], errors="coerce").ffill()
         volume = pd.to_numeric(data["volume"], errors="coerce").fillna(0)
         p = self.params

@@ -7,7 +7,7 @@
 """
 import pandas as pd
 import numpy as np
-from strategy.strategies.base import BaseStrategy, Signal
+from strategy.strategies.base import BaseStrategy, Signal, truncate_as_of
 
 
 class MACrossStrategy(BaseStrategy):
@@ -27,7 +27,7 @@ class MACrossStrategy(BaseStrategy):
         if df is None or len(df) < 60:
             return Signal(date="", code=code, action="HOLD", score=0, reason="数据不足")
 
-        df = df.copy().sort_values("date").reset_index(drop=True)
+        df = truncate_as_of(df, kwargs.get("as_of"))
         c = df["close"].astype(float)
         v = df["volume"].astype(float)
         p = self.params

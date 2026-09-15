@@ -7,7 +7,7 @@ KDJ 超卖反转策略
 """
 import pandas as pd
 
-from strategy.strategies.base import BaseStrategy, Signal
+from strategy.strategies.base import BaseStrategy, Signal, truncate_as_of
 
 
 class KDJReversalStrategy(BaseStrategy):
@@ -29,7 +29,7 @@ class KDJReversalStrategy(BaseStrategy):
         if df is None or len(df) < 40 or not required.issubset(df.columns):
             return Signal(date="", code=code, action="HOLD", score=0, reason="数据不足")
 
-        data = df.copy().sort_values("date").reset_index(drop=True)
+        data = truncate_as_of(df, kwargs.get("as_of"))
         high = pd.to_numeric(data["high"], errors="coerce").ffill()
         low = pd.to_numeric(data["low"], errors="coerce").ffill()
         close = pd.to_numeric(data["close"], errors="coerce").ffill()

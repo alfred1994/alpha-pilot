@@ -13,7 +13,7 @@
 """
 import pandas as pd
 import numpy as np
-from .base import BaseStrategy, Signal, board_limit_pct
+from .base import BaseStrategy, Signal, board_limit_pct, truncate_as_of
 
 
 class ZTReversalStrategy(BaseStrategy):
@@ -54,7 +54,7 @@ class ZTReversalStrategy(BaseStrategy):
             return Signal(date="", code=code, action="HOLD", score=0, reason="数据不足")
 
         # 复制并排序
-        df = df.copy().sort_values("date").reset_index(drop=True)
+        df = truncate_as_of(df, kwargs.get("as_of"))
 
         # 提取价格和成交量
         close = df["close"].astype(float)

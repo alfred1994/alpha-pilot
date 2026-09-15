@@ -7,7 +7,7 @@
 """
 import pandas as pd
 
-from strategy.strategies.base import BaseStrategy, Signal
+from strategy.strategies.base import BaseStrategy, Signal, truncate_as_of
 from strategy.strategies.bollinger_squeeze import BollingerSqueezeStrategy
 from strategy.strategies.high_tight_flag import HighTightFlagStrategy
 from strategy.strategies.kdj_reversal import KDJReversalStrategy
@@ -46,6 +46,11 @@ class TechnicalEnsembleStrategy(BaseStrategy):
     def generate_signals(self, code: str, df: pd.DataFrame, **kwargs) -> Signal:
         if df is None or len(df) < 90:
             return Signal(date="", code=code, action="HOLD", score=0, reason="数据不足")
+
+        # 截断到 as_of，组件复用同一口径，last_date 也不泄露未来日期
+        df = truncate_as_of(df, kwargs.get("as_of"))
+        if len(df) < 90:
+            return Signal(date="", code=code, action="HOLD", score=0, reason="历史窗口不足(as_of截断)")
 
         market_regime = kwargs.get("market_regime", "sideways")
         component_signals = [
