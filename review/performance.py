@@ -35,6 +35,11 @@ class PerformanceMetrics:
     sortino_ratio: float = 0.0         # 索提诺比率
     calmar_ratio: float = 0.0          # 卡尔玛比率
     information_ratio: float = 0.0     # 信息比率（vs基准）
+    tracking_error: float = 0.0        # 年化跟踪误差（vs基准）
+
+    # 基准指标
+    benchmark_return: float = 0.0      # 基准累计收益率
+    benchmark_annualized_return: float = 0.0  # 基准年化收益率
 
     # 风险指标
     max_drawdown: float = 0.0          # 最大回撤
@@ -80,6 +85,7 @@ class PerformanceAnalyzer:
         nav_series: List[dict],
         trades: List[dict] = None,
         initial_capital: float = None,
+        benchmark_nav: List[dict] = None,
     ) -> PerformanceMetrics:
         """
         从净值序列计算绩效
@@ -88,6 +94,8 @@ class PerformanceAnalyzer:
             nav_series: [{date, total_assets}] 按日期排序的净值序列
             trades: 交易记录列表 [{action, price, shares, ...}]
             initial_capital: 初始资金
+            benchmark_nav: [{date, nav}] 基准累计净值序列（起点=1.0），
+                与 nav_series 同日期对齐；缺失时信息比率保持 0
 
         Returns:
             PerformanceMetrics
@@ -178,11 +186,70 @@ class PerformanceAnalyzer:
         if metrics.max_drawdown < 0:
             metrics.calmar_ratio = metrics.annualized_return / abs(metrics.max_drawdown)
 
+        # ── 信息比率（vs基准） ─────────────────────────────────
+        self._compute_information_ratio(metrics, daily_returns, benchmark_nav, years)
+
         # ── 交易统计 ─────────────────────────────────────────────
         if trades:
             self._compute_trade_metrics(metrics, trades)
 
         return metrics
+
+    def _compute_information_ratio(
+        self,
+        metrics: PerformanceMetrics,
+        daily_returns: List[float],
+        benchmark_nav: Optional[List[dict]],
+        years: float,
+    ):
+        """信息比率 = (组合年化收益 - 基准年化收益) / 年化跟踪误差。
+
+        基准净值与组合净值按日期序列对齐；长度不足或缺失时保持 0，
+        不猜测基准。
+        """
+        if not benchmark_nav or len(benchmark_nav) < 2 or years <= 0:
+            return
+
+        bench_nav = []
+        for item in benchmark_nav:
+            try:
+                value = float(item.get("nav", 0)) if isinstance(item, dict) else float(item)
+            except (TypeError, ValueError):
+                return
+            if value <= 0:
+                return
+            bench_nav.append(value)
+
+        # 与组合日收益对齐：都从第二个观测点开始取差分
+        if len(bench_nav) != len(daily_returns) + 1:
+            return
+
+        benchmark_returns = [
+            bench_nav[i] / bench_nav[i - 1] - 1
+            for i in range(1, len(bench_nav))
+        ]
+        active_returns = [
+            r_p - r_b for r_p, r_b in zip(daily_returns, benchmark_returns)
+        ]
+        if len(active_returns) < 2:
+            return
+
+        metrics.benchmark_return = bench_nav[-1] / bench_nav[0] - 1
+        if metrics.benchmark_return > -1:
+            metrics.benchmark_annualized_return = (
+                (1 + metrics.benchmark_return) ** (1 / years) - 1
+            )
+
+        mean_active = sum(active_returns) / len(active_returns)
+        variance = sum((r - mean_active) ** 2 for r in active_returns) / (
+            len(active_returns) - 1
+        )
+        metrics.tracking_error = math.sqrt(variance) * math.sqrt(250)
+        if metrics.tracking_error > 0:
+            metrics.information_ratio = (
+                (metrics.annualized_return - metrics.benchmark_annualized_return)
+                / metrics.tracking_error
+            )
 
     def analyze_from_review_files(
         self,
@@ -200,6 +267,7 @@ class PerformanceAnalyzer:
             PerformanceMetrics
         """
         nav_series = []
+        benchmark_nav = []
         all_trades = []
 
         # 读取所有复盘文件
@@ -226,18 +294,21 @@ class PerformanceAnalyzer:
                     "date": data["date"],
                     "total_assets": data["total_assets"],
                 })
+                # 复盘JSON中的基准累计收益率 → 基准净值（起点=1.0）
+                benchmark_nav.append({
+                    "date": data["date"],
+                    "nav": 1.0 + float(data.get("benchmark_pnl_pct") or 0.0),
+                })
 
                 for t in data.get("trade_reviews", []):
                     all_trades.append(t)
-            except (json.JSONDecodeError, KeyError) as e:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                 logger.warning(f"读取复盘文件失败 {fname}: {e}")
 
         initial_capital = INITIAL_CAPITAL
-        if nav_series:
-            # 第一天的总资产作为参考
-            pass
-
-        return self.analyze_from_nav_series(nav_series, all_trades, initial_capital)
+        return self.analyze_from_nav_series(
+            nav_series, all_trades, initial_capital, benchmark_nav=benchmark_nav
+        )
 
     def _compute_trade_metrics(self, metrics: PerformanceMetrics, trades: List[dict]):
         """计算交易相关指标"""
@@ -312,6 +383,10 @@ class PerformanceAnalyzer:
         lines.append(f"  夏普比率:       {metrics.sharpe_ratio:>10.2f}")
         lines.append(f"  索提诺比率:     {metrics.sortino_ratio:>10.2f}")
         lines.append(f"  卡尔玛比率:     {metrics.calmar_ratio:>10.2f}")
+        if metrics.tracking_error > 0:
+            lines.append(f"  信息比率:       {metrics.information_ratio:>10.2f}")
+            lines.append(f"  年化跟踪误差:   {metrics.tracking_error:>10.2%}")
+            lines.append(f"  基准年化收益:   {metrics.benchmark_annualized_return:>+10.2%}")
 
         # 交易统计
         if metrics.total_trades > 0:

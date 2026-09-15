@@ -59,16 +59,9 @@ def _call_llm(prompt: str, max_tokens: int = 2000) -> Optional[str]:
         return None
 
 
-def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None, market_data: dict = None) -> str:
-    """
-    生成 LLM 深度复盘分析
-
-    Args:
-        date: 日期
-        review_data: 当日复盘数据
-        adaptive_data: 自适应分析数据
-        market_data: 市场行情数据
-    """
+def build_llm_review_prompt(date: str, review_data: dict, adaptive_data: dict = None,
+                            market_data: dict = None) -> str:
+    """构建LLM复盘prompt（纯数据拼装，独立出来便于回归测试）。"""
     # ── 构建分析提示词 ──
     prompt_parts = [
         f"# {date} A股量化系统每日复盘",
@@ -78,11 +71,17 @@ def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None
     ]
 
     # 1. 账户概况
+    benchmark_pnl_pct = review_data.get("benchmark_pnl_pct")
     prompt_parts.append("## 一、账户概况")
     prompt_parts.append(f"- 初始资金: {review_data.get('initial_capital', 0):,.0f} 元")
     prompt_parts.append(f"- 当前总资产: {review_data.get('total_assets', 0):,.0f} 元")
     prompt_parts.append(f"- 当日盈亏: {review_data.get('daily_pnl', 0):+,.0f} 元 ({review_data.get('daily_pnl_pct', 0):+.2%})")
     prompt_parts.append(f"- 累计盈亏: {review_data.get('cumulative_pnl', 0):+,.0f} 元 ({review_data.get('cumulative_pnl_pct', 0):+.2%})")
+    if benchmark_pnl_pct is not None:
+        excess = review_data.get("cumulative_pnl_pct", 0) - benchmark_pnl_pct
+        prompt_parts.append(
+            f"- 基准(沪深300)累计: {benchmark_pnl_pct:+.2%} | 相对基准超额: {excess:+.2%}"
+        )
     prompt_parts.append(f"- 可用现金: {review_data.get('cash', 0):,.0f} 元")
     prompt_parts.append(f"- 持仓市值: {review_data.get('market_value', 0):,.0f} 元")
     prompt_parts.append(f"- 持仓数量: {review_data.get('position_count', 0)} 只")
@@ -162,19 +161,70 @@ def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None
                 prompt_parts.append(f"  - {adj.get('reason', '')}")
         prompt_parts.append("")
 
-    # 6. 市场概况
+    # 6. 区间绩效指标（自复盘序列起点）
+    performance = review_data.get("performance") or {}
+    if performance:
+        prompt_parts.append("## 六、区间绩效指标")
+        prompt_parts.append(
+            f"- 统计区间: {performance.get('start_date', '')} ~ "
+            f"{performance.get('end_date', '')} "
+            f"({performance.get('trading_days', 0)}个交易日)"
+        )
+        prompt_parts.append(
+            f"- 总收益: {performance.get('total_return', 0):+.2%} | "
+            f"年化: {performance.get('annualized_return', 0):+.2%} | "
+            f"最大回撤: {performance.get('max_drawdown', 0):+.2%}"
+        )
+        prompt_parts.append(
+            f"- 夏普比率: {performance.get('sharpe_ratio', 0):.2f} | "
+            f"索提诺: {performance.get('sortino_ratio', 0):.2f} | "
+            f"卡尔玛: {performance.get('calmar_ratio', 0):.2f}"
+        )
+        if performance.get("tracking_error", 0) > 0:
+            prompt_parts.append(
+                f"- 信息比率: {performance.get('information_ratio', 0):.2f} | "
+                f"年化跟踪误差: {performance.get('tracking_error', 0):.2%} | "
+                f"基准年化: {performance.get('benchmark_annualized_return', 0):+.2%}"
+            )
+        prompt_parts.append("")
+
+    # 7. 分市场环境归因（已平仓交易与候选反事实两个口径）
+    regime_attr = review_data.get("regime_attribution") or {}
+    trades_by_regime = regime_attr.get("trades_by_regime") or {}
+    candidates_by_regime = regime_attr.get("candidates_by_regime") or {}
+    if trades_by_regime or candidates_by_regime:
+        prompt_parts.append("## 七、分市场环境归因")
+        if trades_by_regime:
+            prompt_parts.append("- 已平仓交易分环境表现:")
+            for regime, stats in trades_by_regime.items():
+                prompt_parts.append(
+                    f"  - {regime}: {stats.get('trades', 0)}笔, "
+                    f"胜率{stats.get('win_rate', 0):.0%}, "
+                    f"均盈{stats.get('avg_pnl_pct', 0):+.2%}"
+                )
+        if candidates_by_regime:
+            prompt_parts.append("- 候选反事实(T+5净收益)分环境表现:")
+            for regime, stats in candidates_by_regime.items():
+                prompt_parts.append(
+                    f"  - {regime}: {stats.get('samples', 0)}个样本, "
+                    f"胜率{stats.get('win_rate', 0):.0%}, "
+                    f"均净收{stats.get('avg_net_5d', 0):+.2%}"
+                )
+        prompt_parts.append("")
+
+    # 8. 市场概况
     if market_data:
-        prompt_parts.append("## 六、市场行情概况")
+        prompt_parts.append("## 八、市场行情概况")
         for k, v in market_data.items():
             prompt_parts.append(f"- {k}: {v}")
         prompt_parts.append("")
 
-    # 7. 当日完整决策漏斗。AI 必须基于事实区分主动观望、门槛压制、
+    # 9. 当日完整决策漏斗。AI 必须基于事实区分主动观望、门槛压制、
     # 能力降级、风控阻断和执行失败，不能只用账户无成交倒推原因。
     daily_facts = review_data.get("daily_facts") or {}
     if daily_facts:
         funnel = daily_facts.get("funnel") or {}
-        prompt_parts.append("## 七、当日决策与执行事实")
+        prompt_parts.append("## 九、当日决策与执行事实")
         prompt_parts.append(
             "- 扫描{scan_cycles}轮，候选观察{candidates}次，完成打分{scored}次，LLM判断{llm_evaluated}次".format(
                 **{key: funnel.get(key, 0) for key in ("scan_cycles", "candidates", "scored", "llm_evaluated")}
@@ -205,21 +255,35 @@ def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None
             )
         prompt_parts.append("")
 
-    # 8. 分析要求
-    prompt_parts.append("## 八、请分析以下内容")
+    # 10. 分析要求
+    prompt_parts.append("## 十、请分析以下内容")
     prompt_parts.append("""
 1. **当日战况总结**: 用2-3句话概括今天的表现，是赢是亏，主要原因是什么
 2. **持仓诊断**: 逐只分析持仓股票的状态，哪些该持有，哪些需要注意
 3. **交易反思**: 今天的买卖决策是否合理，有没有明显的错误
 4. **策略评估**: 必须引用当日决策漏斗，判断是主动观望、门槛压制、能力降级、风控阻断还是执行失败
-5. **风险提示**: 当前持仓和市场环境中存在的风险点
-6. **次日操作建议**: 明天开盘前应该关注什么，具体的操作建议
-7. **策略优化建议**: 基于近期表现，有什么可以改进的地方
+5. **相对基准评估**: 结合相对基准(沪深300)的超额收益与信息比率，判断当前策略是否跑赢市场，超额来自选股还是仓位
+6. **风险提示**: 当前持仓和市场环境中存在的风险点
+7. **次日操作建议**: 明天开盘前应该关注什么，具体的操作建议
+8. **策略优化建议**: 基于区间绩效与分环境胜率归因，指出在哪类市场环境下表现失常、如何改进
 
 请用简洁专业的语言，分点列出，每条建议要具体可执行。
 """)
 
-    prompt = "\n".join(prompt_parts)
+    return "\n".join(prompt_parts)
+
+
+def generate_llm_review(date: str, review_data: dict, adaptive_data: dict = None, market_data: dict = None) -> str:
+    """
+    生成 LLM 深度复盘分析
+
+    Args:
+        date: 日期
+        review_data: 当日复盘数据
+        adaptive_data: 自适应分析数据
+        market_data: 市场行情数据
+    """
+    prompt = build_llm_review_prompt(date, review_data, adaptive_data, market_data)
 
     logger.info("调用LLM进行深度复盘分析...")
     result = _call_llm(prompt, max_tokens=2000)

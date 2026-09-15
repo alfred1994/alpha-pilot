@@ -5,7 +5,7 @@
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from collections import defaultdict
 from dataclasses import dataclass, field, asdict
@@ -135,6 +135,11 @@ class DailyReviewResult:
     win_trades: int = 0
     lose_trades: int = 0
     win_rate: float = 0.0
+
+    # 基准与区间绩效（进 LLM 复盘 prompt 与策略指令 prompt 的决策链输入）
+    benchmark_pnl_pct: Optional[float] = None   # 沪深300累计收益率，None=未取到
+    performance: Dict = field(default_factory=dict)          # 区间绩效指标快照
+    regime_attribution: Dict = field(default_factory=dict)   # 分市场环境胜率归因
 
     # 次日建议
     suggestions: List[str] = field(default_factory=list)
@@ -347,6 +352,8 @@ class DailyReviewer:
             position_pnls, trade_reviews, win_rate, total_assets, initial_capital
         )
 
+        # 5. 基准、区间绩效与分环境归因（供报告展示与 LLM/指令 prompt 消费）
+        benchmark_pnl_pct = _compute_benchmark_pnl_pct(date, self.review_dir)
         result = DailyReviewResult(
             date=date,
             initial_capital=initial_capital,
@@ -364,6 +371,11 @@ class DailyReviewer:
             win_trades=win_count,
             lose_trades=lose_count,
             win_rate=win_rate,
+            benchmark_pnl_pct=benchmark_pnl_pct,
+            performance=self._compute_performance_summary(
+                date, total_assets, initial_capital, benchmark_pnl_pct, trade_reviews
+            ),
+            regime_attribution=self.compute_regime_attribution(),
             suggestions=suggestions,
         )
 
@@ -371,6 +383,134 @@ class DailyReviewer:
         self._save_review(result)
 
         return result
+
+    def _compute_performance_summary(
+        self,
+        date: str,
+        total_assets: float,
+        initial_capital: float,
+        benchmark_pnl_pct: Optional[float],
+        trade_reviews: List[TradeReview],
+    ) -> Dict:
+        """基于历史复盘JSON+当日快照计算区间绩效指标快照（失败返回空dict）。"""
+        try:
+            from review.performance import PerformanceAnalyzer
+
+            nav_series = []
+            benchmark_nav = []
+            if os.path.exists(self.review_dir):
+                for fname in sorted(os.listdir(self.review_dir)):
+                    if not fname.startswith("review_") or not fname.endswith(".json"):
+                        continue
+                    # 只取早于当日的复盘，防当日重跑重复计入；也不泄露未来净值
+                    if fname.replace("review_", "").replace(".json", "") >= date:
+                        continue
+                    try:
+                        with open(os.path.join(self.review_dir, fname), "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        nav_series.append({
+                            "date": data["date"],
+                            "total_assets": float(data["total_assets"]),
+                        })
+                        benchmark_nav.append({
+                            "date": data["date"],
+                            "nav": 1.0 + float(data.get("benchmark_pnl_pct") or 0.0),
+                        })
+                    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+                        continue
+            nav_series.append({"date": date, "total_assets": float(total_assets)})
+            benchmark_nav.append({
+                "date": date,
+                "nav": 1.0 + float(benchmark_pnl_pct or 0.0),
+            })
+
+            metrics = PerformanceAnalyzer().analyze_from_nav_series(
+                nav_series,
+                trades=[asdict(t) for t in trade_reviews],
+                initial_capital=initial_capital,
+                benchmark_nav=benchmark_nav,
+            )
+            return {
+                "start_date": metrics.start_date,
+                "end_date": metrics.end_date,
+                "trading_days": metrics.trading_days,
+                "total_return": round(metrics.total_return, 6),
+                "annualized_return": round(metrics.annualized_return, 6),
+                "volatility": round(metrics.volatility, 6),
+                "max_drawdown": round(metrics.max_drawdown, 6),
+                "sharpe_ratio": round(metrics.sharpe_ratio, 4),
+                "sortino_ratio": round(metrics.sortino_ratio, 4),
+                "calmar_ratio": round(metrics.calmar_ratio, 4),
+                "information_ratio": round(metrics.information_ratio, 4),
+                "tracking_error": round(metrics.tracking_error, 6),
+                "benchmark_return": round(metrics.benchmark_return, 6),
+                "total_trades": metrics.total_trades,
+                "win_rate": round(metrics.win_rate, 4),
+                "profit_factor": (
+                    round(metrics.profit_factor, 4)
+                    if metrics.profit_factor != float("inf") else None
+                ),
+            }
+        except Exception as exc:
+            logger.warning(f"区间绩效计算失败(非致命): {exc}")
+            return {}
+
+    def compute_regime_attribution(self, days: int = 90) -> Dict:
+        """分市场环境胜率归因。
+
+        两个口径（均只统计近 N 天，缺 regime 的样本归入 unknown）：
+        - trades_by_regime: 已平仓 SELL 交易的 pnl_pct；
+        - candidates_by_regime: candidate_outcomes 反事实的 T+5 净收益。
+        """
+        attribution = {"trades_by_regime": {}, "candidates_by_regime": {}}
+        cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        try:
+            from data.database import Database
+            with Database(db_path=self.db_path) as db:
+                rows = db.conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(market_regime, ''), 'unknown') AS regime,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) AS wins,
+                           AVG(pnl_pct) AS avg_pnl
+                    FROM trades
+                    WHERE action = 'SELL' AND pnl_pct IS NOT NULL
+                      AND substr(created_at, 1, 10) >= ?
+                    GROUP BY regime ORDER BY total DESC
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                for row in rows:
+                    total = row["total"] or 0
+                    attribution["trades_by_regime"][row["regime"]] = {
+                        "trades": total,
+                        "win_rate": round((row["wins"] or 0) / total, 4) if total else 0.0,
+                        "avg_pnl_pct": round(row["avg_pnl"] or 0.0, 6),
+                    }
+
+                rows = db.conn.execute(
+                    """
+                    SELECT COALESCE(NULLIF(regime, ''), 'unknown') AS regime,
+                           COUNT(*) AS total,
+                           SUM(CASE WHEN net_return_5d > 0 THEN 1 ELSE 0 END) AS wins,
+                           AVG(net_return_5d) AS avg_net_5d
+                    FROM candidate_outcomes
+                    WHERE net_return_5d IS NOT NULL
+                      AND observation_date >= ?
+                    GROUP BY regime ORDER BY total DESC
+                    """,
+                    (cutoff,),
+                ).fetchall()
+                for row in rows:
+                    total = row["total"] or 0
+                    attribution["candidates_by_regime"][row["regime"]] = {
+                        "samples": total,
+                        "win_rate": round((row["wins"] or 0) / total, 4) if total else 0.0,
+                        "avg_net_5d": round(row["avg_net_5d"] or 0.0, 6),
+                    }
+        except Exception as exc:
+            logger.debug(f"分环境归因计算失败(非致命): {exc}")
+        return attribution
 
     def _analyze_pnl_reason(self, pnl_pct: float) -> str:
         """盈亏归因分析"""
@@ -426,6 +566,11 @@ class DailyReviewer:
 
     def _save_review(self, result: DailyReviewResult):
         """保存复盘记录到JSON"""
+        # run_review 已预取基准；直接调用 _save_review 的路径兜底现算
+        benchmark_pnl_pct = result.benchmark_pnl_pct
+        if benchmark_pnl_pct is None:
+            benchmark_pnl_pct = _compute_benchmark_pnl_pct(result.date, self.review_dir)
+            result.benchmark_pnl_pct = benchmark_pnl_pct
         filepath = os.path.join(self.review_dir, f"review_{result.date}.json")
         data = {
             "date": result.date,
@@ -435,7 +580,9 @@ class DailyReviewer:
             "daily_pnl_pct": result.daily_pnl_pct,
             "cumulative_pnl": result.cumulative_pnl,
             "cumulative_pnl_pct": result.cumulative_pnl_pct,
-            "benchmark_pnl_pct": _compute_benchmark_pnl_pct(result.date, self.review_dir),
+            "benchmark_pnl_pct": benchmark_pnl_pct,
+            "performance": result.performance or {},
+            "regime_attribution": result.regime_attribution or {},
             "cash": result.cash,
             "market_value": result.market_value,
             "position_count": result.position_count,
@@ -745,6 +892,13 @@ class DailyReviewer:
             f"持仓市值:   {result.market_value:>14,.0f}",
             f"日盈亏:     {result.daily_pnl:>+14,.0f} ({result.daily_pnl_pct:+.2%})",
             f"累计盈亏:   {result.cumulative_pnl:>+14,.0f} ({result.cumulative_pnl_pct:+.2%})",
+        ]
+        if result.benchmark_pnl_pct is not None:
+            excess = result.cumulative_pnl_pct - result.benchmark_pnl_pct
+            lines.append(
+                f"基准累计:   {result.benchmark_pnl_pct:>+14.2%} (超额{excess:+.2%})"
+            )
+        lines += [
             "-" * 65,
         ]
 
@@ -782,6 +936,39 @@ class DailyReviewer:
                 f"信号命中率: {result.win_rate:.0%} "
                 f"(盈利{result.win_trades}/亏损{result.lose_trades})"
             )
+
+        # 区间绩效
+        perf = result.performance or {}
+        if perf:
+            lines.append("-" * 65)
+            lines.append(
+                f"区间绩效({perf.get('start_date', '')}~{perf.get('end_date', '')}, "
+                f"{perf.get('trading_days', 0)}个交易日):"
+            )
+            lines.append(
+                f"  总收益{perf.get('total_return', 0):+.2%} "
+                f"年化{perf.get('annualized_return', 0):+.2%} "
+                f"最大回撤{perf.get('max_drawdown', 0):+.2%}"
+            )
+            lines.append(
+                f"  夏普{perf.get('sharpe_ratio', 0):.2f} "
+                f"索提诺{perf.get('sortino_ratio', 0):.2f} "
+                f"卡尔玛{perf.get('calmar_ratio', 0):.2f} "
+                f"信息比率{perf.get('information_ratio', 0):.2f}"
+            )
+
+        # 分市场环境归因
+        regime_attr = result.regime_attribution or {}
+        trades_by_regime = regime_attr.get("trades_by_regime") or {}
+        if trades_by_regime:
+            lines.append("-" * 65)
+            lines.append("分环境胜率(已平仓):")
+            for regime, stats in trades_by_regime.items():
+                lines.append(
+                    f"  {regime:<10} {stats.get('trades', 0)}笔 "
+                    f"胜率{stats.get('win_rate', 0):.0%} "
+                    f"均盈{stats.get('avg_pnl_pct', 0):+.2%}"
+                )
 
         # 次日建议
         if result.suggestions:

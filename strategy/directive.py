@@ -128,6 +128,39 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
     """要求 LLM 为下一交易日直接输出结构化策略版本。"""
     daily_facts = review_data.get("daily_facts") or {}
     current_directive = current_directive or {}
+
+    # 基准与区间绩效：让"相对基准改善"的决策要求有数据可依
+    benchmark_lines = []
+    cumulative_pnl_pct = review_data.get("cumulative_pnl_pct")
+    benchmark_pnl_pct = review_data.get("benchmark_pnl_pct")
+    if benchmark_pnl_pct is not None:
+        excess = (cumulative_pnl_pct or 0) - benchmark_pnl_pct
+        benchmark_lines.append(
+            f"账户累计收益率：{cumulative_pnl_pct or 0:+.2%}"
+            f"（基准沪深300 {benchmark_pnl_pct:+.2%}，相对超额 {excess:+.2%}）"
+        )
+    performance = review_data.get("performance") or {}
+    if performance:
+        benchmark_lines.append(
+            "区间绩效：总收益 {total_return:+.2%}，最大回撤 {max_drawdown:+.2%}，"
+            "夏普 {sharpe_ratio:.2f}，信息比率 {information_ratio:.2f}（{trading_days}个交易日）".format(
+                **{key: performance.get(key, 0) for key in (
+                    "total_return", "max_drawdown", "sharpe_ratio",
+                    "information_ratio", "trading_days")}
+            )
+        )
+    regime_attr = review_data.get("regime_attribution") or {}
+    if regime_attr:
+        benchmark_lines.append(
+            f"分市场环境归因：{json.dumps(regime_attr, ensure_ascii=False)}"
+        )
+
+    benchmark_block = ""
+    if benchmark_lines:
+        benchmark_block = "\n相对基准与区间绩效：\n" + "\n".join(
+            f"- {line}" for line in benchmark_lines
+        ) + "\n"
+
     return f"""你是 AlphaPilot 的自主策略负责人。请在收盘后，为下一交易日生成一份可直接执行的策略指令。
 
 复盘日期：{review_date}
@@ -138,7 +171,7 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
 当日交易数：{len(review_data.get('trade_reviews') or [])}
 当前策略参数：{json.dumps(current_params, ensure_ascii=False)}
 当前完整策略：{json.dumps(current_directive, ensure_ascii=False)}
-
+{benchmark_block}
 当日决策与执行事实：
 {json.dumps(daily_facts, ensure_ascii=False)}
 
@@ -148,7 +181,7 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
 自主决策与风控要求：
 1. 你可以保持、探索、收紧或放宽策略；不要机械地按连续天数或单一胜率规则行动。
 2. 要区分“市场无机会”“评分门槛压制”“模型或数据降级”“计划被阻断”和“执行失败”。
-3. 严禁以“产生更多买单”作为策略成功的标准。调整依据必须是成熟样本的真实净收益、哪类拒绝产生错误，以及相对基准的改善。
+3. 严禁以“产生更多买单”作为策略成功的标准。调整依据必须是成熟样本的真实净收益、哪类拒绝产生错误，以及相对基准的改善；若提供了相对基准与分环境归因数据，必须引用。
 4. 必须依据当日决策漏斗评估上一策略的 hypothesis；证据不足时 verdict 必须为 inconclusive。
 5. 当 verdict 为 inconclusive 时，严禁下调入场门槛 (降低 min_score) 或放大单票仓位 (提高 max_weight) 扩大风险。
 6. 只输出一个 JSON 对象，不要 Markdown 或额外文字。
