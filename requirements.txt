@@ -10,3 +10,6 @@ uvicorn>=0.22.0
 httpx>=0.27.0
 lightgbm>=4.0
 scikit-learn>=1.4
+vectorbt>=1.0
+# vectorbt 1.x 引用 plotly.scattermapbox，plotly>=6/7 已移除该属性导致 import 失败
+plotly<6

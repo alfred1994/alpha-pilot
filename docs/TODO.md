@@ -5,12 +5,18 @@
 > 当前遗留按优先级重写如下（2026-09-14 全面加固后），已完成项见 docs/hardening-2026-09-14.md。
 > 2026-09-16 复盘研究闭环批次：绩效接线/基准进决策链/regime 归因/A-B 门槛/影子晋级审批 已完成（勾选项，
 > 测试 tests/test_review_research_discipline.py）。
+> 2026-09-16 第二批：walk-forward 回测、老10策略 as_of 防穿越、交易日历节假日表降级、
+> 3个存量禁网测试修复 已完成（测试基线首次全绿 73/0）。
 
 ## P2 研究能力（依赖全市场数据地基，收益最大）
 
-- [ ] **walk-forward 回测**：fast_backtest 补 vectorbt 依赖并接 CLI，参数网格改为
-  滚动 train/validation 评估（当前 fast_backtest/optimizer 均为样本内过拟合，
-  全库无 walk-forward）
+- [x] **walk-forward 回测**（2026-09-16）：fast_backtest 补 vectorbt 依赖
+  （requirements: vectorbt>=1.0 + plotly<6，7 移除 scattermapbox 会导致
+  import 失败），新增 `--walk-forward` CLI（默认训练250根/验证60根，
+  `--wf-train-days/--wf-valid-days` 可调）。每折训练窗网格选参 → 紧随的
+  验证窗样本外评估，汇总以 OOS 复利收益/平均夏普/最差回撤为准并报告
+  夏普衰减。注意：optimizer（LLM 建议参数）仍是样本内口径，walk-forward
+  可作为其外部校验
 - [ ] **回测与实盘打分口径统一**：SimpleBacktestEngine 把 sentiment/fundamental
   填中性 50 分跳过（portfolio/backtest.py:810），实盘是五维+LLM+舆情，
   `--backtest` 结论无法外推
@@ -55,12 +61,14 @@
 
 ## P3 运维与数据质量
 
-- [ ] **3 个存量禁网测试失败**：test_account_pnl_consistency /
-  test_issue_fixes / test_multi_day_replay 内部 mock 不完整
+- [x] **3 个存量禁网测试失败**（2026-09-16）：三个测试在 run_review 内未
+  mock `_fetch_hs300_daily_pct` 触发禁网护栏，按仓库离线回归惯例在模块
+  导入处统一 mock；基线 73 通过/0 失败（首次全绿）
 - [ ] **k_daily 历史缺口修复**：同花顺上游 ~11 天缺口，可用 Baostock 逐股
   定点补（夜间低峰执行）
-- [ ] **降级交易日历**：Baostock 失败时回退"周一至五全是交易日"（market_calendar.py:73），
-  可选本地节假日表兜底
+- [x] **降级交易日历**（2026-09-16）：Baostock 失败时先走内置节假日表
+  （2024/2025 交易所公告、2026 国务院安排，仅工作日休市）剔除休市日，
+  表外年份保持"周一至五全是交易日"并显式告警（market_calendar.py）
 - [ ] **通知分级**：Telegram 无 severity 分层/重试/备用渠道，熔断/停机无主动推送
 - [ ] **event_driven 链路**：`--realtime` 事件进程无单实例锁、可与 --auto 并发写
   共享状态（执行有 DB claim 兜底）

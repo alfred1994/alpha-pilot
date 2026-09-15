@@ -259,6 +259,28 @@ def cmd_db_maintenance(args):
     return {"errors": [] if result.get("status") == "ok" else ["db_maintenance"]}
 
 
+def cmd_walk_forward(args):
+    """walk-forward 滚动训练/验证回测：样本外口径评估，防样本内过拟合。"""
+    from portfolio.fast_backtest import format_walk_forward_report, run_walk_forward
+
+    codes = args.stocks or ["600519"]
+    errors = []
+    for code in codes:
+        result = run_walk_forward(
+            code,
+            args.start_date,
+            args.end_date,
+            train_days=args.wf_train_days,
+            valid_days=args.wf_valid_days,
+        )
+        if result is None:
+            errors.append(code)
+            continue
+        print(format_walk_forward_report(result))
+        print()
+    return {"errors": errors}
+
+
 def cmd_shadow_report(args):
     """影子策略排行榜与晋级候选（只读，不改变任何策略参数）。"""
     from data.database import Database
@@ -865,6 +887,7 @@ def main():
     group.add_argument("--account", action="store_true", help="查看账户状态")
     group.add_argument("--risk", action="store_true", help="查看风控状态")
     group.add_argument("--backtest", action="store_true", help="运行回测")
+    group.add_argument("--walk-forward", action="store_true", help="walk-forward滚动训练/验证回测（样本外口径，防过拟合）")
     group.add_argument("--optimize", action="store_true", help="策略优化模式")
     group.add_argument("--after-market", action="store_true", help="收盘后分析（外围市场+新闻）")
     group.add_argument("--research-sync", action="store_true", help="盘后增量同步宽股票池研究数据，不参与交易")
@@ -908,6 +931,8 @@ def main():
 
     parser.add_argument("--start-date", default="2024-01-01", help="回测开始日期")
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
+    parser.add_argument("--wf-train-days", type=int, default=250, help="walk-forward训练窗K线数")
+    parser.add_argument("--wf-valid-days", type=int, default=60, help="walk-forward验证窗K线数")
     parser.add_argument("--capital", type=float, default=1000000, help="初始资金")
     parser.add_argument("--mode", choices=["weighted", "llm", "strategy"], default="weighted", help="决策模式")
     parser.add_argument("--stocks", nargs="+", help="回测股票列表")
@@ -1003,6 +1028,8 @@ def main():
         return
     elif args.backtest:
         result = cmd_backtest(args)
+    elif args.walk_forward:
+        result = cmd_walk_forward(args)
     elif args.list_strategies:
         cmd_list_strategies()
         return

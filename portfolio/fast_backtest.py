@@ -56,6 +56,39 @@ class SweepResult:
     results: List[SingleBacktestResult] = field(default_factory=list)
 
 
+@dataclass
+class WalkForwardFold:
+    """单折 walk-forward 结果：训练集选参，紧随其后的验证集评估"""
+    fold: int
+    train_start: str
+    train_end: str
+    valid_start: str
+    valid_end: str
+    in_sample: SingleBacktestResult       # 最优参数在训练集(样本内)的表现
+    out_of_sample: Optional[SingleBacktestResult]  # 同参数在验证集(样本外)的表现
+
+
+@dataclass
+class WalkForwardResult:
+    """walk-forward 汇总：样本外口径才是可外推的评估结论"""
+    code: str
+    start_date: str
+    end_date: str
+    train_days: int
+    valid_days: int
+    n_folds: int
+    folds: List[WalkForwardFold] = field(default_factory=list)
+    # 样本外汇总
+    oos_compound_return: float = 0.0      # 各折样本外收益的复利合成
+    oos_avg_sharpe: float = 0.0
+    oos_worst_drawdown: float = 0.0
+    oos_trades: int = 0
+    oos_win_rate: float = 0.0
+    # 样本内对照（用于暴露过拟合程度）
+    is_avg_sharpe: float = 0.0
+    sharpe_degradation: float = 0.0       # is_avg_sharpe - oos_avg_sharpe，越大越过拟合
+
+
 # ══════════════════════════════════════════════════════════════════
 # 技术指标计算
 # ══════════════════════════════════════════════════════════════════
@@ -283,6 +316,90 @@ def run_single_backtest(
 
 
 # ══════════════════════════════════════════════════════════════════
+# 单组合评估（参数扫描与 walk-forward 共用）
+# ══════════════════════════════════════════════════════════════════
+
+def _evaluate_combo(
+    code: str,
+    close: pd.Series,
+    params: Dict,
+    start_date: str,
+    end_date: str,
+    initial_capital: float,
+    total_fee: float,
+) -> Optional[SingleBacktestResult]:
+    """在给定价格序列上评估一组参数（vectorbt 引擎）。失败返回 None。"""
+    import vectorbt as vbt
+
+    fast_ma = vbt.MA.run(close, params["short_ma"])
+    slow_ma = vbt.MA.run(close, params["long_ma"])
+    rsi = _calc_rsi(close, params["rsi_period"])
+
+    entries = fast_ma.ma_crossed_above(slow_ma) & (rsi < params["rsi_oversold"])
+    exits = fast_ma.ma_crossed_below(slow_ma) | (rsi > params["rsi_overbought"])
+
+    # 止损止盈
+    entries, exits = _apply_stop_loss_take_profit(
+        close, entries, exits, params["stop_loss"], params["take_profit"]
+    )
+
+    pf = vbt.Portfolio.from_signals(
+        close=close,
+        entries=entries,
+        exits=exits,
+        init_cash=initial_capital,
+        fees=total_fee,
+        freq="1D",
+    )
+
+    sharpe = float(pf.sharpe_ratio())
+    # 零成交或零波动时 vectorbt 会给出 inf/NaN 夏普，必须归零，
+    # 否则网格选参会把"从不交易"的组合当成最优
+    if not np.isfinite(sharpe):
+        sharpe = 0.0
+    win_rate = 0.0
+    total_trades = 0
+    trades = pf.trades if hasattr(pf, "trades") else None
+    if trades is not None:
+        try:
+            total_trades = int(trades.count())
+            win_rate = int(trades.win_count()) / total_trades if total_trades > 0 else 0.0
+        except Exception:
+            pass
+
+    return SingleBacktestResult(
+        code=code,
+        start_date=start_date,
+        end_date=end_date,
+        short_ma=params["short_ma"],
+        long_ma=params["long_ma"],
+        rsi_period=params["rsi_period"],
+        rsi_oversold=params["rsi_oversold"],
+        rsi_overbought=params["rsi_overbought"],
+        stop_loss=params["stop_loss"],
+        take_profit=params["take_profit"],
+        total_return=float(pf.total_return()),
+        sharpe_ratio=sharpe if not np.isnan(sharpe) else 0.0,
+        max_drawdown=float(pf.max_drawdown()),
+        win_rate=win_rate,
+        total_trades=total_trades,
+        final_value=float(pf.final_value()),
+    )
+
+
+def _iter_param_combos(param_grid: Dict[str, List]) -> List[Dict]:
+    """展开参数网格，过滤 short_ma >= long_ma 的无效组合。"""
+    keys = list(param_grid.keys())
+    combos = []
+    for values in itertools.product(*param_grid.values()):
+        params = dict(zip(keys, values))
+        if params.get("short_ma", 0) >= params.get("long_ma", 999):
+            continue
+        combos.append(params)
+    return combos
+
+
+# ══════════════════════════════════════════════════════════════════
 # 参数网格搜索
 # ══════════════════════════════════════════════════════════════════
 
@@ -341,19 +458,8 @@ def run_parameter_sweep(
     if close is None:
         return SweepResult(code=code, start_date=start_date, end_date=end_date, total_combinations=0)
 
-    # 生成所有参数组合
-    param_keys = list(param_grid.keys())
-    param_values = list(param_grid.values())
-    combinations = list(itertools.product(*param_values))
-    total = len(combinations)
-
-    # 过滤无效组合: short_ma 必须 < long_ma
-    valid_combos = []
-    for combo in combinations:
-        params = dict(zip(param_keys, combo))
-        if params.get("short_ma", 0) >= params.get("long_ma", 999):
-            continue
-        valid_combos.append(params)
+    valid_combos = _iter_param_combos(param_grid)
+    total = len(itertools.product(*param_grid.values()))
 
     logger.info(f"参数扫描: {code} {start_date}~{end_date}，共 {len(valid_combos)}/{total} 个有效组合")
 
@@ -363,67 +469,12 @@ def run_parameter_sweep(
     results: List[SingleBacktestResult] = []
     for idx, params in enumerate(valid_combos):
         try:
-            fast_ma = vbt.MA.run(close, params["short_ma"])
-            slow_ma = vbt.MA.run(close, params["long_ma"])
-            rsi = _calc_rsi(close, params["rsi_period"])
-
-            ma_cross_up = fast_ma.ma_crossed_above(slow_ma)
-            ma_cross_down = fast_ma.ma_crossed_below(slow_ma)
-            rsi_low = rsi < params["rsi_oversold"]
-            rsi_high = rsi > params["rsi_overbought"]
-
-            entries = ma_cross_up & rsi_low
-            exits = ma_cross_down | rsi_high
-
-            # 止损止盈
-            entries, exits = _apply_stop_loss_take_profit(
-                close, entries, exits, params["stop_loss"], params["take_profit"]
+            result = _evaluate_combo(
+                code, close, params, start_date, end_date,
+                initial_capital, total_fee,
             )
-
-            pf = vbt.Portfolio.from_signals(
-                close=close,
-                entries=entries,
-                exits=exits,
-                init_cash=initial_capital,
-                fees=total_fee,
-                freq="1D",
-            )
-
-            total_return = float(pf.total_return())
-            sharpe = float(pf.sharpe_ratio()) if not np.isnan(pf.sharpe_ratio()) else 0.0
-            max_dd = float(pf.max_drawdown())
-
-            trades = pf.trades if hasattr(pf, "trades") else None
-            win_rate = 0.0
-            total_trades = 0
-            if trades is not None:
-                try:
-                    total_trades = int(trades.count())
-                    wins = int(trades.win_count())
-                    win_rate = wins / total_trades if total_trades > 0 else 0.0
-                except Exception:
-                    pass
-
-            result = SingleBacktestResult(
-                code=code,
-                start_date=start_date,
-                end_date=end_date,
-                short_ma=params["short_ma"],
-                long_ma=params["long_ma"],
-                rsi_period=params["rsi_period"],
-                rsi_oversold=params["rsi_oversold"],
-                rsi_overbought=params["rsi_overbought"],
-                stop_loss=params["stop_loss"],
-                take_profit=params["take_profit"],
-                total_return=total_return,
-                sharpe_ratio=sharpe,
-                max_drawdown=max_dd,
-                win_rate=win_rate,
-                total_trades=total_trades,
-                final_value=float(pf.final_value()),
-            )
-            results.append(result)
-
+            if result is not None:
+                results.append(result)
         except Exception as e:
             logger.debug(f"组合 {params} 回测失败: {e}")
             continue
@@ -489,6 +540,224 @@ def sweep_results_to_df(sweep: SweepResult) -> pd.DataFrame:
             "final_value": r.final_value,
         })
     return pd.DataFrame(records)
+
+
+# ══════════════════════════════════════════════════════════════════
+# Walk-Forward 滚动训练/验证（防样本内过拟合）
+# ══════════════════════════════════════════════════════════════════
+
+def build_walk_forward_folds(
+    index: pd.DatetimeIndex,
+    train_days: int = 250,
+    valid_days: int = 60,
+) -> List[Tuple[int, int, int, int]]:
+    """
+    在价格序列的位置轴上构造滚动 train/validation 折。
+
+    纯几何切分，不依赖 vectorbt，便于离线测试。
+
+    Returns:
+        [(train_start_idx, train_end_idx, valid_start_idx, valid_end_idx), ...]
+        索引为闭区间；验证窗紧随训练窗，按 valid_days 步进滚动。
+    """
+    n = len(index)
+    if train_days <= 0 or valid_days <= 0 or n < train_days + valid_days:
+        return []
+    folds = []
+    valid_start = train_days
+    while valid_start < n:
+        valid_end = min(valid_start + valid_days, n) - 1
+        train_start = max(0, valid_start - train_days)
+        folds.append((train_start, valid_start - 1, valid_start, valid_end))
+        valid_start += valid_days
+    return folds
+
+
+def run_walk_forward(
+    code: str,
+    start_date: str,
+    end_date: str,
+    param_grid: Optional[Dict[str, List]] = None,
+    train_days: int = 250,
+    valid_days: int = 60,
+    sort_by: str = "sharpe_ratio",
+    initial_capital: float = 1_000_000,
+    commission_rate: float = 0.0003,
+    stamp_tax_rate: float = 0.001,
+) -> Optional[WalkForwardResult]:
+    """
+    Walk-Forward 滚动 train/validation 参数评估。
+
+    与 run_parameter_sweep（全区间样本内扫描，天然过拟合）不同：
+    每折只在训练窗内选最优参数，再在紧随其后的、从未参与选参的
+    验证窗上评估同组参数。汇总口径以样本外(OOS)为准，只有 OOS
+    结论可以外推到实盘。
+
+    Returns:
+        WalkForwardResult；数据不足或 vectorbt 未安装时返回 None。
+    """
+    try:
+        import vectorbt as vbt  # noqa: F401  引擎可用性检查
+    except ImportError:
+        logger.error("vectorbt 未安装，请执行: pip install vectorbt 'plotly<6'")
+        return None
+
+    if param_grid is None:
+        param_grid = DEFAULT_PARAM_GRID
+
+    close = _load_close_series(code, start_date, end_date)
+    if close is None:
+        return None
+
+    folds_idx = build_walk_forward_folds(close.index, train_days, valid_days)
+    if not folds_idx:
+        logger.warning(
+            f"{code} 数据不足以构造 walk-forward 折："
+            f"需至少 {train_days + valid_days} 根K线，实际 {len(close)}"
+        )
+        return None
+
+    total_fee = commission_rate * 2 + stamp_tax_rate
+    combos = _iter_param_combos(param_grid)
+    logger.info(
+        f"walk-forward: {code} {start_date}~{end_date} "
+        f"{len(folds_idx)}折 × {len(combos)}参数组合"
+    )
+
+    folds: List[WalkForwardFold] = []
+    for fold_no, (t0, t1, v0, v1) in enumerate(folds_idx, 1):
+        train_slice = close.iloc[t0:t1 + 1]
+        valid_slice = close.iloc[v0:v1 + 1]
+
+        # 训练窗：网格内选样本内最优（按 sort_by）
+        best, best_key = None, None
+        for params in combos:
+            try:
+                res = _evaluate_combo(
+                    code, train_slice, params,
+                    train_slice.index[0].strftime("%Y-%m-%d"),
+                    train_slice.index[-1].strftime("%Y-%m-%d"),
+                    initial_capital, total_fee,
+                )
+            except Exception as e:
+                logger.debug(f"折{fold_no} 组合 {params} 训练失败: {e}")
+                continue
+            if res is None:
+                continue
+            key = (getattr(res, sort_by), res.total_return)
+            if best_key is None or key > best_key:
+                best, best_key = res, key
+
+        if best is None:
+            logger.warning(f"折{fold_no} 训练窗全部组合失败，跳过")
+            continue
+
+        # 验证窗：用训练窗选出的参数做样本外评估
+        oos = None
+        try:
+            oos = _evaluate_combo(
+                code, valid_slice,
+                {
+                    "short_ma": best.short_ma,
+                    "long_ma": best.long_ma,
+                    "rsi_period": best.rsi_period,
+                    "rsi_oversold": best.rsi_oversold,
+                    "rsi_overbought": best.rsi_overbought,
+                    "stop_loss": best.stop_loss,
+                    "take_profit": best.take_profit,
+                },
+                valid_slice.index[0].strftime("%Y-%m-%d"),
+                valid_slice.index[-1].strftime("%Y-%m-%d"),
+                initial_capital, total_fee,
+            )
+        except Exception as e:
+            logger.warning(f"折{fold_no} 验证窗评估失败: {e}")
+
+        folds.append(WalkForwardFold(
+            fold=fold_no,
+            train_start=train_slice.index[0].strftime("%Y-%m-%d"),
+            train_end=train_slice.index[-1].strftime("%Y-%m-%d"),
+            valid_start=valid_slice.index[0].strftime("%Y-%m-%d"),
+            valid_end=valid_slice.index[-1].strftime("%Y-%m-%d"),
+            in_sample=best,
+            out_of_sample=oos,
+        ))
+        oos_txt = (
+            f"收益{oos.total_return:+.2%} 夏普{oos.sharpe_ratio:.2f}"
+            if oos else "评估失败"
+        )
+        logger.info(
+            f"  折{fold_no}/{len(folds_idx)} 训练{folds[-1].train_start}~{folds[-1].train_end} "
+            f"验证{folds[-1].valid_start}~{folds[-1].valid_end} | "
+            f"IS夏普{best.sharpe_ratio:.2f} → OOS {oos_txt}"
+        )
+
+    if not folds:
+        logger.warning("walk-forward 无有效折")
+        return None
+
+    oos_folds = [f.out_of_sample for f in folds if f.out_of_sample is not None]
+    compound = 1.0
+    for r in oos_folds:
+        compound *= 1.0 + r.total_return
+    oos_trades = sum(r.total_trades for r in oos_folds)
+    oos_win = (
+        sum(r.win_rate * r.total_trades for r in oos_folds) / oos_trades
+        if oos_trades > 0 else 0.0
+    )
+    is_sharpes = [f.in_sample.sharpe_ratio for f in folds]
+    oos_sharpes = [r.sharpe_ratio for r in oos_folds]
+    avg_oos_sharpe = sum(oos_sharpes) / len(oos_sharpes) if oos_sharpes else 0.0
+    avg_is_sharpe = sum(is_sharpes) / len(is_sharpes)
+
+    return WalkForwardResult(
+        code=code,
+        start_date=start_date,
+        end_date=end_date,
+        train_days=train_days,
+        valid_days=valid_days,
+        n_folds=len(folds),
+        folds=folds,
+        oos_compound_return=compound - 1.0,
+        oos_avg_sharpe=avg_oos_sharpe,
+        oos_worst_drawdown=min(
+            (r.max_drawdown for r in oos_folds), default=0.0
+        ),
+        oos_trades=oos_trades,
+        oos_win_rate=oos_win,
+        is_avg_sharpe=avg_is_sharpe,
+        sharpe_degradation=avg_is_sharpe - avg_oos_sharpe,
+    )
+
+
+def format_walk_forward_report(result: WalkForwardResult) -> str:
+    """格式化 walk-forward 报告（样本外口径为主）"""
+    lines = [
+        "=" * 66,
+        f"Walk-Forward 报告: {result.code} ({result.start_date} ~ {result.end_date})",
+        f"折数: {result.n_folds} | 训练窗{result.train_days}根 | 验证窗{result.valid_days}根",
+        "=" * 66,
+        f"样本外复利收益: {result.oos_compound_return:+.2%}",
+        f"样本外平均夏普: {result.oos_avg_sharpe:.2f} "
+        f"(样本内 {result.is_avg_sharpe:.2f}, 衰减 {result.sharpe_degradation:.2f})",
+        f"样本外最差回撤: {result.oos_worst_drawdown:.2%}",
+        f"样本外交易: {result.oos_trades}笔 | 胜率 {result.oos_win_rate:.1%}",
+        "-" * 66,
+    ]
+    for f in result.folds:
+        oos = f.out_of_sample
+        oos_txt = (
+            f"OOS 收益{oos.total_return:+7.2%} 夏普{oos.sharpe_ratio:5.2f} "
+            f"回撤{oos.max_drawdown:6.2%}" if oos else "OOS 评估失败"
+        )
+        lines.append(
+            f"折{f.fold} 验证{f.valid_start}~{f.valid_end} | "
+            f"IS夏普{f.in_sample.sharpe_ratio:5.2f} | {oos_txt} | "
+            f"参数MA({f.in_sample.short_ma}/{f.in_sample.long_ma})"
+        )
+    lines.append("=" * 66)
+    lines.append("注: 只有样本外(OOS)结论可外推；夏普衰减大说明网格选参过拟合。")
+    return "\n".join(lines)
 
 
 # ══════════════════════════════════════════════════════════════════
