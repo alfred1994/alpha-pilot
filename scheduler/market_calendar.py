@@ -26,6 +26,58 @@ def _now_bj() -> datetime:
 _trading_dates_cache: set = None
 _cache_date: str = None
 
+# A股交易所节假日休市表（仅列工作日休市；周末由工作日兜底层自然排除）。
+# 仅作降级用，权威口径仍是 Baostock 交易日历；表外年份自动退回
+# "周一至五全是交易日"。节假安排逐年公布，新年份需人工补表。
+# 来源：2024/2025 为交易所公告；2026 为国务院办公节日安排（逢周末顺延后
+# 的实际工作日休市）。
+_HOLIDAY_WEEKDAYS: dict = {
+    2024: {
+        "0101",                                    # 元旦
+        "0209", "0212", "0213", "0214", "0215", "0216",  # 春节(2/9-2/17)
+        "0404", "0405",                            # 清明(4/4-4/6)
+        "0501", "0502", "0503",                    # 劳动节(5/1-5/5)
+        "0610",                                    # 端午
+        "0916", "0917",                            # 中秋(9/15-9/17)
+        "1001", "1002", "1003", "1004", "1007",    # 国庆(10/1-10/7)
+    },
+    2025: {
+        "0101",                                    # 元旦
+        "0128", "0129", "0130", "0131", "0203", "0204",  # 春节(1/28-2/4)
+        "0404",                                    # 清明
+        "0501", "0502", "0505",                    # 劳动节(5/1-5/5)
+        "0602",                                    # 端午
+        "1001", "1002", "1003", "1006", "1007", "1008",  # 国庆+中秋(10/1-10/8)
+    },
+    2026: {
+        "0101", "0102",                            # 元旦(1/1-1/3)
+        "0216", "0217", "0218", "0219", "0220",    # 春节(2/15-2/22)
+        "0406",                                    # 清明(4/4-4/6)
+        "0501", "0504", "0505",                    # 劳动节(5/1-5/5)
+        "0619",                                    # 端午(6/19-6/21)
+        "0925",                                    # 中秋(9/25-9/27)
+        "1001", "1002", "1005", "1006", "1007", "1008",  # 国庆(10/1-10/8)
+    },
+}
+
+
+def _fallback_calendar_with_holidays(year: int) -> set:
+    """降级方案: 工作日视为交易日，再剔除本地节假日表中的工作日休市。"""
+    dates = _generate_fallback_calendar(year)
+    holidays = _HOLIDAY_WEEKDAYS.get(year)
+    if holidays:
+        dates -= {f"{year}{md}" for md in holidays}
+        logger.warning(
+            f"交易日历降级: Baostock不可用，使用本地节假日表({year}，"
+            f"剔除{len(holidays)}个工作日休市)"
+        )
+    else:
+        logger.warning(
+            f"交易日历降级: Baostock不可用且{year}不在节假日表，"
+            f"回退'周一至五全是交易日'(会把法定节假日误判为交易日)"
+        )
+    return dates
+
 
 def _load_trading_calendar(year: int = None) -> set:
     """
@@ -64,8 +116,8 @@ def _load_trading_calendar(year: int = None) -> set:
     except Exception as e:
         logger.error(f"交易日历加载失败: {e}")
 
-    # 降级: 工作日视为交易日(不准确但可用)
-    _trading_dates_cache = _generate_fallback_calendar(year)
+    # 降级: 工作日视为交易日 + 本地节假日表剔除(不准确但可用)
+    _trading_dates_cache = _fallback_calendar_with_holidays(year)
     _cache_date = cache_key
     return _trading_dates_cache
 
