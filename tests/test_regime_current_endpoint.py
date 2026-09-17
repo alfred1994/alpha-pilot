@@ -28,6 +28,17 @@ class RegimeCurrentEndpointTest(unittest.TestCase):
         database_path = patch("data.database.DB_PATH", self.db_path)
         database_path.start()
         self.addCleanup(database_path.stop)
+        # Hermetic calendar: the real snapshot path reaches Baostock for the
+        # trading calendar. Stub it so the offline regression guard sees no
+        # external socket. The regime assertions do not depend on market hours,
+        # so returning today as a trading day keeps the snapshot realistic.
+        import scheduler.market_calendar as market_calendar
+        today_bj = market_calendar._now_bj().strftime("%Y%m%d")
+        calendar_patch = patch.object(
+            market_calendar, "_load_trading_calendar", return_value={today_bj}
+        )
+        calendar_patch.start()
+        self.addCleanup(calendar_patch.stop)
 
     def _insert_regime(self, date, regime, confidence):
         with Database(db_path=self.db_path) as db:

@@ -109,9 +109,12 @@ def main():
             strategy_directive=current,
         )
         assert "directive-current" in prompt
-        assert "扩大观察后仍无信号" in prompt
+        assert "min_score" in prompt
         assert "当综合分>=60" not in prompt
-        ok("个股 LLM 收到完整生效策略且不再使用固定买入阈值提示")
+        # 自 2b67e97 起，自由文本假设/诊断不再注入个股 prompt，改为落库供复盘；
+        # 个股 prompt 只携带生效策略的版本与参数（含 min_score）。
+        assert "扩大观察后仍无信号" not in prompt
+        ok("个股 LLM 收到生效策略版本与参数，不再注入自由文本假设或固定买入阈值")
 
         with Database(db_path=db_path) as db:
             replacement = dict(pending)
