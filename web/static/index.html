@@ -9,6 +9,7 @@
     <script src="vendor/lucide.min.js?v=2026080201"></script>
     <script src="vendor/echarts.min.js?v=2026080201"></script>
     <link rel="stylesheet" href="css/styles.css?v=2026080201">
+    <link rel="stylesheet" href="css/research.css?v=2026091702">
 </head>
 <body>
     <div class="app-shell">
@@ -22,6 +23,8 @@
             </a>
             <nav class="main-nav" aria-label="主导航">
                 <button class="nav-btn active" data-tab="dashboard"><i data-lucide="sunrise"></i><span>今日</span></button>
+                <button class="nav-btn" data-tab="returns"><i data-lucide="chart-no-axes-combined"></i><span>收益表现</span></button>
+                <button class="nav-btn" data-tab="research"><i data-lucide="scan-search"></i><span>候选验证</span></button>
                 <button class="nav-btn" data-tab="decisions"><i data-lucide="route"></i><span>决策流水</span></button>
                 <button class="nav-btn" data-tab="evolution"><i data-lucide="brain"></i><span>策略与复盘</span></button>
                 <button class="nav-btn" data-tab="health"><i data-lucide="activity"></i><span>运行健康</span></button>
@@ -57,6 +60,13 @@
                         <strong id="trader-next-action">-</strong>
                         <small id="trader-last-loop">最后循环 -</small>
                     </div>
+                </article>
+
+                <article class="card" aria-label="市场温度与证据">
+                    <div class="section-heading compact"><div><span class="eyebrow">市场事实，不是买卖指令</span><h2>市场温度与证据</h2></div><button id="open-research">查看候选过程与结果 →</button></div>
+                    <p id="market-evidence-status" role="status">正在读取市场快照</p>
+                    <div class="research-metrics" id="market-evidence-metrics"></div>
+                    <p class="research-note" id="market-evidence-note">仅使用已落库证据，不生成额外温度分。</p>
                 </article>
 
                 <section class="capability-rail" id="capability-rail" aria-label="交易能力状态">
@@ -137,6 +147,51 @@
                 </article>
             </section>
 
+            <section class="tab-content" id="tab-returns">
+                <div class="page-heading"><div><span class="eyebrow">账户结果与同期市场</span><h1>收益表现</h1></div><p>当前展示资产变化口径，未调整出入金，不等于已核实投资收益。</p></div>
+                <div class="filter-bar research-filters">
+                    <button data-return-period="week">本周</button><button data-return-period="month">本月</button><button data-return-period="year">今年</button>
+                    <label>开始日期 <input id="returns-start" type="date"></label><label>结束日期 <input id="returns-end" type="date"></label><button id="returns-apply">查询 / 刷新</button>
+                </div>
+                <p id="returns-status" role="status">等待读取区间</p>
+                <section class="metric-grid">
+                    <article class="metric-card"><span>期初 → 期末资产</span><strong id="returns-assets">-</strong><small>实际快照收盘值</small></article>
+                    <article class="metric-card"><span>区间资产变化</span><strong id="returns-change">-</strong><small>非资金流调整后盈亏</small></article>
+                    <article class="metric-card"><span>资产变化率</span><strong id="returns-rate">-</strong><small>未调整出入金</small></article>
+                    <article class="metric-card"><span>同期沪深300</span><strong id="returns-benchmark">-</strong><small>同起止日期收盘价</small></article>
+                    <article class="metric-card"><span>相对基准变化差</span><strong id="returns-relative">-</strong><small>不是已核实的策略超额收益</small></article>
+                    <article class="metric-card"><span>区间资产最大回撤</span><strong id="returns-drawdown">-</strong><small>日终快照，未调整资金流</small></article>
+                </section>
+                <article class="card"><h2>区间走势</h2><p id="returns-chart-state" role="status">等待数据</p><div class="chart-container" id="returns-chart"></div></article>
+                <article class="card"><h2>逐日快照资产变化</h2><p>跨缺失日期时是跨期变化，不冒充单日盈亏。</p><div class="chart-container" id="returns-daily-chart"></div></article>
+                <article class="card"><h2>每日明细</h2><div class="table-wrap"><table><thead><tr><th>快照日期</th><th>总资产</th><th>对比快照日</th><th>资产变化</th><th>变化率</th><th>基准区间涨幅</th></tr></thead><tbody id="returns-rows"></tbody></table></div><p class="research-note" id="returns-note"></p></article>
+            </section>
+
+            <section class="tab-content" id="tab-research">
+                <div class="page-heading"><div><span class="eyebrow">从过程到结果</span><h1>候选覆盖与事后验证</h1></div><p>看清候选为何停留在观察，以及当时判断后的表现。不是交易建议。</p></div>
+                <div class="filter-bar research-filters">
+                    <label>开始日期 <input type="date" id="research-start"></label>
+                    <label>结束日期 <input type="date" id="research-end"></label>
+                    <label>拒绝阶段 <select id="research-layer">
+                        <option value="">全部阶段</option><option value="score_gate">评分不足</option>
+                        <option value="ranking_gate">判断名额限制</option><option value="llm">模型判断阶段</option>
+                        <option value="buy_budget">买入预算不足</option><option value="hold_unknown">观望原因未分类</option>
+                        <option value="legacy_unknown">历史原因未知</option>
+                    </select></label>
+                    <button id="research-retry">刷新</button>
+                </div>
+                <p id="research-scope" role="status">默认最近30个日历日；统计整个筛选范围，不仅是本页。</p>
+                <section class="metric-grid">
+                    <article class="metric-card"><span>已保存候选观察</span><strong id="research-observations">-</strong><small>同一股票可有多轮观察</small></article>
+                    <article class="metric-card"><span>独立股票</span><strong id="research-stocks">-</strong><small>所选范围按代码去重</small></article>
+                    <article class="metric-card"><span>记录模型动作</span><strong id="research-evaluated">-</strong><small>限已保存候选样本，不等于全部调用</small></article>
+                    <article class="metric-card"><span>T+5 已回填 / 观察数</span><strong id="research-matured">-</strong><small>无结果不按零收益计算</small></article>
+                </section>
+                <article class="card"><h2>筛选阶段与结果</h2><div class="research-groups" id="research-groups"></div><p class="research-note" id="research-note">等待样本口径</p></article>
+                <div class="section-heading"><h2>逐次候选证据</h2><div class="filter-bar"><button id="research-prev" disabled>上一页</button><span id="research-page" role="status">-</span><button id="research-next" disabled>下一页</button></div></div>
+                <div id="research-list" class="research-list"><p>正在读取候选记录</p></div>
+            </section>
+
             <section class="tab-content" id="tab-decisions">
                 <div class="page-heading"><div><span class="eyebrow">判断不等于交易</span><h1>决策流水</h1></div><p>HOLD 是观察结论，只有 BUY 和 SELL 才是交易信号。</p></div>
                 <section class="metric-grid decision-metrics">
@@ -196,6 +251,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026091701" type="module"></script>
+    <script src="js/app.js?v=2026091703" type="module"></script>
 </body>
 </html>

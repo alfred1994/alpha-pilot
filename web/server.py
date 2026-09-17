@@ -71,9 +71,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 # 动态加载子路由
-from web.routers import status, database
+from web.routers import status, database, research, returns
 app.include_router(status.router, prefix="/api", tags=["Status"])
 app.include_router(database.router, prefix="/api", tags=["Database"])
+app.include_router(research.router, prefix="/api", tags=["Research"])
+app.include_router(returns.router, prefix="/api", tags=["Returns"])
 
 if not is_prod or is_control_api_enabled():
     from web.routers import control

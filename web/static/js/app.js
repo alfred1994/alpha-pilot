@@ -1,3 +1,5 @@
+import { ReturnsTab } from './modules/returns.js?v=2026091703';
+import { ResearchTab } from './modules/research.js?v=2026091702';
 import { DashboardTab } from './modules/dashboard.js?v=2026091701';
 import { DecisionsTab } from './modules/decisions.js?v=2026091701';
 import { EvolutionTab } from './modules/evolution.js?v=2026091701';
@@ -11,6 +13,8 @@ class App {
         this.timer = null;
         this.tabs = {
             dashboard: new DashboardTab(this),
+            research: new ResearchTab(this),
+            returns: new ReturnsTab(this),
             decisions: new DecisionsTab(this),
             evolution: new EvolutionTab(this),
             health: new HealthTab(this),
@@ -31,6 +35,7 @@ class App {
         document.querySelectorAll('.tab-content').forEach(section => section.classList.toggle('active', section.id === `tab-${name}`));
         this.currentTab = name;
         this.tabs[name].load();
+        if (name === 'dashboard') this.tabs.research.loadMarket();
     }
 
     async refresh() {
@@ -43,6 +48,9 @@ class App {
         } catch (error) {
             console.error('Failed to load global status:', error);
             this.renderUnavailable();
+            if (['research', 'returns'].includes(this.currentTab)) await this.tabs[this.currentTab].load();
+        } finally {
+            if (this.currentTab === 'dashboard') await this.tabs.research.loadMarket();
         }
     }
 
