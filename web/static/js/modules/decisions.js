@@ -3,6 +3,8 @@ export class DecisionsTab {
         this.app = app;
         this.decisions = [];
         this.kind = 'all';
+        this.page = 1;
+        this.requestId = 0;
         this.radarChart = null;
         this.filtersReady = false;
         this.modalReady = false;
@@ -24,13 +26,25 @@ export class DecisionsTab {
     }
 
     async load() {
+        const requestId = ++this.requestId;
+        const query = new URLSearchParams({ limit: '50', page: String(this.page), kind: this.kind });
+        const date = document.getElementById('decision-date')?.value;
+        if (date) { query.set('start_date', date); query.set('end_date', date); }
         try {
-            const response = await fetch(`${this.app.apiBase}/decisions?limit=50`);
+            const response = await fetch(`${this.app.apiBase}/decisions?${query}`);
             const data = await response.json();
-            this.decisions = data.success ? (data.decisions || []) : [];
+            if (!response.ok || !data.success) throw new Error('Unavailable');
+            if (requestId !== this.requestId) return;
+            this.decisions = data.decisions || [];
+            this.setText('decision-page', `第 ${data.page} 页 · 共 ${data.total} 条 · 本页 ${new Set(this.decisions.map(d => d.code)).size} 只股票`);
+            document.getElementById('decision-prev')?.toggleAttribute('disabled', this.page <= 1);
+            document.getElementById('decision-next')?.toggleAttribute('disabled', !data.has_more);
         } catch (error) {
-            console.error('Failed to load decisions:', error);
-            this.decisions = [];
+            if (requestId !== this.requestId) return;
+            this.setText('decisions-list', '判断记录读取失败，请重试；不能据此认定没有信号。');
+            ['dec-total-count', 'dec-signal-count', 'dec-observation-count', 'dec-avg-confidence'].forEach(id => this.setText(id, '不可用'));
+            this.initFilters();
+            return;
         }
         this.renderStats();
         this.renderList();
@@ -48,8 +62,13 @@ export class DecisionsTab {
             if (!button) return;
             filters.querySelectorAll('.filter-btn').forEach(item => item.classList.toggle('active', item === button));
             this.kind = button.dataset.kind || 'all';
-            this.renderList();
+            this.page = 1;
+            this.load();
         });
+        document.getElementById('decision-date')?.addEventListener('change', () => { this.page = 1; this.load(); });
+        document.getElementById('decision-prev')?.addEventListener('click', () => { this.page = Math.max(1, this.page - 1); this.load(); });
+        document.getElementById('decision-next')?.addEventListener('click', () => { this.page += 1; this.load(); });
+        document.getElementById('decision-retry')?.addEventListener('click', () => this.load());
         this.filtersReady = true;
     }
 
@@ -93,7 +112,7 @@ export class DecisionsTab {
             return `
                 <article class="decision-item ${kind}" data-decision-id="${item.id}">
                     <div class="decision-head">
-                        <div class="decision-title"><strong>${this.escape(this.stockLabel(item))}</strong><small>${this.escape(item.date)} · 置信度 ${(Number(item.confidence || 0) * 100).toFixed(0)}%</small></div>
+                        <div class="decision-title"><strong>${this.escape(this.stockLabel(item))}</strong><small>${this.escape(item.created_at || item.date)} · 置信度 ${(Number(item.confidence || 0) * 100).toFixed(0)}%</small></div>
                         <span class="decision-kind">${this.escape(kindLabel)}</span>
                     </div>
                     <p class="decision-reason">${this.escape(item.reasoning || '暂无公开判断依据')}</p>
@@ -113,7 +132,7 @@ export class DecisionsTab {
         this.setText('modal-title', this.stockLabel(item));
         this.setText('modal-action', item.action);
         this.setText('modal-confidence', `${(Number(item.confidence || 0) * 100).toFixed(0)}%`);
-        this.setText('modal-reasoning', item.reasoning || '暂无公开判断依据');
+        this.setText('modal-reasoning', `${item.reasoning || '暂无公开判断依据'}\n时间：${item.created_at || item.date}；扫描：${item.scan_id || '未知（历史记录）'}；评分快照：${item.evidence_available ? '决策时点' : '未记录，不用最新数据代替'}`);
         const modal = document.getElementById('decision-modal');
         modal?.classList.add('active');
         modal?.setAttribute('aria-hidden', 'false');

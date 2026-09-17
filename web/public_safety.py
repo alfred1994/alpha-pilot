@@ -236,6 +236,13 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "total_pnl_pct": account.get("total_pnl_pct", 0.0),
         },
         "adaptive": snapshot.get("adaptive") or {},
+        "regime_current": {
+            "regime": sanitize_public_text(snapshot["regime_current"].get("regime"), 24),
+            "date": sanitize_public_text(snapshot["regime_current"].get("date"), 16),
+            "confidence": snapshot["regime_current"].get("confidence"),
+            "source": "market_regimes",
+            "fresh": snapshot["regime_current"].get("fresh") is True,
+        } if snapshot.get("regime_current") else None,
         "strategy_directive": _sanitize_strategy_directive(directive) if directive else None,
         "pending_strategy_directive": _sanitize_strategy_directive(pending_directive) if pending_directive else None,
         "crash_open": bool(snapshot.get("crash_open")),

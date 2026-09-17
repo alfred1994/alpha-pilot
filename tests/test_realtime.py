@@ -12,7 +12,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from realtime.event_bus import Event, get_event_bus
+from realtime.event_bus import Event, EventBus
 from realtime.event_handlers import StopLossHandler
 from data.quote_validation import BEIJING_TZ
 
@@ -74,7 +74,7 @@ class MockAccount:
 
 async def test_event_bus():
     """测试事件总线"""
-    bus = get_event_bus()
+    bus = EventBus()
 
     received = []
     def handler(event):
@@ -174,7 +174,7 @@ async def test_paper_account_stop_sensor_is_readonly():
 
 async def test_integration():
     """集成测试"""
-    bus = get_event_bus()
+    bus = EventBus()
     account = MockAccount()
     handler = StopLossHandler(account)
     messages = []

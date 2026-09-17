@@ -140,7 +140,7 @@
             <section class="tab-content" id="tab-decisions">
                 <div class="page-heading"><div><span class="eyebrow">判断不等于交易</span><h1>决策流水</h1></div><p>HOLD 是观察结论，只有 BUY 和 SELL 才是交易信号。</p></div>
                 <section class="metric-grid decision-metrics">
-                    <article class="metric-card"><span>有效判断</span><strong id="dec-total-count">-</strong><small>已过滤模型无响应</small></article>
+                    <article class="metric-card"><span>有效判断</span><strong id="dec-total-count">-</strong><small>本页统计，已过滤模型无响应</small></article>
                     <article class="metric-card"><span>交易信号</span><strong id="dec-signal-count">-</strong><small id="dec-buy-sell-ratio">-</small></article>
                     <article class="metric-card"><span>观察结论</span><strong id="dec-observation-count">-</strong><small>HOLD</small></article>
                     <article class="metric-card"><span>平均置信度</span><strong id="dec-avg-confidence">-</strong><small>最近有效判断</small></article>
@@ -149,6 +149,12 @@
                     <button class="filter-btn active" data-kind="all">全部</button>
                     <button class="filter-btn" data-kind="signal">只看交易信号</button>
                     <button class="filter-btn" data-kind="observation">只看观察结论</button>
+                </div>
+                <div class="filter-bar">
+                    <label>日期 <input type="date" id="decision-date"></label>
+                    <button id="decision-prev" disabled>上一页</button>
+                    <span id="decision-page"></span><button id="decision-next" disabled>下一页</button>
+                    <button id="decision-retry">刷新</button>
                 </div>
                 <div class="decision-list" id="decisions-list"><div class="empty-state">正在读取判断记录</div></div>
             </section>
@@ -190,6 +196,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026080201" type="module"></script>
+    <script src="js/app.js?v=2026091701" type="module"></script>
 </body>
 </html>

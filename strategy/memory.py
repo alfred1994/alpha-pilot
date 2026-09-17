@@ -681,7 +681,8 @@ class TradeMemory:
 
     def save_decision(self, code: str, action: str, prompt: str,
                       response: str, reasoning: str,
-                      confidence: float = 0.5, trade_id: int = None) -> int:
+                      confidence: float = 0.5, trade_id: int = None,
+                      dimensions: dict = None, scan_id: str = None) -> int:
         """
         保存一条LLM决策记录
 
@@ -718,6 +719,8 @@ class TradeMemory:
                 "llm_response": response[:2000],
                 "reasoning": reasoning,
                 "confidence": confidence,
+                "dimensions": dimensions,
+                "scan_id": scan_id,
                 "trade_id": trade_id,  # 【Phase1-Task2】精确关联交易记录
                 "created_at": datetime.now().isoformat(),
             })

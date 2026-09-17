@@ -1,7 +1,7 @@
 import os
 import sys
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def build_agent_status_snapshot():
     """统一构建 AlphaPilot 系统当前的运行态、健康态、资产、自适应指标及未决崩溃状态"""
@@ -112,6 +112,27 @@ def build_agent_status_snapshot():
             pending_strategy_directive = db.get_next_strategy_directive(today)
     except Exception:
         pass
+
+    # 展示与快链路 days=1 相同的日历窗口，不把旧 adaptive 伪装为当前行情。
+    regime_current = None
+    try:
+        from data.database import Database
+        with Database() as db:
+            latest_regime = db.conn.execute(
+                "SELECT date, regime, confidence FROM market_regimes WHERE date <= ? ORDER BY date DESC LIMIT 1",
+                (datetime.now().strftime("%Y-%m-%d"),),
+            ).fetchone()
+            latest_regime = dict(latest_regime) if latest_regime else None
+        if latest_regime and latest_regime.get("regime"):
+            regime_current = {
+                "regime": latest_regime.get("regime"),
+                "date": latest_regime.get("date"),
+                "confidence": latest_regime.get("confidence"),
+                "source": "market_regimes",
+                "fresh": latest_regime.get("date", "") >= (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+            }
+    except Exception:
+        regime_current = None
 
     # 7. 检测未决 Crash 状态
     crash_open = False
@@ -227,6 +248,8 @@ def build_agent_status_snapshot():
                 "next_action": "Doctor 将优先诊断并恢复交易闭环。",
             })
 
+        market_data = (daily_trader.get("latest_scan") or {}).get("market_data") or {}
+        market_fresh = market_data.get("fresh")
         funnel = daily_trader.get("funnel") or {}
         degradations = daily_trader.get("degradations") or []
         capabilities = [
@@ -239,8 +262,8 @@ def build_agent_status_snapshot():
             {
                 "key": "market_data",
                 "label": "行情数据",
-                "status": "healthy" if health_ok else "degraded",
-                "summary": "基础数据源可用" if health_ok else "基础数据源存在异常",
+                "status": "degraded" if not health_ok or market_fresh is False else "healthy" if market_fresh is True else "idle",
+                "summary": "扫描行情已过期" if market_fresh is False else "扫描行情新鲜" if market_fresh is True else "尚无扫描行情时效证据",
             },
             {
                 "key": "signals",
@@ -319,6 +342,7 @@ def build_agent_status_snapshot():
             "total_pnl_pct": total_pnl_pct
         },
         "adaptive": adaptive_params,
+        "regime_current": regime_current,
         "strategy_directive": strategy_directive,
         "pending_strategy_directive": pending_strategy_directive,
         "crash_open": crash_open,

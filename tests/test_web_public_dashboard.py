@@ -86,12 +86,18 @@ def _load_prod_client():
         sys.modules.pop(name, None)
 
     server = importlib.import_module("web.server")
-    status_router = importlib.import_module("web.routers.status")
-    status_router.build_agent_status_snapshot = _sample_status
+    # Patch the router actually mounted on this app. Importing a removed
+    # sys.modules entry can create a second module while the package retains
+    # the original router reference.
+    from unittest.mock import patch
+    status_patch = patch.object(server.status, "build_agent_status_snapshot", _sample_status)
+    status_patch.start()
+    old_env["_status_patch"] = status_patch
     return TestClient(server.app), old_env
 
 
 def _restore_env(old_env):
+    old_env.pop("_status_patch").stop()
     for key, value in old_env.items():
         if value is None:
             os.environ.pop(key, None)

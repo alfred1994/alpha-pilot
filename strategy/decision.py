@@ -85,6 +85,7 @@ class TradeDecision:
     reason: str = ""               # 决策理由
     timestamp: str = ""
     decision_id: int = None        # llm_decisions 主键，供成交精确关联
+    scan_id: str = None            # 扫描批次，非扫描调用保持未知
 
     def __post_init__(self):
         if not self.timestamp:

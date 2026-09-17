@@ -203,7 +203,10 @@ def test_scheduled_stop_uses_context_but_falls_back_to_price_stop():
                 patch("strategy.cb_t0_strategy.get_cb_exit_market_context", return_value=context):
             return check_stops_once()
 
-    with tempfile.TemporaryDirectory(prefix="test_cb_scheduled_stop_") as directory:
+    # Preserve stop-out behavior inside the test without leaking today's cooldown
+    # into later tests that use the same synthetic bond code.
+    with patch("strategy.cb_t0_strategy._STOPPED_OUT_TODAY", {"date": "", "codes": set()}), \
+            tempfile.TemporaryDirectory(prefix="test_cb_scheduled_stop_") as directory:
         bomb_account = _new_account(directory, "scheduled_bomb")
         result = run_once(
             bomb_account, 99.0,

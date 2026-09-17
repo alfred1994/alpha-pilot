@@ -28,7 +28,7 @@ from datetime import datetime
 from scheduler.market_calendar import _now_bj
 from data.quote_validation import validate_quote
 from dataclasses import dataclass, field
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 import concurrent.futures
 
 from scheduler import logger
@@ -235,6 +235,30 @@ def prefetch(candidate_codes: List[str] = None):
 # ═══════════════════════════════════════════════════════════════════
 # 快链路：早盘快速扫描（480秒预算）
 # ═══════════════════════════════════════════════════════════════════
+
+def select_llm_candidates(scored: List[dict], top_k: int, min_score: float,
+                          max_llm_candidates: Optional[int] = None) -> Tuple[List[dict], Dict[str, str]]:
+    """从已打分候选中选出需要 LLM 判断的名单。
+
+    与旧的“仅前 top_k”不同：所有综合分过线的候选都可进入判断，
+    判断广度由 max_llm_candidates 单独控制，避免把“开仓数量预算”
+    错当成“判断名额”。返回 (入选列表, 拒绝原因)。
+    """
+    selected = []
+    hold_reasons: Dict[str, str] = {}
+    for s in sorted(scored, key=lambda item: float(item.get("composite") or 0), reverse=True):
+        composite = float(s.get("composite") or 0)
+        if composite < min_score:
+            hold_reasons[s["code"]] = f"HOLD_SCORE_LOW({composite:.0f}<{min_score})"
+            continue
+        if max_llm_candidates is not None and len(selected) >= max_llm_candidates:
+            hold_reasons[s["code"]] = (
+                f"HOLD_NOT_TOP{max_llm_candidates}(score={composite:.0f})"
+            )
+            continue
+        selected.append(s)
+    return selected, hold_reasons
+
 
 def fast_scan(
     budget_seconds: int = FAST_SCAN_BUDGET_SECONDS,
@@ -617,19 +641,23 @@ def fast_scan(
     except Exception as e:
         logger.debug(f"[影子] 决策记录失败(非致命): {e}")
 
-    # 动态TopK: 取前K只，但必须过最低质量线
-    top_candidates = []
-    for s in scored[:top_k]:
-        if s["composite"] >= min_score:
-            top_candidates.append(s)
-        else:
-            plan.hold_reasons[s["code"]] = f"HOLD_SCORE_LOW({s['composite']:.0f}<{min_score})"
+    # 判断广度与开仓预算分离：所有过线候选都可获得 LLM 判断，
+    # 开仓数量仍由后续 top_k/风控约束，不再把 top_k 当判断名额。
+    max_llm_raw = os.environ.get("MAX_LLM_CANDIDATES", "20")
+    try:
+        max_llm_candidates = max(1, min(50, int(max_llm_raw)))
+    except ValueError:
+        max_llm_candidates = 20
+    top_candidates, gate_reasons = select_llm_candidates(
+        scored, top_k=top_k, min_score=min_score,
+        max_llm_candidates=max_llm_candidates,
+    )
+    plan.hold_reasons.update(gate_reasons)
 
-    # 不在TopK的标记原因
-    for s in scored[top_k:]:
-        plan.hold_reasons[s["code"]] = f"HOLD_NOT_TOP{top_k}(score={s['composite']:.0f})"
-
-    logger.info(f"[快链路] Top{top_k}候选: {len(top_candidates)}只过线(阈值{min_score})")
+    logger.info(
+        f"[快链路] 判断广度: {len(top_candidates)}只过线(阈值{min_score})，"
+        f"上限{max_llm_candidates if max_llm_candidates is not None else '无'}"
+    )
 
     # === P1-4: 快链路集成 LLM 决策（超时降级） ===
     # P2-8: 动态检查LLM可用性（环境变量 + 连续超时计数）
@@ -694,6 +722,7 @@ def fast_scan(
                     data_quality=data_quality,
                     llm_retries=0,
                     llm_timeout=FAST_SCAN_LLM_DECISION_TIMEOUT,
+                    scan_id=plan.scan_id,
                 )
             except Exception as _e:
                 logger.warning(f"[快链路] LLM决策异常 {_s.get('code', '?')}: {_e}")
@@ -703,11 +732,11 @@ def fast_scan(
         try:
             _llm_futures = {
                 _llm_executor.submit(_parallel_llm_decision, _s): _s
-                for _s in top_candidates[:5]
+                for _s in top_candidates
             }
             for _future in concurrent.futures.as_completed(
                 _llm_futures,
-                timeout=FAST_SCAN_LLM_RESULT_TIMEOUT,
+                timeout=max(0.1, min(FAST_SCAN_LLM_RESULT_TIMEOUT, remaining() - 10)),
             ):
                 try:
                     _s, _decision = _future.result()
@@ -738,7 +767,7 @@ def fast_scan(
             # 不在收集超时后等待未完成的模型线程，防止其侵占后续执行窗口。
             _llm_executor.shutdown(wait=False, cancel_futures=True)
 
-        logger.info(f"[快链路] LLM决策: {llm_count}/{min(5, len(top_candidates))} 成功")
+        logger.info(f"[快链路] LLM决策: {llm_count}/{len(top_candidates)} 成功")
 
         # P2-12: 关闭共享记忆连接
         try:
@@ -771,6 +800,9 @@ def fast_scan(
         # 前置一手可买性校验：高价股在缩仓/小权重下买不满1手时直接跳过，
         # 避免 LLM 深度研判后在执行层被“不足100单位”白白阻断。
         if llm_action == "BUY":
+            if sum(order.action == "BUY" for order in plan.orders) >= top_k:
+                plan.hold_reasons[s["code"]] = f"HOLD_BUY_BUDGET(top_k={top_k})"
+                continue
             _plan_price = float(s.get("latest_price", 0) or 0)
             if _plan_price > 0 and not min_lot_affordable(_plan_price, weight, trade_unit=100):
                 plan.hold_reasons[s["code"]] = (

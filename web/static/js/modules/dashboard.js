@@ -54,12 +54,12 @@ export class DashboardTab {
     async fetchJson(url, fallback) {
         try {
             const response = await fetch(url);
-            if (!response.ok) return fallback;
+            if (!response.ok) return null;
             const data = await response.json();
-            return data.success === false ? fallback : data;
+            return data.success === false ? null : data;
         } catch (error) {
             console.error(`Failed to load ${url}:`, error);
-            return fallback;
+            return null;
         }
     }
 
@@ -71,19 +71,37 @@ export class DashboardTab {
             this.fetchJson(`${this.app.apiBase}/performance?days=30`, { performance: [] }),
             this.fetchJson(`${this.app.apiBase}/trades?limit=30`, { total: 0, trades: [] }),
         ]);
-        const positions = positionsData.positions || [];
-        const performance = performanceData.performance || [];
-        const trades = tradesData.trades || [];
+        const positions = positionsData?.positions || [];
+        const performance = performanceData?.performance || [];
+        const trades = tradesData?.trades || [];
 
         this.renderTraderBrief(data);
         this.renderCapabilities(data.capabilities || []);
         this.renderJourney(data.daily_trader || {});
         this.renderAudit(data.daily_trader || {});
         this.renderStrategyHandoff(data);
-        this.renderAccount(data, positions, performance, tradesData.total || trades.length);
+        this.renderAccount(data, positions, performance, tradesData?.total ?? trades.length);
         this.renderPositions(positions);
         this.renderTrades(trades);
         this.renderPerformance(performance);
+        if (!positionsData) {
+            this.setText('positions-list', '持仓读取失败，不能判定为空仓');
+            this.setText('position-count', '不可用');
+            this.setText('position-value', '持仓市值未知');
+        }
+        if (!tradesData) {
+            const body = document.getElementById('trades-table-body');
+            if (body) body.innerHTML = '<tr><td colspan="7">成交读取失败，请重试</td></tr>';
+            this.setText('trade-count', '成交数未知');
+        }
+        if (!performanceData || !performance.length) this.setText('daily-pnl', '数据不可用');
+        if (!performanceData && this.chart) {
+            this.chart.clear();
+            this.chart.setOption({ title: { text: '业绩读取失败', left: 'center' } });
+        }
+        if (data.account.available === false) {
+            ['total-assets', 'total-pnl', 'available-cash', 'cash-ratio'].forEach(id => this.setText(id, '账户不可用'));
+        }
         if (window.lucide) window.lucide.createIcons();
     }
 
@@ -165,7 +183,7 @@ export class DashboardTab {
         const current = strategy.current || data.strategy_directive || null;
         const pending = strategy.pending || data.pending_strategy_directive || null;
         const formatMeta = item => item
-            ? `${item.effective_date || '-'} · Top ${item.params?.top_k ?? '-'} · 最低分 ${item.params?.min_score ?? '-'} · 单票 ${this.isKnownNumber(item.params?.max_weight) ? `${(Number(item.params.max_weight) * 100).toFixed(0)}%` : '-'}`
+            ? `${item.effective_date || '-'} · 每轮买入上限 ${item.params?.top_k ?? '-'} · 最低分 ${item.params?.min_score ?? '-'} · 单票 ${this.isKnownNumber(item.params?.max_weight) ? `${(Number(item.params.max_weight) * 100).toFixed(0)}%` : '-'}`
             : '-';
         this.setText('current-strategy-intent', current?.intent || '等待策略');
         this.setText('current-strategy-meta', formatMeta(current));

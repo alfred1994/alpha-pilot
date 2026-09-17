@@ -61,7 +61,7 @@ export class EvolutionTab {
         const container = document.getElementById(`strategy-${prefix}-params`);
         if (container) {
             container.innerHTML = item ? `
-                <div><dt>LLM 评估池</dt><dd>Top ${this.escape(params.top_k ?? '-')}</dd></div>
+                <div><dt>每轮买入上限</dt><dd>${this.escape(params.top_k ?? '-')} 笔</dd></div>
                 <div><dt>候选最低分</dt><dd>${this.escape(params.min_score ?? '-')}</dd></div>
                 <div><dt>单票仓位上限</dt><dd>${params.max_weight !== undefined ? `${(Number(params.max_weight) * 100).toFixed(0)}%` : '-'}</dd></div>
             ` : '';

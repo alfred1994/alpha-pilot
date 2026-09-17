@@ -212,6 +212,11 @@ class Database:
         except sqlite3.OperationalError:
             pass  # 字段已存在，忽略
 
+        decision_columns = {row[1] for row in c.execute("PRAGMA table_info(llm_decisions)")}
+        for column in ("dimensions", "scan_id"):
+            if column not in decision_columns:
+                c.execute(f"ALTER TABLE llm_decisions ADD COLUMN {column} TEXT")
+
         # 确保 trades 表有 pnl 和 pnl_pct 字段
         try:
             c.execute("ALTER TABLE trades ADD COLUMN pnl REAL")
@@ -941,8 +946,8 @@ class Database:
         c.execute("""
             INSERT INTO llm_decisions
             (code, date, action, llm_prompt, llm_response, reasoning,
-             confidence, outcome, outcome_pct, trade_id, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             confidence, outcome, outcome_pct, trade_id, created_at, dimensions, scan_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             decision.get("code", ""),
             decision.get("date", ""),
@@ -955,6 +960,8 @@ class Database:
             decision.get("outcome_pct"),
             decision.get("trade_id"),
             decision.get("created_at", datetime.now().isoformat()),
+            json.dumps(decision.get("dimensions"), ensure_ascii=False) if isinstance(decision.get("dimensions"), dict) else decision.get("dimensions"),
+            decision.get("scan_id"),
         ))
         self.conn.commit()
         return c.lastrowid

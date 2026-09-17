@@ -1,6 +1,6 @@
-import { DashboardTab } from './modules/dashboard.js?v=2026080201';
-import { DecisionsTab } from './modules/decisions.js?v=2026080201';
-import { EvolutionTab } from './modules/evolution.js?v=2026080201';
+import { DashboardTab } from './modules/dashboard.js?v=2026091701';
+import { DecisionsTab } from './modules/decisions.js?v=2026091701';
+import { EvolutionTab } from './modules/evolution.js?v=2026091701';
 import { HealthTab } from './modules/health.js?v=2026080201';
 
 class App {
@@ -54,8 +54,11 @@ class App {
         const dot = document.getElementById('status-pulse');
         if (dot) dot.className = `state-dot ${critical ? 'danger' : degraded ? 'degraded' : ''}`;
         this.setText('header-trader-state', brief.headline || '状态读取中');
-        this.setText('header-regime', this.regimeLabel(data.adaptive?.regime));
-        this.setText('header-assets', `净值 ￥${Number(data.account?.total_assets || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`);
+        const regimeInfo = data.regime_current || null;
+        const regimeText = this.regimeLabel(regimeInfo?.regime);
+        const regimeDate = regimeInfo?.date ? String(regimeInfo.date).slice(5) : '';
+        this.setText('header-regime', regimeText + (regimeDate ? ` · ${regimeDate}` : '') + (regimeInfo?.fresh === false ? ' · 已过期' : ''));
+        this.setText('header-assets', data.account?.available === false ? '净值不可用' : `净值 ￥${Number(data.account?.total_assets || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`);
         this.setText('footer-update-time', `最后更新 ${this.formatTime(data.timestamp)}`);
 
         const alert = document.getElementById('autopilot-alert-bar');
@@ -65,6 +68,8 @@ class App {
     }
 
     renderUnavailable() {
+        this.setText('header-assets', '净值不可用');
+        this.setText('header-regime', '市场环境未知');
         const dot = document.getElementById('status-pulse');
         if (dot) dot.className = 'state-dot danger';
         this.setText('header-trader-state', '状态暂不可用');

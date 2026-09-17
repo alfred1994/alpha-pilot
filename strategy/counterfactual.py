@@ -36,6 +36,8 @@ def _denial_layer(action: str, hold_reason: str, llm_action: str) -> str:
     reason = str(hold_reason or "").upper()
     if reason.startswith("HOLD_SCORE_LOW"):
         return "score_gate"
+    if reason.startswith("HOLD_BUY_BUDGET"):
+        return "buy_budget"
     if reason.startswith("HOLD_NOT_TOP"):
         return "ranking_gate"
     if reason.startswith("HOLD_LLM") or reason.startswith("HOLD_NO_BUY_DECISION"):

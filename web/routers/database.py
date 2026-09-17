@@ -184,52 +184,63 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
         return {"success": False, "error": public_error_message() if is_production() else str(e)}
 
 @router.get("/decisions")
-def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = None):
-    """获取最新 LLM 判断；signal 仅包含 BUY/SELL，observation 仅包含 HOLD。"""
+def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = None,
+                  page: int = 1, start_date: Optional[str] = None,
+                  end_date: Optional[str] = None):
+    """分页查询时点判断。历史记录缺少评分快照时不拼接最新缓存。"""
     try:
+        if page < 1 or page > 100000:
+            return {"success": False, "error": "页码超出范围"}
+        for value in (start_date, end_date):
+            if value:
+                datetime.strptime(value, "%Y-%m-%d")
+        conditions = ["NOT (COALESCE(reasoning, '')='LLM无响应' AND "
+                      "TRIM(COALESCE(llm_response, ''))='' AND COALESCE(confidence, 0)<=0)"]
+        params = []
+        if kind == "signal":
+            conditions.append("action IN ('BUY', 'SELL')")
+        elif kind == "observation":
+            conditions.append("action='HOLD'")
+        for value, op in ((start_date, ">="), (end_date, "<=")):
+            if value:
+                conditions.append(f"date {op} ?")
+                params.append(value)
+        where = " AND ".join(conditions)
         with _get_db() as db:
             cursor = db.conn.cursor()
-            fetch_limit = min(limit * 5, 200)
-            cursor.execute(
-                "SELECT id, code, date, action, reasoning, confidence, outcome, outcome_pct, llm_response, llm_prompt "
-                "FROM llm_decisions ORDER BY date DESC, id DESC LIMIT ?",
-                (fetch_limit,)
-            )
-            rows = cursor.fetchall()
-            decisions_list = []
-            
-            cache_data = _load_signal_cache()
-            raw_scores = cache_data.get("raw_scores", [])
-            scores_map = {item.get("code"): item for item in raw_scores if "code" in item}
-
-            for r in rows:
-                code = r[1]
-                if _is_no_response_decision(r[4], r[5], r[8]):
-                    continue
-                decision_type = "signal" if r[3] in ("BUY", "SELL") else "observation"
-                if kind in ("signal", "observation") and decision_type != kind:
-                    continue
+            total = cursor.execute(f"SELECT COUNT(*) FROM llm_decisions WHERE {where}", params).fetchone()[0]
+            rows = cursor.execute(
+                f"SELECT * FROM llm_decisions WHERE {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
+                params + [limit, (page - 1) * limit],
+            ).fetchall()
+            decisions = []
+            for row in rows:
+                r = dict(row)
+                try:
+                    evidence = json.loads(r.get("dimensions") or "{}")
+                except (ValueError, TypeError):
+                    evidence = {}
                 dimensions = {}
-                score_item = scores_map.get(code)
-                if score_item:
-                    dimensions = score_item.get("dimensions", {})
-                
-                decisions_list.append({
-                    "id": r[0],
-                    "code": code,
-                    "name": _resolve_stock_name(cursor, code, scores_map, r[9]),
-                    "date": r[2],
-                    "action": r[3],
-                    "decision_type": decision_type,
-                    "reasoning": sanitize_public_text(r[4], max_len=520),
-                    "confidence": r[5],
-                    "outcome": r[6],
-                    "outcome_pct": r[7],
-                    "dimensions": dimensions
+                if isinstance(evidence, dict):
+                    for key in ("technical", "capital", "sentiment", "emotion", "fundamental", "ml"):
+                        item = evidence.get(key)
+                        if isinstance(item, dict):
+                            dimensions[key] = {field: item[field] for field in ("score", "confidence")
+                                               if isinstance(item.get(field), (int, float))}
+                decisions.append({
+                    "id": r["id"], "code": r["code"],
+                    "name": sanitize_public_text(_resolve_stock_name(cursor, r["code"], {}, r["llm_prompt"]), 40),
+                    "date": r["date"], "created_at": r["created_at"],
+                    "scan_id": sanitize_public_text(r.get("scan_id"), 80),
+                    "action": r["action"],
+                    "decision_type": "signal" if r["action"] in ("BUY", "SELL") else "observation",
+                    "reasoning": sanitize_public_text(r["reasoning"], 520),
+                    "confidence": r["confidence"], "outcome": r["outcome"],
+                    "outcome_pct": r["outcome_pct"], "dimensions": dimensions,
+                    "evidence_available": bool(dimensions),
                 })
-                if len(decisions_list) >= limit:
-                    break
-            return {"success": True, "decisions": decisions_list}
+            return {"success": True, "decisions": decisions, "total": total,
+                    "page": page, "limit": limit, "has_more": page * limit < total}
     except Exception as e:
         return {"success": False, "error": public_error_message() if is_production() else str(e)}
 

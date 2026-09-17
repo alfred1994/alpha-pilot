@@ -349,8 +349,9 @@ def _build_decision_prompt(
         "sentiment": "舆情面",
         "emotion": "情绪面",
         "fundamental": "基本面",
+        "ml": "机器学习",
     }
-    for dim_name in ["technical", "capital", "sentiment", "emotion", "fundamental"]:
+    for dim_name in ["technical", "capital", "sentiment", "emotion", "fundamental", "ml"]:
         dim = dimensions.get(dim_name)
         if dim:
             label = dim_labels.get(dim_name, dim_name)
@@ -415,11 +416,6 @@ def _build_decision_prompt(
     if strategy_directive:
         strategy_payload = {
             "version": strategy_directive.get("version"),
-            "intent": strategy_directive.get("intent"),
-            "summary": strategy_directive.get("summary"),
-            "diagnosis": strategy_directive.get("diagnosis"),
-            "rationale": strategy_directive.get("rationale"),
-            "hypothesis": strategy_directive.get("hypothesis"),
             "params": strategy_directive.get("params") or {},
         }
         strategy_section = json.dumps(strategy_payload, ensure_ascii=False)
@@ -445,7 +441,7 @@ def _build_decision_prompt(
 【数据质量与降级状态】
 {quality_section}
 
-【5维信号】
+【多维信号（含可用的机器学习证据）】
 {signals_text}
 {position_text}{sell_analysis}{htsc_text}
 
@@ -453,12 +449,14 @@ def _build_decision_prompt(
 {_untrusted_context(memory_context, max_len=1600) if memory_context else "暂无相关历史记忆。"}
 
 【决策要求】
-1. 综合考虑今日生效策略、5维信号、外围市场、市场环境和历史记忆
+1. 综合考虑今日生效策略、所提供的多维信号、外围市场、市场环境和历史记忆；机器学习分数仅作为证据之一，不单独构成买入依据
 2. 如果外围市场大跌（美股跌幅>1%或A50跌幅>1%），即使个股信号偏多也要谨慎
 3. 如果市场环境是熊市，即使信号偏多也要谨慎，但不把熊市解释为永久禁止买入；
    若当前生效策略明确处于探索/试探状态，且量化维度有可解释优势，可在仓位预算内返回 BUY
 4. 如果历史记忆中有该股票的亏损教训，要特别注意
-5. 候选已通过今日策略的评分门槛；是否交易由你结合策略意图和当日事实自主判断，不使用固定连续天数规则
+5. 评分筛选不等于买入依据；仅凭当下有效证据判断，不使用固定连续天数规则。
+   策略摘要、过去的 HOLD 或零交易次数不构成继续观望的证据，也不构成必须买入的理由。
+   HOLD 必须指出当前缺失或不满足的具体条件，BUY 必须有当前可核对的支持证据。
 6. 如果已持有该股票，分析是否应该卖出（止盈/减仓/清仓）：当盈利达到目标、基本面恶化、技术面转空、或有更好的替代标的时，应考虑SELL
 7. 硬风控和数据有效性优先于策略意图；证据不足时返回HOLD并明确缺少什么
 8. 持仓股如果信号仍强且无卖出理由，应返回HOLD继续持有
@@ -525,6 +523,7 @@ def make_decision(
     memory=None,  # P2-12: 外部传入的 TradeMemory 实例（连接复用）
     llm_retries: int = 2,
     llm_timeout: int = DEFAULT_HTTP_TIMEOUT,
+    scan_id: str = None,
 ) -> TradeDecision:
     """
     LLM决策主函数
@@ -638,10 +637,13 @@ def make_decision(
         confidence=round(confidence, 2),
         dimensions=dimensions,
         reason=reasoning,
+        scan_id=scan_id,
     )
 
     # P2-12: 保存到记忆系统（优先使用外部传入的实例，避免重复创建连接）
     decision_id = None
+    evidence = {key: {"score": dim.score, "confidence": dim.confidence}
+                for key, dim in dimensions.items()}
     try:
         if memory is not None:
             # 外部传入的实例，由调用方管理生命周期
@@ -652,6 +654,8 @@ def make_decision(
                 response=raw[:2000] if raw else "",
                 reasoning=reasoning,
                 confidence=confidence,
+                dimensions=evidence,
+                scan_id=scan_id,
             )
         else:
             from strategy.memory import TradeMemory
@@ -663,6 +667,8 @@ def make_decision(
                     response=raw[:2000] if raw else "",
                     reasoning=reasoning,
                     confidence=confidence,
+                    dimensions=evidence,
+                    scan_id=scan_id,
                 )
     except Exception as e:
         logger.debug(f"保存LLM决策到记忆失败(可忽略): {e}")
