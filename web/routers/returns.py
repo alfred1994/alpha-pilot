@@ -33,9 +33,12 @@ def account_returns(start_date: Optional[date] = None, end_date: Optional[date] 
             ).fetchall()
             prices = {}
             if _table(conn, "k_daily"):
+                # k_daily stores the canonical system code (pure digits). The
+                # CSI 300 index is persisted as "000300" by _save_to_cache via
+                # _to_system_code; querying "000300.SH" would never match.
                 prices = {row["date"]: _positive(row["close"]) for row in conn.execute(
                     "SELECT date, close FROM k_daily WHERE code = ? AND date >= ? AND date <= ? ORDER BY date",
-                    ("000300.SH", start.isoformat(), end.isoformat()),
+                    ("000300", start.isoformat(), end.isoformat()),
                 )}
         rows = []
         for record in stored:
@@ -83,7 +86,7 @@ def account_returns(start_date: Optional[date] = None, end_date: Optional[date] 
         return {"success": True, "available": True,
                 "requested_start": start.isoformat(), "requested_end": end.isoformat(),
                 "effective_start": first["date"], "effective_end": last["date"],
-                "source": "review_snapshots", "benchmark_source": "k_daily:000300.SH",
+                "source": "review_snapshots", "benchmark_source": "k_daily:000300",
                 "snapshots": len(valid), "invalid_snapshots": len(rows) - len(valid),
                 "benchmark_points": sum(prices.get(row["date"]) is not None for row in rows),
                 "cash_flow_adjusted": False, "reset_suspected": reset_suspected,

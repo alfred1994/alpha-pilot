@@ -30,8 +30,10 @@ class ReturnsDashboardTest(unittest.TestCase):
                 db.save_review_snapshot(day, {'total_assets': amount, 'initial_capital': capital[i],
                                              'benchmark_pnl_pct': 999, 'private': 'PRIVATE_SECRET'})
                 if prices[i] is not None:
+                    # k_daily stores the canonical system code (pure digits);
+                    # _save_to_cache normalizes "000300.SH" -> "000300".
                     db.conn.execute('INSERT INTO k_daily(code,date,close) VALUES (?,?,?)',
-                                    ('000300.SH', day, prices[i]))
+                                    ('000300', day, prices[i]))
             db.conn.commit()
 
     def get(self, start='2020-01-01', end='2020-01-03'):
@@ -72,6 +74,19 @@ class ReturnsDashboardTest(unittest.TestCase):
         result = self.get()
         self.assertIsNone(result['summary']['benchmark_return'])
         self.assertIsNone(result['summary']['relative_asset_change'])
+
+    def test_benchmark_uses_system_code_not_suffixed(self):
+        # k_daily stores the canonical system code "000300"; a legacy
+        # "000300.SH" row must be ignored, not blended into the benchmark.
+        self.seed(assets=(100, 120, 90), prices=(200, 200, 220))  # canonical -> +10%
+        with Database(db_path=self.path) as db:
+            for day, close in (('2020-01-01', 500), ('2020-01-03', 500)):  # suffixed -> 0%
+                db.conn.execute('INSERT INTO k_daily(code,date,close) VALUES (?,?,?)',
+                                ('000300.SH', day, close))
+            db.conn.commit()
+        result = self.get()
+        # +10% proves the canonical code was used; 0% would prove the suffixed one.
+        self.assertAlmostEqual(result['summary']['benchmark_return'], 0.1)
 
     def test_invalid_middle_snapshot_breaks_daily_change_and_drawdown(self):
         self.seed(assets=(100, None, 90))
