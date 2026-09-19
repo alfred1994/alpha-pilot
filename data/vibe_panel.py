@@ -53,6 +53,16 @@ def period_bounds(period: str) -> Tuple[str, str]:
     return start, end
 
 
+def _pool_codes(payload) -> List[str]:
+    """研究池 codes 兼容两种形态: 纯字符串或 {"code": "600519", ...} 字典。"""
+    codes = []
+    for item in (payload or {}).get("codes") or []:
+        code = str(item.get("code") if isinstance(item, dict) else item).strip()
+        if re.fullmatch(r"\d{6}", code):
+            codes.append(code)
+    return codes
+
+
 def resolve_universe_codes(spec: str, pool_limit: int = 100) -> List[str]:
     """
     解析宇宙代码列表。
@@ -74,8 +84,7 @@ def resolve_universe_codes(spec: str, pool_limit: int = 100) -> List[str]:
                 payload = json.load(fh)
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"研究池文件不可读: {exc}") from exc
-        codes = [str(c).strip() for c in (payload or {}).get("codes") or []]
-        codes = [c for c in codes if re.fullmatch(r"\d{6}", c)]
+        codes = _pool_codes(payload)
         if pool_limit and pool_limit > 0:
             codes = codes[:pool_limit]
     elif spec.startswith("file:"):

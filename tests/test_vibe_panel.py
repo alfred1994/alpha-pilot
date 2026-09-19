@@ -56,13 +56,14 @@ def test_resolve_universe_codes():
     with tempfile.TemporaryDirectory() as tmp:
         pool_path = os.path.join(tmp, "research_universe.json")
         with open(pool_path, "w", encoding="utf-8") as fh:
-            json.dump({"codes": ["600519", "000001", "BAD", "300750", None, "688111"]}, fh)
+            json.dump({"codes": ["600519", "000001", "BAD", "300750", None, "688111",
+                                 {"code": "601318", "name": "中国平安"}]}, fh)
         with mock.patch.object(vibe_panel, "UNIVERSE_FILE", pool_path):
             codes = resolve_universe_codes("pool", pool_limit=2)
             assert codes == ["600519", "000001"]
             codes = resolve_universe_codes("pool", pool_limit=0)
             # 只按 6 位数字格式过滤；市场板块资格由研究池刷新时保证
-            assert codes == ["600519", "000001", "300750", "688111"]
+            assert codes == ["600519", "000001", "300750", "688111", "601318"]
         empty_pool = os.path.join(tmp, "empty.json")
         with open(empty_pool, "w", encoding="utf-8") as fh:
             json.dump({"codes": []}, fh)
