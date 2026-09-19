@@ -148,9 +148,12 @@ def build_panel_long(codes: List[str], period: str, min_rows: int = 60) -> Tuple
     used = 0
     for code in codes:
         try:
+            # require_full_range=False：因子面板用长历史算 IC，允许尾部 ≤3 天
+            # 的缓存陈旧；True 会让"终点=今天盘中"的每只代码都触发完整外部
+            # 源重试链（Baostock 75s 超时/只），100 只串行要 2 小时以上。
             raw = data_history.get_daily(
                 str(code), start_date=start_date, end_date=end_date,
-                adjust="qfq", require_full_range=True,
+                adjust="qfq", require_full_range=False,
             )
             frame = _normalize_daily_frame(raw)
         except Exception as exc:  # noqa: BLE001 —— 单只失败不拖垮整个面板

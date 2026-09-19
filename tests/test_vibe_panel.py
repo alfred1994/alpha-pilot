@@ -99,6 +99,7 @@ def test_build_panel_long():
 
         def fake_get_daily(code, start_date=None, end_date=None, adjust="qfq",
                            simple=True, require_full_range=False):
+            assert require_full_range is False, "面板取数必须容忍尾部陈旧缓存"
             if code == "600519":
                 # 自带 code 列，模拟 k_daily 缓存命中（曾触发 pandas insert 撞列）
                 return _daily_frame(120, with_code_column=True)
