@@ -49,7 +49,7 @@ cat <<EOF
     VIBE_TRADING_ENABLED=1
     VIBE_PYTHON=$PYBIN        # 默认路径可省略
 
-运行因子基准（需行情源可达；csi300 使用 Tushare，需 TUSHARE_TOKEN）:
-    python scripts/vibe_alpha_screen.py --universe csi300 --zoo gtja191 --period 2024-2026
+运行因子基准（数据来自 AlphaPilot 本地日线：k_daily 缓存/同花顺，不使用 Tushare）:
+    python scripts/vibe_alpha_screen.py --period 2024-2026
 结果写入 data/vibe/alpha_bench_latest.json，盘后复盘自动引用。
 EOF

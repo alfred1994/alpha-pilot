@@ -245,11 +245,97 @@ def test_trader_brief_vibe_section():
                     os.unlink(candidate)
 
 
+def test_driver_alphapilot_universe_loader():
+    import pandas as pd
+
+    fake_tool = SimpleNamespace()
+    fake_tool._parse_period = lambda p: ("2024-01-01", "2024-12-31")
+    fake_tool._load_universe_panel = mock.Mock(return_value={"close": "ORIGINAL"})
+    fake_src_tools = SimpleNamespace(alpha_bench_tool=fake_tool)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = os.path.join(tmp, "panel_2024-01-01_2024-12-31.csv")
+        pd.DataFrame({
+            "date": ["2024-01-02", "2024-01-03"] * 2,
+            "code": ["600519", "600519", "000001", "000001"],
+            "open": [10.0, 10.1, 3.3, 3.4],
+            "high": [10.2, 10.3, 3.5, 3.6],
+            "low": [9.9, 10.0, 3.2, 3.3],
+            "close": [10.1, 10.2, 3.4, 3.5],
+            "volume": [100.0, 110.0, 200.0, 210.0],
+            "amount": [1010.0, 1122.0, 680.0, 735.0],
+            "vwap": [10.1, 10.2, 3.4, 3.5],
+        }).to_csv(csv_path, index=False)
+
+        with mock.patch.dict(sys.modules, {
+            "src": SimpleNamespace(tools=None),
+            "src.tools": fake_src_tools,
+            "src.tools.alpha_bench_tool": fake_tool,
+        }):
+            original = driver._install_alphapilot_universe_loader(csv_path)
+            panel = fake_tool._load_universe_panel("alphapilot:pool", "2024-2026", use_cache=True)
+            assert list(panel["close"].columns) == ["000001", "600519"]
+            assert panel["close"].iloc[0, 0] == 3.4
+            legacy = fake_tool._load_universe_panel("csi300", "2024-2026", use_cache=True)
+            assert legacy == {"close": "ORIGINAL"}
+        ok("driver 把 alphapilot:* 宇宙替换为本地 panel，其余 universe 透传 vibe 原始加载器")
+
+        fake_mcp_server = SimpleNamespace(mcp=object())
+        fake_fastmcp = SimpleNamespace(Client=_FakeClient)
+        _FakeClient.payload = _FakeResult(['{"status":"ok"}'])
+        with mock.patch.dict(sys.modules, {
+            "mcp_server": fake_mcp_server, "fastmcp": fake_fastmcp,
+            "src": SimpleNamespace(tools=None),
+            "src.tools": fake_src_tools,
+            "src.tools.alpha_bench_tool": fake_tool,
+        }), mock.patch.dict(os.environ, {"ALPHAPILOT_VIBE_PANEL": csv_path}):
+            assert driver.main(["driver", "alpha_bench",
+                                '{"universe":"alphapilot:pool","period":"2024-2026"}']) == 0
+        with mock.patch.dict(sys.modules, {
+            "mcp_server": fake_mcp_server, "fastmcp": fake_fastmcp,
+        }), mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ALPHAPILOT_VIBE_PANEL", None)
+            rc = driver.main(["driver", "alpha_bench", '{"universe":"alphapilot:pool"}'])
+            assert rc == 1
+        ok("缺 ALPHAPILOT_VIBE_PANEL 时 driver 显式失败而非落入 Tushare 路径")
+
+
+def test_alpha_bench_panel_env_passthrough():
+    with tempfile.TemporaryDirectory() as tmp:
+        csv_path = os.path.join(tmp, "panel.csv")
+        with open(csv_path, "w", encoding="utf-8") as fh:
+            fh.write("date,code,open,high,low,close,volume,amount,vwap\n")
+            fh.write("2024-01-02,600519,10,10.2,9.9,10.1,100,1010,10.1\n")
+
+        good_run = mock.Mock(returncode=0, stdout=json.dumps({
+            "ok": True, "content": ['{"status":"ok","n_alphas_tested":191,"top":[]}'],
+        }), stderr="")
+        with mock.patch.object(vibe_bridge, "VIBE_TRADING_ENABLED", True), \
+                mock.patch.object(vibe_bridge, "vibe_python_path", return_value="python"), \
+                mock.patch.object(vibe_bridge.subprocess, "run", return_value=good_run) as run:
+            payload = vibe_bridge.alpha_bench(universe="alphapilot:pool", panel_csv=csv_path)
+            assert payload == {"status": "ok", "n_alphas_tested": 191, "top": []}
+            env_used = run.call_args.kwargs["env"]
+            assert env_used["ALPHAPILOT_VIBE_PANEL"] == csv_path
+        ok("alpha_bench 把 panel 路径经环境变量传给 driver")
+
+        with mock.patch.object(vibe_bridge, "VIBE_TRADING_ENABLED", True), \
+                mock.patch.object(vibe_bridge, "vibe_python_path", return_value="python"), \
+                mock.patch.object(vibe_bridge.subprocess, "run") as run:
+            assert vibe_bridge.alpha_bench(universe="alphapilot:pool", panel_csv="missing.csv") is None
+            assert not run.called
+            assert vibe_bridge.alpha_bench(universe="alphapilot:pool") is None
+            assert not run.called
+        ok("panel 文件缺失时不发起子进程并静默降级")
+
+
 def main():
     print("== Vibe-Trading 桥接契约测试 ==")
     test_summary_loader_offline()
     test_call_tool_guards()
     test_driver_envelope_contract()
+    test_driver_alphapilot_universe_loader()
+    test_alpha_bench_panel_env_passthrough()
     test_trader_brief_vibe_section()
     print("全部通过")
 

@@ -4,7 +4,8 @@ Vibe-Trading 研究层桥接
 把外置 vibe-trading venv（HKUDS/Vibe-Trading，MIT）作为只读研究工具接入：
 
   - 因子库（GTJA191 / Alpha101 / academic）清单与元数据  -> alpha_zoo
-  - 因子 IC/IR 基准（支持 csi300 宇宙，A 股前复权口径）  -> alpha_bench
+  - 因子 IC/IR 基准（默认宇宙=AlphaPilot 研究池，数据来自本地
+    k_daily/同花顺日线，不触 Tushare）                   -> alpha_bench
 
 隔离原则：
   - vibe-trading-ai 及其重依赖（langchain/langgraph/fastmcp）只存在于独立
@@ -69,7 +70,7 @@ def is_available() -> bool:
 
 
 def call_tool(tool: str, args: Optional[Dict[str, Any]] = None,
-              timeout: int = None) -> Dict[str, Any]:
+              timeout: int = None, env_extra: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
     """
     通过 driver 子进程调用 vibe-trading MCP 工具，返回解析后的信封。
 
@@ -89,6 +90,7 @@ def call_tool(tool: str, args: Optional[Dict[str, Any]] = None,
     cmd = [python, DRIVER_PATH, tool, json.dumps(args or {}, ensure_ascii=False)]
     env = dict(os.environ)
     env.setdefault("PYTHONIOENCODING", "utf-8")
+    env.update(env_extra or {})
     try:
         proc = subprocess.run(
             cmd, capture_output=True, text=True, encoding="utf-8",
@@ -140,19 +142,32 @@ def list_alphas(zoo: str = "gtja191", limit: int = 20) -> Optional[Dict[str, Any
     return _first_json(envelope)
 
 
-def alpha_bench(universe: str = "csi300", zoo: str = "gtja191",
+def alpha_bench(universe: str = "alphapilot:pool", zoo: str = "gtja191",
                 period: str = "2024-2026", top: int = 20,
-                output_dir: str = None) -> Optional[Dict[str, Any]]:
+                output_dir: str = None, panel_csv: str = None) -> Optional[Dict[str, Any]]:
     """
-    运行因子 IC/IR 基准（需要在 vibe venv 可访问行情源；csi300 走 Tushare）。
+    运行因子 IC/IR 基准。
+
+    - universe 以 ``alphapilot:`` 开头（默认 alphapilot:pool）时，数据来自
+      AlphaPilot 本地日线（data/vibe_panel.py 导出的 panel CSV，经环境变量
+      传给 driver），不触 Tushare；panel_csv 必须存在。
+    - 其他 universe（csi300 等）走 vibe 内置加载器，需要其自身的行情源
+      （csi300 需 TUSHARE_TOKEN，默认不用）。
 
     返回 vibe 侧 JSON 信封（含 status/report_path/top），不可用时返回 None。
     """
     args: Dict[str, Any] = {"universe": universe, "zoo": zoo, "period": period, "top": top}
     if output_dir:
         args["output_dir"] = output_dir
+    env_extra: Optional[Dict[str, str]] = None
     try:
-        envelope = call_tool("alpha_bench", args)
+        if universe.startswith("alphapilot:"):
+            if not panel_csv or not os.path.isfile(panel_csv):
+                raise VibeUnavailable(
+                    f"universe={universe} 需要有效的 panel_csv（由 data.vibe_panel.export_panel_csv 生成）"
+                )
+            env_extra = {"ALPHAPILOT_VIBE_PANEL": panel_csv}
+        envelope = call_tool("alpha_bench", args, env_extra=env_extra)
     except VibeUnavailable:
         return None
     return _first_json(envelope)

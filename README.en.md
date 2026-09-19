@@ -57,9 +57,10 @@ resume, repair, token input, raw environment variables, or trading control endpo
 - **LLM trading decisions**: MiMo/Xiaomi-compatible OpenAI-style API for decision
   reasoning and trade plan generation.
 - **Vibe-Trading research layer (optional)**: an out-of-process bridge to the
-  HKUDS Vibe-Trading factor zoo (GTJA191/Alpha101) and CSI300 IC/IR benchmarks,
-  exposed to the daily review as read-only factor evidence. Disabled by default
-  and degrades silently when not installed. See `docs/vibe-trading.md`.
+  HKUDS Vibe-Trading factor zoo (GTJA191/Alpha101) and factor IC/IR benchmarks
+  built on local k_daily/Hithink daily bars (research-pool universe, no
+  Tushare), exposed to the daily review as read-only factor evidence. Disabled
+  by default and degrades silently when not installed. See `docs/vibe-trading.md`.
 - **Five-signal decision context**: technical, capital, sentiment, emotion, and
   fundamental dimensions.
 - **Paper account engine**: simulated cash, positions, trades, fees, PnL, and

@@ -8,8 +8,9 @@ AlphaPilot 可以把 [HKUDS/Vibe-Trading](https://github.com/HKUDS/Vibe-Trading)
 
 - **因子库**：内置 GTJA191（国泰君安 A 股 191 因子）、Alpha101、academic
   等因子动物园，提供 A 股语境下已经过整理的实现。
-- **因子 IC/IR 基准**：`alpha_bench` 原生支持 `csi300` 宇宙（Tushare 免费档
-  拉日线、A 股前复权口径），输出每个因子的 IC 均值与 IR。
+- **因子 IC/IR 基准**：`alpha_bench` 输出每个因子的 IC 均值与 IR；面板数据
+  默认由 AlphaPilot 本地日线（k_daily 缓存/同花顺，前复权口径）构建，**不使用
+  Tushare**。
 - **交叉验证**：为自研回测（`strategy/backtest.py`、fast_backtest）提供
   一个独立实现的对照，防止回测幻觉。
 
@@ -21,8 +22,10 @@ AlphaPilot 主进程                 vibe venv（独立安装）
 │ strategy/          │ ─────────────> │ scripts/vibe/            │
 │   vibe_bridge.py   │  JSON stdout   │   vibe_tool_driver.py    │
 └────────────────────┘                │   └─ mcp_server (fastmcp)│
-        │ 只读文件                     └──────────────────────────┘
-        v
+        │                             └──────────────────────────┘
+        │ data/vibe_panel.py（研究池 + k_daily/同花顺日线）
+        │   → panel CSV ──ALPHAPILOT_VIBE_PANEL──> driver 注入宇宙加载器
+        v 只读文件
 data/vibe/alpha_bench_latest.json → build_daily_facts → 复盘 prompt
 ```
 
@@ -54,12 +57,22 @@ VIBE_PYTHON=                    # 留空=自动探测 ~/.vibe-trading-venv
 VIBE_TOOL_TIMEOUT_SECONDS=900   # 单次工具调用超时
 ```
 
-运行因子基准（需行情源可达；csi300 使用 Tushare，请在 vibe venv 环境配置
-`TUSHARE_TOKEN`，300 只股票首次抓取约数分钟）：
+运行因子基准（默认用 AlphaPilot 本地数据构建研究池面板，不使用 Tushare）：
 
 ```bash
-python scripts/vibe_alpha_screen.py --universe csi300 --zoo gtja191 --period 2024-2026
+# 默认 universe=alphapilot:pool：研究池(data/research_universe.json)前 100 只
+python scripts/vibe_alpha_screen.py --period 2024-2026
+
+# 自定义代码文件（每行一个 6 位代码，# 为注释）
+python scripts/vibe_alpha_screen.py --universe alphapilot:file:data/my_codes.txt
 ```
+
+数据链路：`data/vibe_panel.py` 复用 `data.history.get_daily`（k_daily 缓存 →
+同花顺 → 长桥 → Baostock 兜底）逐只取 qfq 日线，汇成长表 CSV 落在
+`data/vibe/panel/`；driver 在 vibe venv 内把 `universe=alphapilot:*` 的宇宙
+加载器替换为该 CSV（这是唯一 pin 的内部缝，缝不存在即显式失败，绝不静默
+落入 Tushare）。单只代码日线少于 60 行会跳过并计入统计。
+`--universe csi300` 仍可显式使用，但需要 TUSHARE_TOKEN，默认不推荐。
 
 输出：
 
@@ -84,7 +97,8 @@ python scripts/vibe_alpha_screen.py --universe csi300 --zoo gtja191 --period 202
 ## 验证与回滚
 
 ```bash
-python tests/test_vibe_bridge.py     # 离线契约测试（无需安装 vibe-trading）
+python tests/test_vibe_bridge.py     # 离线桥接契约测试（无需安装 vibe-trading）
+python tests/test_vibe_panel.py      # 离线面板构建测试（数据获取全部打桩）
 python -m strategy.vibe_bridge       # 手工自检：探测 venv 与基准文件
 ```
 
