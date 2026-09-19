@@ -78,7 +78,7 @@ def test_resolve_universe_codes():
                 raise AssertionError("空代码池应报错")
             except ValueError:
                 pass
-        ok("研究池解析：截断、非法代码过滤、空池报错")
+        ok("研究池解析：字典/字符串条目、截断、非法代码过滤、空池报错")
 
         codes_path = os.path.join(tmp, "codes.txt")
         with open(codes_path, "w", encoding="utf-8") as fh:
@@ -94,27 +94,31 @@ def test_resolve_universe_codes():
 
 def test_build_panel_long():
     with tempfile.TemporaryDirectory() as tmp:
-        long_days = _daily_frame(120)
-        short_days = _daily_frame(10, code="000001")
+        def fake_cache(code, start_date, end_date):
+            if code == "600519":
+                # 自带 code 列，模拟 k_daily SELECT *（曾触发 pandas insert 撞列）
+                return _daily_frame(120, with_code_column=True)
+            if code == "000001":
+                return _daily_frame(10, code="000001")
+            return pd.DataFrame()
 
         def fake_get_daily(code, start_date=None, end_date=None, adjust="qfq",
                            simple=True, require_full_range=False):
             assert require_full_range is False, "面板取数必须容忍尾部陈旧缓存"
-            if code == "600519":
-                # 自带 code 列，模拟 k_daily 缓存命中（曾触发 pandas insert 撞列）
-                return _daily_frame(120, with_code_column=True)
-            if code == "000001":
-                return short_days.copy()
             if code == "300750":
                 raise RuntimeError("source down")
             return None
 
-        with mock.patch.object(vibe_panel.data_history, "get_daily", side_effect=fake_get_daily):
+        with mock.patch.object(vibe_panel, "_read_cache_frame", side_effect=fake_cache), \
+                mock.patch.object(vibe_panel.data_history, "get_daily",
+                                  side_effect=fake_get_daily):
             long_df, stats = build_panel_long(
                 ["600519", "000001", "300750", "600036"], "2024-01-01/2024-06-30",
             )
         assert stats["used"] == 1 and stats["requested"] == 4
-        assert stats["skipped"]["000001"].startswith("rows<")
+        assert stats["cache_hits"] == 1
+        assert stats["backfilled"] == 0 and stats["backfill_attempts"] == 3
+        assert stats["skipped"]["000001"] == "empty"
         assert stats["skipped"]["300750"] == "error:RuntimeError"
         assert stats["skipped"]["600036"] == "empty"
         assert list(long_df.columns) == vibe_panel.PANEL_COLUMNS
@@ -123,27 +127,33 @@ def test_build_panel_long():
         assert dates[0] == "2024-01-01" and len(dates) == 120
         first = long_df.iloc[0]
         assert abs(first["vwap"] - first["amount"] / first["volume"]) < 1e-6
-        ok("面板构建：日期归一化、vwap、自带 code 列不撞列、覆盖不足/失败代码跳过")
+        ok("面板构建：缓存优先、vwap、自带 code 列不撞列、回填失败代码跳过")
 
         # 未来区间收敛到今天，避免全量缓存过期触发外部源重试链
-        with mock.patch.object(vibe_panel.data_history, "get_daily",
-                               return_value=_daily_frame(120)):
+        with mock.patch.object(vibe_panel, "_read_cache_frame",
+                               return_value=_daily_frame(120)), \
+                mock.patch.object(vibe_panel.data_history, "get_daily",
+                                  return_value=_daily_frame(120)):
             _, clamp_stats = build_panel_long(["600519"], "2024-2030")
         assert clamp_stats["end_date"] == datetime.now().strftime("%Y-%m-%d")
         ok("period 终点收敛到今天")
 
-        with mock.patch.object(vibe_panel.data_history, "get_daily", return_value=None):
+        with mock.patch.object(vibe_panel, "_read_cache_frame", return_value=pd.DataFrame()), \
+                mock.patch.object(vibe_panel.data_history, "get_daily", return_value=None):
             empty_df, empty_stats = build_panel_long(["600519"], "2024-2026")
         assert empty_df.empty and empty_stats["used"] == 0
         try:
-            with mock.patch.object(vibe_panel.data_history, "get_daily", return_value=None):
+            with mock.patch.object(vibe_panel, "_read_cache_frame",
+                                   return_value=pd.DataFrame()), \
+                    mock.patch.object(vibe_panel.data_history, "get_daily",
+                                      return_value=None):
                 export_panel_csv(["600519"], "2024-2026", out_dir=os.path.join(tmp, "p"))
             raise AssertionError("空面板导出应报错")
         except ValueError:
             pass
         ok("全空面板不落盘并显式报错")
 
-        with mock.patch.object(vibe_panel.data_history, "get_daily",
+        with mock.patch.object(vibe_panel, "_read_cache_frame",
                                return_value=_daily_frame(120)):
             path, stats = export_panel_csv(["600519"], "2024-2026",
                                            out_dir=os.path.join(tmp, "p"))
@@ -151,7 +161,7 @@ def test_build_panel_long():
         assert os.path.basename(path) == f"panel_2024-01-01_{expected_end}.csv"
         stored = pd.read_csv(path, dtype={"code": str})
         assert stored.iloc[0]["code"] == "600519"  # 前导零不被吃掉
-        assert stats["rows"] == 120
+        assert stats["rows"] == 120 and stats["cache_hits"] == 1
         ok("面板 CSV 落盘且代码按字符串保留")
 
 
@@ -165,7 +175,7 @@ def test_driver_panel_pivot():
     spec.loader.exec_module(driver)
 
     with tempfile.TemporaryDirectory() as tmp:
-        with mock.patch.object(vibe_panel.data_history, "get_daily",
+        with mock.patch.object(vibe_panel, "_read_cache_frame",
                                return_value=_daily_frame(80)):
             csv_path, _ = export_panel_csv(["600519", "000001"], "2024-01-01/2024-04-30",
                                            out_dir=tmp)

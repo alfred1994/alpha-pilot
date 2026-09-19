@@ -130,12 +130,26 @@ def _normalize_daily_frame(df: pd.DataFrame) -> pd.DataFrame:
     return frame.reset_index(drop=True)
 
 
+def _read_cache_frame(code: str, start_date: str, end_date: str) -> pd.DataFrame:
+    """直读 k_daily 本地缓存，避免为陈旧尾部触发外部源重试链。"""
+    from data.database import Database
+    with Database() as db:
+        rows = db.get_k_daily(str(code), start_date, end_date)
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(list(rows))
+
+
 def build_panel_long(codes: List[str], period: str, min_rows: int = 60) -> Tuple[pd.DataFrame, Dict]:
     """
-    逐只取日线并汇成长表；来源复用 data.history.get_daily 的既有链路
-    （k_daily 缓存 → 同花顺 → 长桥 → Baostock），不新增外部数据依赖。
+    逐只取日线并汇成长表。
 
-    返回 (long_df, stats)；rows 少于 min_rows 的代码按覆盖不足跳过并记录。
+    取数策略（本地优先）：
+      1. 直读 k_daily 本地缓存；行数达标（>= min_rows）直接使用，零网络；
+      2. 缓存不足才走 data.history.get_daily 完整链（缓存 → 同花顺 →
+         长桥 → Baostock）做回填，单只失败不影响整体。
+
+    返回 (long_df, stats)。
     """
     start_date, end_date = period_bounds(period)
     # 请求区间可能延伸到未来；未来没有行情，只会把每只代码都判成"缓存过期"
@@ -146,37 +160,54 @@ def build_panel_long(codes: List[str], period: str, min_rows: int = 60) -> Tuple
     frames = []
     skipped: Dict[str, str] = {}
     used = 0
+    cache_hits = 0
+    backfilled = 0
+    backfill_attempts = 0
     for code in codes:
+        code = str(code)
+        used_backfill = False
         try:
-            # require_full_range=False：因子面板用长历史算 IC，允许尾部 ≤3 天
-            # 的缓存陈旧；True 会让"终点=今天盘中"的每只代码都触发完整外部
-            # 源重试链（Baostock 75s 超时/只），100 只串行要 2 小时以上。
-            raw = data_history.get_daily(
-                str(code), start_date=start_date, end_date=end_date,
-                adjust="qfq", require_full_range=False,
-            )
-            frame = _normalize_daily_frame(raw)
+            # 因子面板用长历史算 IC：本地缓存行数达标即可，不必要求覆盖到
+            # 今天（终端尾部几天陈旧不影响 2024 起的长窗口 IC 统计）。
+            frame = _normalize_daily_frame(_read_cache_frame(code, start_date, end_date))
+            if len(frame) < min_rows:
+                backfill_attempts += 1
+                used_backfill = True
+                # require_full_range=False：容忍尾部 ≤3 天的缓存陈旧，
+                # True 会让"终点=今天盘中"的每只代码都触发完整重试链。
+                raw = data_history.get_daily(
+                    code, start_date=start_date, end_date=end_date,
+                    adjust="qfq", require_full_range=False,
+                )
+                frame = _normalize_daily_frame(raw)
         except Exception as exc:  # noqa: BLE001 —— 单只失败不拖垮整个面板
-            skipped[str(code)] = f"error:{type(exc).__name__}"
+            skipped[code] = f"error:{type(exc).__name__}"
             continue
         if frame.empty:
-            skipped[str(code)] = "empty"
+            skipped[code] = "empty"
             continue
         if len(frame) < min_rows:
-            skipped[str(code)] = f"rows<{min_rows}({len(frame)})"
+            skipped[code] = f"rows<{min_rows}({len(frame)})"
             continue
         # 缓存帧可能自带 code 列（SELECT * 或 baostock 源），直接覆盖而不是 insert
-        frame["code"] = str(code)
+        frame["code"] = code
         frames.append(frame[PANEL_COLUMNS])
         used += 1
+        if used_backfill:
+            backfilled += 1
+        else:
+            cache_hits += 1
 
     stats = {
         "requested": len(codes),
         "used": used,
+        "cache_hits": cache_hits,
+        "backfilled": backfilled,
+        "backfill_attempts": backfill_attempts,
         "skipped": skipped,
         "start_date": start_date,
         "end_date": end_date,
-        "source_chain": "k_daily_cache -> hithink -> longport -> baostock",
+        "source_chain": "k_daily_cache_first -> hithink -> longport -> baostock",
     }
     if not frames:
         return pd.DataFrame(columns=PANEL_COLUMNS), stats
