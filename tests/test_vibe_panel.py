@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import tempfile
+from datetime import datetime
 from unittest import mock
 
 import pandas as pd
@@ -24,7 +25,7 @@ def ok(message):
     print(f"  OK {message}")
 
 
-def _daily_frame(days, base_price=10.0, code="600519"):
+def _daily_frame(days, base_price=10.0, code="600519", with_code_column=False):
     rows = []
     price = base_price
     for index in range(days):
@@ -37,7 +38,11 @@ def _daily_frame(days, base_price=10.0, code="600519"):
             "turn": 1.0, "pctChg": 0.5,
         })
         price *= 1.01
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    if with_code_column:
+        # k_daily SELECT * / baostock 源返回会自带 code 列
+        frame["code"] = code
+    return frame
 
 
 def test_period_bounds():
@@ -95,7 +100,8 @@ def test_build_panel_long():
         def fake_get_daily(code, start_date=None, end_date=None, adjust="qfq",
                            simple=True, require_full_range=False):
             if code == "600519":
-                return long_days.copy()
+                # 自带 code 列，模拟 k_daily 缓存命中（曾触发 pandas insert 撞列）
+                return _daily_frame(120, with_code_column=True)
             if code == "000001":
                 return short_days.copy()
             if code == "300750":
@@ -116,7 +122,12 @@ def test_build_panel_long():
         assert dates[0] == "2024-01-01" and len(dates) == 120
         first = long_df.iloc[0]
         assert abs(first["vwap"] - first["amount"] / first["volume"]) < 1e-6
-        ok("面板构建：日期归一化、vwap、覆盖不足/失败代码跳过")
+        ok("面板构建：日期归一化、vwap、自带 code 列不撞列、覆盖不足/失败代码跳过")
+
+        # 未来区间收敛到今天，避免全量缓存过期触发外部源重试链
+        _, clamp_stats = build_panel_long(["600519"], "2024-2030")
+        assert clamp_stats["end_date"] == datetime.now().strftime("%Y-%m-%d")
+        ok("period 终点收敛到今天")
 
         with mock.patch.object(vibe_panel.data_history, "get_daily", return_value=None):
             empty_df, empty_stats = build_panel_long(["600519"], "2024-2026")
@@ -133,7 +144,8 @@ def test_build_panel_long():
                                return_value=_daily_frame(120)):
             path, stats = export_panel_csv(["600519"], "2024-2026",
                                            out_dir=os.path.join(tmp, "p"))
-        assert os.path.basename(path) == "panel_2024-01-01_2026-12-31.csv"
+        expected_end = min("2026-12-31", datetime.now().strftime("%Y-%m-%d"))
+        assert os.path.basename(path) == f"panel_2024-01-01_{expected_end}.csv"
         stored = pd.read_csv(path, dtype={"code": str})
         assert stored.iloc[0]["code"] == "600519"  # 前导零不被吃掉
         assert stats["rows"] == 120

@@ -21,6 +21,7 @@ date×code 的 DataFrame）。前复权口径与 k_daily 一致。
 import json
 import os
 import re
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 import pandas as pd
@@ -137,6 +138,11 @@ def build_panel_long(codes: List[str], period: str, min_rows: int = 60) -> Tuple
     返回 (long_df, stats)；rows 少于 min_rows 的代码按覆盖不足跳过并记录。
     """
     start_date, end_date = period_bounds(period)
+    # 请求区间可能延伸到未来；未来没有行情，只会把每只代码都判成"缓存过期"
+    # 而触发外部源重试链（同花顺 1s/只、Baostock 75s 超时），因此收敛到今天。
+    today = datetime.now().strftime("%Y-%m-%d")
+    if end_date > today:
+        end_date = today
     frames = []
     skipped: Dict[str, str] = {}
     used = 0
@@ -156,7 +162,8 @@ def build_panel_long(codes: List[str], period: str, min_rows: int = 60) -> Tuple
         if len(frame) < min_rows:
             skipped[str(code)] = f"rows<{min_rows}({len(frame)})"
             continue
-        frame.insert(1, "code", str(code))
+        # 缓存帧可能自带 code 列（SELECT * 或 baostock 源），直接覆盖而不是 insert
+        frame["code"] = str(code)
         frames.append(frame[PANEL_COLUMNS])
         used += 1
 
