@@ -253,6 +253,15 @@ def build_llm_review_prompt(date: str, review_data: dict, adaptive_data: dict = 
                 "- 近期候选反事实结果: "
                 + "，".join(f"{key}={value}" for key, value in sorted(counterfactual.items()))
             )
+        vibe_factors = daily_facts.get("vibe_factors") or {}
+        if vibe_factors:
+            try:
+                from strategy.vibe_bridge import format_vibe_evidence_line
+                line = format_vibe_evidence_line(vibe_factors)
+            except Exception:
+                line = ""
+            if line:
+                prompt_parts.append(f"- 量化因子证据（外置研究层，选股时可作为交叉参考）: {line}")
         prompt_parts.append("")
 
     # 10. 分析要求

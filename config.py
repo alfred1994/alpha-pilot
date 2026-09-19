@@ -122,6 +122,17 @@ CONSECUTIVE_LOSS_DAYS = 3        # 连续亏损天数阈值（触发降仓）
 POSITION_REDUCE_RATIO = 0.5      # 降仓缩放系数（连亏后仓位降至50%）
 
 # ══════════════════════════════════════════════════════════════════
+# Vibe-Trading 研究层（外置 venv，进程隔离）
+# ══════════════════════════════════════════════════════════════════
+# vibe-trading-ai 安装在独立 venv（scripts/setup_vibe_trading.sh），主依赖树
+# 不引入它。AlphaPilot 只通过 MCP 契约调用只读研究工具（因子库/IC 基准），
+# 默认关闭；未安装或超时一律静默降级，不影响交易主链路。
+VIBE_TRADING_ENABLED = os.environ.get("VIBE_TRADING_ENABLED", "0") == "1"
+VIBE_PYTHON = os.environ.get("VIBE_PYTHON", "")  # vibe venv 解释器；空=按默认路径探测
+VIBE_TOOL_TIMEOUT_SECONDS = int(os.environ.get("VIBE_TOOL_TIMEOUT_SECONDS", "900"))
+VIBE_DATA_DIR = os.path.join(DATA_DIR, "vibe")   # 因子基准结果落盘目录（不入库不入git）
+
+# ══════════════════════════════════════════════════════════════════
 # 可转债T+0策略配置
 # ══════════════════════════════════════════════════════════════════
 CB_MAX_PREMIUM = 0.30        # 最大溢价率30%

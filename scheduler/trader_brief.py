@@ -141,6 +141,15 @@ def strategy_diff(current: Optional[Dict], pending: Optional[Dict]) -> List[Dict
     return changes
 
 
+def _vibe_factors_summary() -> Dict:
+    """读取 Vibe-Trading 因子基准摘要；未启用/未安装/文件缺失一律返回空。"""
+    try:
+        from strategy.vibe_bridge import load_alpha_bench_summary
+        return load_alpha_bench_summary() or {}
+    except Exception:
+        return {}
+
+
 def build_daily_facts(date: str = None, db_path: str = None,
                       now: datetime = None, market_status: str = None,
                       trading_day: bool = None) -> Dict:
@@ -341,6 +350,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
         "counterfactual": counterfactual,
         "counterfactual_denial": denial_summary,
         "degradations": degradations,
+        "vibe_factors": _vibe_factors_summary(),
         "reviewed": reviewed,
         "latest_scan": latest_scan,
         "strategy": {
