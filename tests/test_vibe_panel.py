@@ -125,7 +125,9 @@ def test_build_panel_long():
         ok("面板构建：日期归一化、vwap、自带 code 列不撞列、覆盖不足/失败代码跳过")
 
         # 未来区间收敛到今天，避免全量缓存过期触发外部源重试链
-        _, clamp_stats = build_panel_long(["600519"], "2024-2030")
+        with mock.patch.object(vibe_panel.data_history, "get_daily",
+                               return_value=_daily_frame(120)):
+            _, clamp_stats = build_panel_long(["600519"], "2024-2030")
         assert clamp_stats["end_date"] == datetime.now().strftime("%Y-%m-%d")
         ok("period 终点收敛到今天")
 
