@@ -75,10 +75,11 @@ def main():
 
     print(f">> 运行 alpha_bench: universe={args.universe} zoo={args.zoo} "
           f"period={args.period} top={args.top}")
+    # 不传 output_dir：vibe 对报告目录有写保护白名单（~/.vibe-trading/reports），
+    # HTML 报告落它自己的报告根目录，AlphaPilot 侧只消费 JSON 信封。
     payload = alpha_bench(
         universe=args.universe, zoo=args.zoo, period=args.period,
-        top=args.top, output_dir=VIBE_DATA_DIR, panel_csv=panel_csv,
-        timeout=args.timeout,
+        top=args.top, panel_csv=panel_csv, timeout=args.timeout,
     )
     if not payload:
         print("ERROR: 研究层不可用或调用失败。检查 VIBE_TRADING_ENABLED=1、"
