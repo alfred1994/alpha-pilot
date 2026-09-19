@@ -144,7 +144,8 @@ def list_alphas(zoo: str = "gtja191", limit: int = 20) -> Optional[Dict[str, Any
 
 def alpha_bench(universe: str = "alphapilot:pool", zoo: str = "gtja191",
                 period: str = "2024-2026", top: int = 20,
-                output_dir: str = None, panel_csv: str = None) -> Optional[Dict[str, Any]]:
+                output_dir: str = None, panel_csv: str = None,
+                timeout: int = None) -> Optional[Dict[str, Any]]:
     """
     运行因子 IC/IR 基准。
 
@@ -167,7 +168,7 @@ def alpha_bench(universe: str = "alphapilot:pool", zoo: str = "gtja191",
                     f"universe={universe} 需要有效的 panel_csv（由 data.vibe_panel.export_panel_csv 生成）"
                 )
             env_extra = {"ALPHAPILOT_VIBE_PANEL": panel_csv}
-        envelope = call_tool("alpha_bench", args, env_extra=env_extra)
+        envelope = call_tool("alpha_bench", args, timeout=timeout, env_extra=env_extra)
     except VibeUnavailable:
         return None
     return _first_json(envelope)
