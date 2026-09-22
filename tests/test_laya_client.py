@@ -66,17 +66,25 @@ def test_state_is_features_only():
     }
     state = build_candidate_state(decision, "恒瑞医药")
     # 状态只含特征：MiMo 的答案/置信度/理由绝不进入 laya 的输入
-    assert set(state.keys()) == {"code", "date", "name", "dimensions"}
+    assert set(state.keys()) == {"code", "date", "name", "market", "dimensions"}
     flat = json.dumps(state, ensure_ascii=False)
     assert "BUY" not in flat and "0.97" not in flat and "理由" not in flat
     assert state["code"] == "601123" and state["name"] == "恒瑞医药"
     assert state["dimensions"]["technical"] == {"score": 70.0, "confidence": 0.8}
     assert "broken" not in state["dimensions"]
+    # 固定中文市场标签：保证 Router 确定性路由到 multilingual checkpoint
+    assert "股" in state["market"]
     ok("候选状态只含 6 维特征，不含 MiMo 答案/置信度/理由，脏维度被丢弃")
 
     bare = build_candidate_state({"code": "000001", "date": "2026-09-22"})
     assert bare["dimensions"] == {} and "name" not in bare
+    assert "market" in bare  # 无名字也必须带市场标签（路由兜底）
     ok("缺少 dimensions 的行退化为空特征状态而不报错")
+
+    # 研究池里 name==code 的占位条目（纯数字代码）不能当作真实名字
+    placeholder = build_candidate_state({"code": "300308", "date": "2026-09-22"}, "300308")
+    assert "name" not in placeholder and "market" in placeholder
+    ok("name==code 的占位名字被跳过，市场标签仍在")
 
 
 def test_answer_parsing():
@@ -141,6 +149,19 @@ def test_action_aliases():
     ok("MiMo 动作到 laya 类别的映射")
 
 
+def test_name_extraction():
+    from strategy.laya_client import _extract_name_from_prompt
+    prompt = "【股票信息】\n代码: 601123\n名称: 恒瑞医药\n行业: 医药"
+    assert _extract_name_from_prompt(prompt, "601123") == "恒瑞医药"
+    # 半角冒号同样可解析（信号链路两种写法都出现过）
+    assert _extract_name_from_prompt("名称:ST银亿", "600298") == "ST银亿"
+    # name==code 的占位值与缺失段落都视为无名
+    assert _extract_name_from_prompt("名称: 300308", "300308") == ""
+    assert _extract_name_from_prompt("无名称段的提示词", "300308") == ""
+    assert _extract_name_from_prompt("", "300308") == ""
+    ok("从 llm_prompt 提取真实股票名，占位/缺失返回空")
+
+
 def _seed_db(db_path, rows):
     from data.database import Database
     with Database(db_path=db_path) as db:
@@ -165,6 +186,7 @@ def test_shadow_comparison_end_to_end():
         try:
             _seed_db(db_path, [
                 {"code": "601123", "date": "2026-09-22", "action": "BUY",
+                 "llm_prompt": "代码: 601123\n名称: 恒瑞医药\n六维分数如下...",
                  "llm_response": "{}", "confidence": 0.8,
                  "dimensions": json.dumps({"technical": {"score": 70, "confidence": 0.8}})},
                 {"code": "000001", "date": "2026-09-22", "action": "HOLD",
@@ -191,7 +213,16 @@ def test_shadow_comparison_end_to_end():
             request = post.call_args.kwargs["json"]
             assert request["states"][0]["code"] == "601123"
             assert "action" not in request["states"][0]
+            # 股票名从 llm_prompt 提取（提示词优先于研究池）
+            assert request["states"][0]["name"] == "恒瑞医药"
+            # 无名称段的行没有 name，但必须有中文市场标签兜底路由
+            assert "name" not in request["states"][1]
+            assert "股" in request["states"][0]["market"]
+            assert "股" in request["states"][1]["market"]
             assert request["questions"] is laya_client.SHADOW_QUESTIONS
+            # 路由信息落进明细，便于诊断 checkpoint 误路由
+            detail = next(d for d in summary["details"] if d["code"] == "601123")
+            assert detail["routing"]["model"] == "multilingual"
 
             from data.database import Database
             with Database(db_path=db_path) as db:
@@ -265,7 +296,9 @@ def main():
     print("== Laya 影子决策契约测试 ==")
     test_state_is_features_only()
     test_answer_parsing()
+    test_score_candidates_chunks()
     test_action_aliases()
+    test_name_extraction()
     test_shadow_comparison_end_to_end()
     test_shadow_degradation()
     test_server_module_contract()

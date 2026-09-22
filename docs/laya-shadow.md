@@ -38,8 +38,15 @@ data/laya/shadow_<date>.json + auto_event(laya_shadow) → 人工/复盘检查
 `python -m strategy.laya_client <YYYY-MM-DD>` 对该日 **MiMo 已判断过**的候选
 跑 Laya 对照：
 
-- **状态只含特征**（6 维分数+置信度、股票名、日期），**绝不含 MiMo 的答案/
-  置信度/理由**——否则"对照一致率"就是循环论证；
+- **状态只含特征**（6 维分数+置信度、股票名、日期、固定中文市场标签），
+  **绝不含 MiMo 的答案/置信度/理由**——否则"对照一致率"就是循环论证；
+- **股票名优先从 `llm_prompt` 提取**（与 web 路由同一规则），研究池仅兜底
+  且跳过 name==code 的占位条目；
+- **固定中文市场标签的原因**：Laya Router 按脚本路由 checkpoint——纯数字
+  代码状态（无汉字）会被路由到 english checkpoint，首轮 40 只候选全部误
+  路由并呈现系统性 sell 偏置（0/40 一致）；标签保证确定性路由到
+  multilingual checkpoint，真实中文名同时是模型可用特征（如 ST 前缀）；
+- 每只明细记录 `routing`（model/repo/reason），便于复核 checkpoint 选择；
 - Laya 回答两个 typed 问题：
   - `action`：choice，`buy/hold/sell` 三分类，带校准概率；
   - `conviction`：score，信号强度 0-2 连续评分，带级别措辞；

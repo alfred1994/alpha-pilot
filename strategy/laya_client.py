@@ -17,6 +17,7 @@ Laya 影子决策客户端
 import json
 import math
 import os
+import re
 import sys
 from typing import Any, Dict, List, Optional
 
@@ -134,17 +135,37 @@ def build_candidate_state(decision: Dict[str, Any], name: str = "") -> Dict[str,
                 "confidence": confidence,
             }
     state = {
+        # 固定中文市场标签：Router 按脚本路由 checkpoint（见 laya 实测），
+        # 纯数字代码状态会被路由到有 sell 偏置的 english checkpoint；
+        # 这个标签保证所有状态确定性地走 multilingual checkpoint。
+        "market": "A股（沪深市场）",
         "code": str(decision.get("code") or ""),
         "date": str(decision.get("date") or ""),
         "dimensions": dimensions,
     }
-    if name:
+    if name and name != state["code"]:
         state["name"] = str(name)
     return state
 
 
+def _extract_name_from_prompt(prompt: str, code: str) -> str:
+    """从 MiMo 提示词的股票信息段提取真实股票名（与 web 路由同一规则）。
+
+    研究池里的 name 字段经常就是代码本身（纯数字），而提示词里由信号
+    链路写入的「名称:」是真实中文名——真实名字既帮 Router 路由到
+    multilingual checkpoint，也是模型可用的特征（如 ST 前缀）。
+    """
+    if not prompt:
+        return ""
+    match = re.search(r"名称[:：]\s*([^\s\n\r，,]+)", prompt)
+    if not match:
+        return ""
+    name = match.group(1).strip()
+    return name if name and name != code else ""
+
+
 def _resolve_names(decisions: List[Dict[str, Any]]) -> Dict[str, str]:
-    """从研究池补股票名（失败返回空映射，名字不是必需特征）。"""
+    """从研究池补股票名（跳过 name==code 的占位条目；失败返回空映射）。"""
     try:
         from data.research_universe import UNIVERSE_FILE
         if not os.path.isfile(UNIVERSE_FILE):
@@ -153,8 +174,12 @@ def _resolve_names(decisions: List[Dict[str, Any]]) -> Dict[str, str]:
             payload = json.load(fh)
         names = {}
         for item in payload.get("codes") or []:
-            if isinstance(item, dict) and item.get("code") and item.get("name"):
-                names[str(item["code"])] = str(item["name"])
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("code") or "")
+            name = str(item.get("name") or "")
+            if code and name and name != code:
+                names[code] = name
         return names
     except (OSError, json.JSONDecodeError):
         return {}
@@ -219,14 +244,23 @@ def run_shadow_comparison(date: str = None,
 
     with Database(db_path=db_path) as db:
         rows = [dict(r) for r in db.conn.execute(
-            "SELECT code, date, action, confidence, dimensions FROM llm_decisions "
+            "SELECT code, date, action, confidence, dimensions, llm_prompt "
+            "FROM llm_decisions "
             "WHERE date=? AND action IS NOT NULL", (date or "",),
         ).fetchall()]
     if not rows:
         return None
 
-    names = _resolve_names(rows)
-    states = [build_candidate_state(row, names.get(str(row["code"]), "")) for row in rows]
+    # 名字优先级：提示词里的真实中文名 > 研究池。研究池的 name 经常是
+    # 代码本身（纯数字），而提示词「名称:」由信号链路写入，是真实名字。
+    pool_names = _resolve_names(rows)
+    states = []
+    for row in rows:
+        code = str(row.get("code") or "")
+        name = _extract_name_from_prompt(
+            str(row.get("llm_prompt") or ""), code,
+        ) or pool_names.get(code, "")
+        states.append(build_candidate_state(row, name))
     results = score_candidates(states)
     if results is None:
         return None
@@ -247,7 +281,7 @@ def run_shadow_comparison(date: str = None,
         agree += 1 if matched else 0
         key = f"{mimo_action}->{laya_action or 'unknown'}"
         confusion[key] = confusion.get(key, 0) + 1
-        details.append({
+        detail = {
             "code": str(row.get("code") or ""),
             "laya": laya,
             "mimo": {
@@ -255,7 +289,14 @@ def run_shadow_comparison(date: str = None,
                 "confidence": round(float(row.get("confidence") or 0.0), 3),
             },
             "match": bool(matched),
-        })
+        }
+        routing = (result or {}).get("routing")
+        if isinstance(routing, dict):
+            # 路由信息用于诊断 checkpoint 选择（如误路由到 english 偏置）
+            detail["routing"] = {
+                str(k): str(v) for k, v in routing.items()
+            }
+        details.append(detail)
 
     summary = {
         "date": date,
