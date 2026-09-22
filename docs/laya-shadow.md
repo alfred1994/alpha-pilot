@@ -87,6 +87,30 @@ systemctl --user disable --now alpha-pilot-laya.service   # 停影子服务
 rm -rf ~/.laya-venv                                      # 彻底移除（可选）
 ```
 
+## 格式实验记录（2026-09-23，服务器实测）
+
+首轮影子对照 0/40 一致且全 sell，逐层排查做了 7 组受控实验（同一 laya
+服务、确定性输出、重复请求结果一致）：
+
+1. **路由**：研究池 name 多为纯数字代码 → 40 只全部被 Router 路由到
+   english checkpoint。A/B 实测 multilingual 方向正确（buy）、english
+   偏 sell。**已修复**（中文市场标签+提示词提名，现 40/40 multilingual）。
+2. **键序**：同一 002916 特征状态，market 键在前 → sell 0.447，code 键在
+   前 → buy 0.482。322M 小模型对 JSON 键序敏感。**已修复**（身份→上下文
+   →特征的自然键序）。
+3. **状态格式**：英文句子状态被路由回 english（汉字占比低）；中文句子+
+   英文问题 → 全 sell；中文句子+中文问题 → 全 hold（连构造的强看空状态
+   也答 hold）；维度口语化（"偏多/偏空/中性"）→ 概率近均匀、构造看空
+   仍答 buy。
+
+**结论**：laya 0.3.5 multilingual checkpoint 的分布内任务是客服工单分诊
+与邮件分类（官方 presets 引用 `message`/`body` 等自然语言字段），对
+"6 维数值特征向量 → buy/hold/sell"这一分布外任务**不能稳健读取特征**，
+输出主要由表面线索（语言、键序、问题语言）驱动。影子位继续保留（成本
+每天约 3 分钟 CPU），但**不应期待它当前形态下产生有判别力的对照数据**；
+提为预筛门卫的计划在拿到新证据（更好的 checkpoint/格式或分布内任务）
+之前搁置。
+
 ## 版本固定
 
 当前固定 `laya==0.3.5`（`scripts/setup_laya.sh`）。该项目 4 天内发了 15 个

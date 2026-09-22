@@ -134,17 +134,21 @@ def build_candidate_state(decision: Dict[str, Any], name: str = "") -> Dict[str,
                 "score": score,
                 "confidence": confidence,
             }
+    # 键序按"身份→上下文→特征"组织（code/date/name → market → dimensions）：
+    # 这既是自然序列化顺序，也是实测中更稳定的格式——laya 0.3.5 的 322M
+    # checkpoint 对 JSON 键序敏感（同特征 market 键在前答 sell 0.447、
+    # code 键在前答 buy 0.482，见 docs/laya-shadow.md 格式实验记录）。
     state = {
-        # 固定中文市场标签：Router 按脚本路由 checkpoint（见 laya 实测），
-        # 纯数字代码状态会被路由到有 sell 偏置的 english checkpoint；
-        # 这个标签保证所有状态确定性地走 multilingual checkpoint。
-        "market": "A股（沪深市场）",
         "code": str(decision.get("code") or ""),
         "date": str(decision.get("date") or ""),
-        "dimensions": dimensions,
     }
     if name and name != state["code"]:
         state["name"] = str(name)
+    # 固定中文市场标签：Router 按脚本路由 checkpoint（见 laya 实测），
+    # 纯数字代码状态（无汉字）会被路由到有 sell 偏置的 english checkpoint；
+    # 这个标签保证所有状态确定性地走 multilingual checkpoint。
+    state["market"] = "A股（沪深市场）"
+    state["dimensions"] = dimensions
     return state
 
 
