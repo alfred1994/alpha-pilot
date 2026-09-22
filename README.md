@@ -62,6 +62,7 @@ AlphaPilot 更关注 AI 交易员周围的工程闭环：
 - **可解释技术形态**：对齐 Sequoia-X 的高窄旗形、横截面 RPS、海龟突破、上升趋势跌停反包，接入注册表、技术集成投票与盘中影子诊断；条件、来源与验证边界见 [Sequoia-X 借鉴](docs/sequoia-reference.md)。
 
 - **Vibe-Trading 研究层（可选）**：通过外置 venv + MCP 只读工具接入港大 Vibe-Trading 的 GTJA191/Alpha101 因子库与因子 IC/IR 基准，数据用本地 k_daily/同花顺日线（研究池宇宙，不用 Tushare），作为盘后复盘的因子证据；默认关闭，未安装时自动降级。见 [Vibe-Trading 研究层](docs/vibe-trading.md)。
+- **Laya 影子决策层（可选）**：外置 venv 本机常驻 Laya 类型化决策模型（Apache-2.0，非自回归，~1s/只 vs MiMo 90s/只），对 MiMo 已判断的候选并行打 buy/hold/sell 分类与信号强度评分，影子对照落库不拦截交易；默认关闭，服务未起时自动降级。见 [Laya 影子决策层](docs/laya-shadow.md)。
 
 - **LLM 交易决策**：支持 MiMo/Xiaomi 兼容 OpenAI 风格 API，用于决策推理和交易计划生成。
 - **五维信号上下文**：技术面、资金面、舆情面、情绪面和基本面。

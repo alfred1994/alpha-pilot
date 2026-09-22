@@ -61,6 +61,7 @@ resume, repair, token input, raw environment variables, or trading control endpo
   built on local k_daily/Hithink daily bars (research-pool universe, no
   Tushare), exposed to the daily review as read-only factor evidence. Disabled
   by default and degrades silently when not installed. See `docs/vibe-trading.md`.
+- **Laya shadow decision layer (optional)**: a local resident Laya typed-decision model (Apache-2.0, non-autoregressive, ~1s/candidate vs MiMo's 90s) in an out-of-process venv, scoring buy/hold/sell and signal strength in parallel with MiMo's decisions. Shadow comparison only — it never gates trades. Disabled by default and degrades silently when the service is down. See `docs/laya-shadow.md`.
 - **Five-signal decision context**: technical, capital, sentiment, emotion, and
   fundamental dimensions.
 - **Paper account engine**: simulated cash, positions, trades, fees, PnL, and

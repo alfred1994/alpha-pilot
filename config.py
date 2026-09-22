@@ -133,6 +133,18 @@ VIBE_TOOL_TIMEOUT_SECONDS = int(os.environ.get("VIBE_TOOL_TIMEOUT_SECONDS", "900
 VIBE_DATA_DIR = os.path.join(DATA_DIR, "vibe")   # 因子基准结果落盘目录（不入库不入git）
 
 # ══════════════════════════════════════════════════════════════════
+# Laya 影子决策（外置 venv 常驻服务，进程隔离）
+# ══════════════════════════════════════════════════════════════════
+# laya（Apache-2.0，非自回归类型化决策模型）安装在独立 venv
+# （scripts/setup_laya.sh），以 127.0.0.1 HTTP 服务常热运行。
+# 影子模式：只对 MiMo 已判断过的候选并行打分落库，不拦截交易流；
+# 未启用/服务未起一律静默降级，不影响交易主链路。
+LAYA_ENABLED = os.environ.get("LAYA_ENABLED", "0") == "1"
+LAYA_BASE_URL = os.environ.get("LAYA_BASE_URL", "http://127.0.0.1:8642")
+LAYA_TIMEOUT_SECONDS = int(os.environ.get("LAYA_TIMEOUT_SECONDS", "120"))
+LAYA_DATA_DIR = os.path.join(DATA_DIR, "laya")   # 影子对照结果（不入库不入git）
+
+# ══════════════════════════════════════════════════════════════════
 # 可转债T+0策略配置
 # ══════════════════════════════════════════════════════════════════
 CB_MAX_PREMIUM = 0.30        # 最大溢价率30%

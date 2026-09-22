@@ -56,3 +56,4 @@ data/reviews/
 data/*.db-*
 .codex/
 data/vibe/
+data/laya/
