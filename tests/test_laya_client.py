@@ -97,6 +97,43 @@ def test_answer_parsing():
     ok("缺失或畸形答案返回 None 而不抛异常")
 
 
+def test_score_candidates_chunks():
+    """25 条状态按 batch_size=10 分 3 批，结果顺序与输入一致。"""
+    states = [{"code": f"{600000 + i}", "date": "2026-09-22",
+               "dimensions": {"technical": {"score": 50.0, "confidence": 0.0}}}
+              for i in range(25)]
+
+    def fake_post(url, json=None, timeout=None):
+        assert url.endswith("/predict")
+        chunk = json["states"]
+        return _http_response(200, {
+            "ok": True,
+            "results": [_fake_laya_result() for _ in chunk],
+        })
+
+    with mock.patch.object(laya_client.httpx, "post", side_effect=fake_post) as post:
+        results = laya_client.score_candidates(states)
+    assert results is not None and len(results) == 25
+    assert post.call_count == 3
+    ok("批量打分按 10 条一批分 3 次请求，结果顺序保持")
+
+    # 中途某批失败：整批返回 None（影子语义：宁缺毋滥）
+    calls = {"n": 0}
+
+    def flaky_post(url, json=None, timeout=None):
+        calls["n"] += 1
+        chunk = json["states"]
+        if calls["n"] == 2:
+            return _http_response(500, {"ok": False})
+        return _http_response(
+            200, {"ok": True, "results": [_fake_laya_result() for _ in chunk]},
+        )
+
+    with mock.patch.object(laya_client.httpx, "post", side_effect=flaky_post):
+        assert laya_client.score_candidates(states[:25]) is None
+    ok("任一批次失败时整批对照放弃（返回 None）")
+
+
 def test_action_aliases():
     assert ACTION_ALIASES["BUY"] == "buy"
     assert ACTION_ALIASES["SELL"] == "sell"

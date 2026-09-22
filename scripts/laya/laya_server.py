@@ -55,7 +55,12 @@ def make_handler(router):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+                # 客户端超时先行断开：结果已算完但送不出去，记一行即可，
+                # 不刷 traceback（ThreadingHTTPServer 本就逐连接隔离）。
+                sys.stderr.write("client disconnected before response: %s\n" % exc)
 
         def do_GET(self):
             if self.path.rstrip("/") == "/health":

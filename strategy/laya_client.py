@@ -74,25 +74,38 @@ def is_available(timeout: float = 3.0) -> bool:
 
 
 def score_candidates(states: List[Dict[str, Any]],
-                     timeout: int = None) -> Optional[List[Dict[str, Any]]]:
-    """批量调用 /predict；失败返回 None（不抛异常，调用方静默降级）。"""
+                     timeout: int = None,
+                     batch_size: int = 10) -> Optional[List[Dict[str, Any]]]:
+    """
+    分批调用 /predict；失败返回 None（不抛异常，调用方静默降级）。
+
+    分批原因：ARM CPU 上单条状态实测 ~3s，一次性 40 条要 ~128s，会顶穿
+    HTTP 超时导致整批作废。每批 10 条把单次请求压在 ~35s，且失败只损失
+    已算完的部分不会拖垮整批。
+    """
     if not states:
         return []
-    try:
-        resp = httpx.post(
-            f"{LAYA_BASE_URL}/predict",
-            json={"states": states, "questions": SHADOW_QUESTIONS},
-            timeout=timeout or LAYA_TIMEOUT_SECONDS,
-        )
-        if resp.status_code != 200:
+    results: List[Dict[str, Any]] = []
+    for start in range(0, len(states), max(1, batch_size)):
+        chunk = states[start:start + batch_size]
+        try:
+            resp = httpx.post(
+                f"{LAYA_BASE_URL}/predict",
+                json={"states": chunk, "questions": SHADOW_QUESTIONS},
+                timeout=timeout or LAYA_TIMEOUT_SECONDS,
+            )
+            if resp.status_code != 200:
+                return None
+            payload = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError, ValueError):
             return None
-        payload = resp.json()
-    except (httpx.HTTPError, json.JSONDecodeError, ValueError):
-        return None
-    if not payload.get("ok"):
-        return None
-    results = payload.get("results")
-    return results if isinstance(results, list) and len(results) == len(states) else None
+        if not payload.get("ok"):
+            return None
+        chunk_results = payload.get("results")
+        if not isinstance(chunk_results, list) or len(chunk_results) != len(chunk):
+            return None
+        results.extend(chunk_results)
+    return results
 
 
 def build_candidate_state(decision: Dict[str, Any], name: str = "") -> Dict[str, Any]:
