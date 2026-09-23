@@ -252,10 +252,12 @@ def test_trader_brief_integration():
         with Database(db_path=db_path) as db:
             pass
         # latest 文件不存在 → 空 dict（不报错、不阻塞 brief）
-        with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch("strategy.laya_text.LAYA_DATA_DIR", tmp):
-                facts = build_daily_facts("2026-09-23", db_path=db_path,
-                                          market_status="closed")
+            with tempfile.TemporaryDirectory() as tmp:
+                with mock.patch("strategy.laya_text.LAYA_DATA_DIR", tmp):
+                    # trading_day 显式传入，避免日历回退查询触碰 Baostock 网络
+                    facts = build_daily_facts("2026-09-23", db_path=db_path,
+                                              market_status="closed",
+                                              trading_day=True)
         assert facts.get("text_sentiment") == {}
         ok("trader brief 含 text_sentiment 字段，无文件时静默为空")
     finally:
