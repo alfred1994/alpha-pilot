@@ -349,6 +349,11 @@ def get_north_flow() -> dict:
         if s2n:
             last = s2n[-1].split(",")
             if len(last) >= 5:
+                # 沪深两侧均为"-"表示数据源当前未披露（2024-08 起北向实时
+                # 净买额停止逐笔披露），返回空而非伪造 0，避免下游把
+                # "无数据"当成"净买入为 0"的中性信号。
+                if last[1] == "-" and last[4] == "-":
+                    return {}
                 sh_net = float(last[1]) if last[1] != "-" else 0
                 sz_net = float(last[4]) if last[4] != "-" else 0
                 return {

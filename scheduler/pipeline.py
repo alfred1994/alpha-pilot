@@ -2059,9 +2059,27 @@ def run_review() -> PipelineResult:
         except Exception:
             pass
 
-        # 获取持仓市值（用买入价估算）
-        market_value = broker.market_value() if hasattr(broker, "market_value") else 0
-        total_assets = broker.total_assets()
+        # 获取持仓市值：收盘时取一次收盘价写回账户，按真实收盘价记账。
+        # 旧实现不传价格，market_value 回退到买入价（current_price 盘后不更新），
+        # 快照市值=成本，次日复盘的日盈亏因此按成本口径失真。
+        positions = broker.get_positions() or {}
+        close_prices = {}
+        if positions:
+            try:
+                from data.realtime import get_realtime
+                for quote in get_realtime(list(positions.keys())):
+                    if getattr(quote, "price", 0) and quote.price > 0:
+                        close_prices[quote.code] = float(quote.price)
+            except Exception as e:
+                logger.warning(f"[收盘] 收盘价获取失败(快照回退账户价): {e}")
+        for code, price in close_prices.items():
+            try:
+                if hasattr(account, "update_price"):
+                    account.update_price(code, price)
+            except Exception as e:
+                logger.warning(f"[收盘] {code} 收盘价写回账户失败(非致命): {e}")
+        market_value = broker.market_value(close_prices or None) if hasattr(broker, "market_value") else 0
+        total_assets = broker.total_assets(close_prices or None)
 
         from data.database import Database
         with Database() as db:
@@ -2070,7 +2088,7 @@ def run_review() -> PipelineResult:
                 "cash": broker.get_cash(),
                 "market_value": market_value,
                 "total_assets": total_assets,
-                "position_count": len(broker.get_positions()),
+                "position_count": len(positions),
                 "market_regime": market_regime,
                 "regime_confidence": regime_confidence,
             })

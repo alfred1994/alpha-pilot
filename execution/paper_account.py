@@ -566,6 +566,19 @@ class PaperAccount:
                 self.positions[code]["highest_price"] = price
                 self._save()
 
+    def update_price(self, code: str, price: float):
+        """更新持仓最新价（收盘快照写回，供每日净值/市值按真实价记账）。
+
+        current_price 此前只在买入和部分卖出时写入，盘后一直停留在买入价，
+        导致收盘快照与次日复盘的日盈亏按成本价口径失真。
+        """
+        if code in self.positions and self._is_positive_finite(price):
+            pos = self.positions[code]
+            pos["current_price"] = float(price)
+            if price > pos.get("highest_price", 0):
+                pos["highest_price"] = float(price)
+            self._save()
+
     def evaluate_stop_conditions(
         self,
         prices: Dict[str, float],

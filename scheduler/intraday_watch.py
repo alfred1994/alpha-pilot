@@ -319,7 +319,9 @@ def _default_intraday_kline_analyzer(code: str, now_ts: float = None) -> Dict:
         from data.kt_realtime import get_kt_client
         frame = get_kt_client().get_kline(code, "1m", count=INTRADAY_KLINE_BARS)
     except Exception as exc:
-        return {"valid": False, "bars": 0, "source": "kt_1m", "reason": f"1分钟线获取失败 ({type(exc).__name__})"}
+        # 带上异常消息(截断)：只留类型时排障要重新手工复现，消息通常已说明原因。
+        return {"valid": False, "bars": 0, "source": "kt_1m",
+                "reason": f"1分钟线获取失败 ({type(exc).__name__}: {str(exc)[:120]})"}
     _persist_minute_bars(code, frame)
     analysis = _analyze_intraday_bars(frame)
     with _kline_cache_lock:

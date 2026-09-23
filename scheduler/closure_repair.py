@@ -9,6 +9,7 @@
 该模块默认保持 BROKER_MODE=paper，不连接真实交易通道。
 ====================================================================
 """
+import logging
 import os
 from datetime import datetime
 from scheduler.market_calendar import _now_bj
@@ -16,6 +17,8 @@ from typing import Callable, Dict
 
 from scheduler.closure_check import format_closure_check, run_closure_check
 from scheduler.utils import force_paper_mode
+
+logger = logging.getLogger("scheduler.closure_repair")
 
 
 RECOVERABLE_GAPS = {
@@ -195,21 +198,40 @@ def run_closure_repair(
         db_path=db_path,
         control_file=control_file,
     )
-    before_level = (before.get("overall") or {}).get("level")
-    after_level = (after.get("overall") or {}).get("level")
+    before_overall = before.get("overall") or {}
+    after_overall = after.get("overall") or {}
+    before_level = before_overall.get("level")
+    after_level = after_overall.get("level")
     if before_level != after_level:
         actions.append(f"闭环缺口等级变化: {before_level} -> {after_level}")
     else:
         actions.append(f"闭环缺口等级保持: {after_level}")
 
-    _insert_repair_event(
-        date=target_date,
-        status=status,
-        actions=actions,
-        before=before,
-        after=after,
-        db_path=db_path,
+    # 只有状态真正变化、或自愈动作实际执行过才落事件。
+    # 盘前/深夜的"等待下一交易时段"是常态，若每次巡检都落事件，
+    # 每天约 260 条无状态变化的记录会淹没真正的自愈信号。
+    # 注意："已触发盘后复盘"事件必须保留，_review_attempted_today 依赖它去重。
+    state_changed = (
+        before_level != after_level
+        or before_overall.get("critical") != after_overall.get("critical")
+        or before_overall.get("warn") != after_overall.get("warn")
     )
+    repair_status = str((repair_result or {}).get("status", ""))
+    action_executed = repair_result is not None and not repair_status.startswith("skipped_")
+    if state_changed or action_executed:
+        _insert_repair_event(
+            date=target_date,
+            status=status,
+            actions=actions,
+            before=before,
+            after=after,
+            db_path=db_path,
+        )
+    else:
+        logger.debug(
+            "闭环自愈无状态变化(缺口=%s 等级=%s)，事件不落库",
+            (gap or {}).get("name"), after_level,
+        )
 
     return {
         "date": target_date,

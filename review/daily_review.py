@@ -163,8 +163,14 @@ class DailyReviewer:
         os.makedirs(self.review_dir, exist_ok=True)
 
     def _load_previous_total_assets(self, date: str) -> Optional[float]:
-        """读取指定日期之前最近一次总资产，用于计算账户级每日盈亏。"""
+        """读取指定日期之前最近一次总资产，用于计算账户级每日盈亏。
+
+        同一日期同时存在复盘文件和快照时，优先复盘：复盘在盘后用最新
+        收盘价重估，快照可能在收盘价写回前就已落库，两者口径不一致时
+        以复盘为准，避免日盈亏混用成本口径。
+        """
         candidates = []
+        review_dates = set()
 
         if os.path.exists(self.review_dir):
             for filename in os.listdir(self.review_dir):
@@ -180,6 +186,7 @@ class DailyReviewer:
                     total_assets = data.get("total_assets")
                     if total_assets is not None:
                         candidates.append((item_date, float(total_assets)))
+                        review_dates.add(item_date)
                 except Exception:
                     continue
 
@@ -195,7 +202,7 @@ class DailyReviewer:
                     """,
                     (date,),
                 ).fetchone()
-                if row:
+                if row and row["date"] not in review_dates:
                     candidates.append((row["date"], float(row["total_assets"])))
         except Exception:
             pass

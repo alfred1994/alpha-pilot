@@ -122,7 +122,7 @@ class KTRealtimeClient:
             inferred, sec_type = "BJ", "stock"
         elif code.startswith(("600", "601", "603", "605", "688", "900")):
             inferred, sec_type = "SH", "stock"
-        elif code.startswith(("000", "001", "002", "003", "200", "300", "399")):
+        elif code.startswith(("000", "001", "002", "003", "200", "300", "301", "302", "399")):
             inferred, sec_type = "SZ", "stock"
         else:
             raise ValueError(f"无法根据代码识别沪深京市场: {raw_code!r}")
