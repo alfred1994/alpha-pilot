@@ -127,15 +127,7 @@ button { color: inherit; }
 .section-heading p, .page-heading p { max-width: 560px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
 .eyebrow { color: var(--terracotta); font-size: 10px; font-weight: 700; letter-spacing: .08em; }
 
-.journey-flow { display: flex; align-items: center; margin-top: 30px; overflow-x: auto; padding-bottom: 8px; }
-.journey-step { flex: 0 0 104px; display: grid; justify-items: center; gap: 8px; text-align: center; }
-.journey-step svg { width: 20px; height: 20px; color: var(--moss-700); }
-.journey-step strong { font-size: 28px; letter-spacing: -.04em; }
-.journey-step span { color: var(--muted); font-size: 10px; }
-.journey-step.observation strong { color: var(--ochre); }
-.journey-step.signal strong { color: var(--terracotta); }
-.journey-step.executed strong { color: var(--leaf); }
-.journey-link { flex: 1 0 24px; height: 1px; background: var(--line); }
+.journey-funnel { height: 300px; margin-top: 18px; cursor: pointer; }
 .journey-foot { margin-top: 20px; padding: 13px 16px; border-radius: 14px; background: rgba(139,157,131,.14); color: var(--muted); font-size: 11px; }
 
 .two-column { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
@@ -305,7 +297,7 @@ td:last-child { max-width: 360px; line-height: 1.55; }
     .capability-rail, .metric-grid, .health-grid { grid-template-columns: repeat(2, 1fr); }
     .two-column { grid-template-columns: 1fr; }
     .section-heading, .page-heading { align-items: flex-start; flex-direction: column; }
-    .journey-flow { align-items: flex-start; }
+    .journey-funnel { height: 260px; }
     .strategy-handoff { grid-template-columns: 1fr; }
     .strategy-handoff > svg { transform: rotate(90deg); justify-self: center; }
     .strategy-card dl, .position-numbers { grid-template-columns: 1fr 1fr; }

@@ -1,7 +1,26 @@
+// 漏斗阶段 → 候选验证页的"拒绝阶段"筛选。
+// 点击某阶段 = 查看停留在该关卡的候选证据；计划/成交属执行事实，不做跳转。
+const FUNNEL_STAGES = [
+    { key: 'candidates', label: '候选观察', layer: '' },
+    { key: 'scored', label: '完成打分', layer: 'score_gate' },
+    { key: 'llm_evaluated', label: 'LLM 判断', layer: 'ranking_gate' },
+    { key: 'observations', label: '观察结论', layer: 'llm' },
+    { key: 'signals', label: '交易信号', layer: 'buy_budget' },
+    { key: 'planned_orders', label: '待执行计划', layer: null },
+    { key: 'filled', label: '模拟成交', layer: null },
+];
+
+const FUNNEL_COLORS = ['#c66b3d', '#c08e3a', '#9a8b4f', '#7a8f6f', '#6b8a6e', '#55715b', '#3f5d4e'];
+
 export class DashboardTab {
     constructor(app) {
         this.app = app;
         this.chart = null;
+        this.funnelChart = null;
+        window.addEventListener('resize', () => {
+            this.chart?.resize();
+            this.funnelChart?.resize();
+        });
     }
 
     text(value, fallback = '-') {
@@ -138,23 +157,88 @@ export class DashboardTab {
         `).join('');
     }
 
+    funnelValue(funnel, key) {
+        if (key === 'signals') return Number(funnel.buy_signals || 0) + Number(funnel.sell_signals || 0);
+        return Number(funnel[key] || 0);
+    }
+
     renderJourney(brief) {
         const funnel = brief.funnel || {};
-        const values = {
-            'journey-candidates': funnel.candidates,
-            'journey-scored': funnel.scored,
-            'journey-evaluated': funnel.llm_evaluated,
-            'journey-observations': funnel.observations,
-            'journey-signals': Number(funnel.buy_signals || 0) + Number(funnel.sell_signals || 0),
-            'journey-planned': funnel.planned_orders,
-            'journey-filled': funnel.filled,
-        };
-        Object.entries(values).forEach(([id, value]) => this.setText(id, String(value || 0)));
-        const signals = Number(funnel.buy_signals || 0) + Number(funnel.sell_signals || 0);
+        const data = FUNNEL_STAGES.map(stage => ({ ...stage, value: this.funnelValue(funnel, stage.key) }));
+        const signals = data.find(item => item.key === 'signals')?.value || 0;
         const footer = brief.is_trading_day === false
             ? '休市日不执行扫描和交易，所有阶段均为不适用。'
             : `今日扫描 ${funnel.scan_cycles || 0} 轮；BUY ${funnel.buy_signals || 0}，SELL ${funnel.sell_signals || 0}，HOLD ${funnel.observations || 0}。${signals ? '交易信号仍需经过计划、风控和执行。' : '当前没有可执行交易信号。'}`;
         this.setText('journey-foot', footer);
+        this.renderFunnel(data, brief.is_trading_day === false);
+    }
+
+    renderFunnel(data, isClosedDay) {
+        const dom = document.getElementById('journey-funnel');
+        if (!dom) return;
+        if (!window.echarts) {
+            dom.innerHTML = '<div class="empty-state">图表组件不可用，数值见下方说明</div>';
+            return;
+        }
+        if (!this.funnelChart) this.funnelChart = window.echarts.init(dom);
+        this.funnelChart.off('click');
+        if (data.every(item => item.value === 0)) {
+            this.funnelChart.clear();
+            this.funnelChart.setOption({
+                title: {
+                    text: isClosedDay ? '休市日不执行扫描和交易' : '今日尚无决策旅程事实',
+                    left: 'center', top: 'middle',
+                    textStyle: { color: '#6f725e', fontSize: 11, fontWeight: 400 },
+                },
+                series: [],
+            }, true);
+            setTimeout(() => this.funnelChart?.resize(), 50);
+            return;
+        }
+        this.funnelChart.on('click', params => {
+            const layer = data[params.dataIndex]?.layer;
+            if (layer === null || layer === undefined) return;
+            this.jumpToResearchLayer(layer);
+        });
+        this.funnelChart.setOption({
+            backgroundColor: 'transparent',
+            tooltip: {
+                trigger: 'item',
+                backgroundColor: '#344234', borderWidth: 0,
+                textStyle: { color: '#e8dcc7', fontSize: 11 },
+                formatter: params => {
+                    const stage = data[params.dataIndex];
+                    const hint = stage.layer === null ? '执行阶段事实，详见"计划结果"'
+                        : stage.layer === '' ? '点击查看全部候选证据'
+                            : '点击查看停留该关卡的候选证据';
+                    return `${params.name}：${params.value} 次<br/>${hint}`;
+                },
+            },
+            series: [{
+                type: 'funnel',
+                sort: 'descending',
+                minSize: '14%',
+                maxSize: '100%',
+                gap: 4,
+                left: 30, right: 30, top: 8, bottom: 8,
+                label: { show: true, position: 'inside', formatter: '{b}　{c}', color: '#2f392d', fontSize: 11, fontWeight: 600 },
+                labelLine: { show: false },
+                itemStyle: { borderColor: 'transparent', opacity: 0.9 },
+                emphasis: { label: { fontSize: 12 } },
+                data: data.map((item, index) => ({
+                    name: item.label,
+                    value: item.value,
+                    itemStyle: { color: FUNNEL_COLORS[index] },
+                })),
+            }],
+        }, true);
+        setTimeout(() => this.funnelChart?.resize(), 50);
+    }
+
+    jumpToResearchLayer(layer) {
+        const select = document.getElementById('research-layer');
+        if (select) select.value = layer;
+        this.app.switchTab('research');
     }
 
     renderAudit(brief) {
@@ -268,6 +352,7 @@ export class DashboardTab {
                         <div><span>当前价格</span><b>${this.money(pos.current_price, 2)}</b></div>
                         <div><span>浮动盈亏</span><b class="${this.pnlClass(pos.pnl)}">${this.signedMoney(pos.pnl)} ${this.pct(pos.pnl_pct, 2)}</b></div>
                     </div>
+                    ${riskRow}
                     <div class="decision-confidence">最新观察：${this.actionText(decision.action || 'HOLD')} · 决策置信度 ${confidence}</div>
                 </article>`;
         }).join('');

@@ -1,6 +1,6 @@
 import { ReturnsTab } from './modules/returns.js?v=2026091703';
 import { ResearchTab } from './modules/research.js?v=2026091702';
-import { DashboardTab } from './modules/dashboard.js?v=2026091701';
+import { DashboardTab } from './modules/dashboard.js?v=2026092301';
 import { DecisionsTab } from './modules/decisions.js?v=2026091701';
 import { EvolutionTab } from './modules/evolution.js?v=2026092301';
 import { HealthTab } from './modules/health.js?v=2026080201';
