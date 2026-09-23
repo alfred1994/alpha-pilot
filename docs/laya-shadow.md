@@ -87,6 +87,27 @@ systemctl --user disable --now alpha-pilot-laya.service   # 停影子服务
 rm -rf ~/.laya-venv                                      # 彻底移除（可选）
 ```
 
+## 文本情绪分类（分布内任务）
+
+6 维特征对照证明 laya 读不懂数值特征向量后，把它用到分布内的文本任务上：
+`strategy/laya_text.py` 对财经文本（市场头条+微博热帖+个股新闻，全部走
+既有数据链路：news_aggregator/同花顺/新浪/东财搜索，无新数据源）做
+positive/neutral/negative 三分类。
+
+- **为什么可行**：官方 presets 就是文本分类（工单分诊/邮件分类）；中文
+  金融文本服务器实测 6/8——强利好 pos 0.996、强利空 neg 0.997、例行公告
+  neutral 0.902；两个 miss 为领域细微差（减持→neutral）与关键词带偏
+  （"增速符合预期"→positive），属于已知边界；
+- **用法**：盘后 `python -m strategy.laya_text <YYYY-MM-DD>` 对该日候选
+  打分，落盘 `data/laya/text_sentiment_<date>.json`（并刷新
+  `text_sentiment_latest.json`）+ `laya_text_sentiment` 事件；
+- **消费方**：trader brief 的 `text_sentiment` 字段 → 复盘 prompt 追加一行
+  证据（"头条/热帖 N利好/N中性/N利空；个股新闻: 代码(利/中/空)"），与
+  vibe_factors 同模式，只读交叉参考，不进决策分；
+- **定位**：sentiment 维度的**快速本地旁证**（~1s/条 vs MiMo 90s/批），
+  不替代 MiMo 的舆情分析；两者长期分歧样本的对比数据可决定是否用它做
+  预筛或加权。
+
 ## 格式实验记录（2026-09-23，服务器实测）
 
 首轮影子对照 0/40 一致且全 sell，逐层排查做了 7 组受控实验（同一 laya

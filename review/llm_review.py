@@ -262,6 +262,15 @@ def build_llm_review_prompt(date: str, review_data: dict, adaptive_data: dict = 
                 line = ""
             if line:
                 prompt_parts.append(f"- 量化因子证据（外置研究层，选股时可作为交叉参考）: {line}")
+        text_sentiment = daily_facts.get("text_sentiment") or {}
+        if text_sentiment:
+            try:
+                from strategy.laya_text import format_text_sentiment_line
+                line = format_text_sentiment_line(text_sentiment)
+            except Exception:
+                line = ""
+            if line:
+                prompt_parts.append(f"- 文本情绪证据（本地快速分类，舆情维度可交叉参考）: {line}")
         prompt_parts.append("")
 
     # 10. 分析要求

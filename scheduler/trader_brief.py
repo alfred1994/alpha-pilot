@@ -150,6 +150,15 @@ def _vibe_factors_summary() -> Dict:
         return {}
 
 
+def _text_sentiment_summary() -> Dict:
+    """读取 Laya 文本情绪摘要（盘后运行写入）；未启用/文件缺失一律返回空。"""
+    try:
+        from strategy.laya_text import load_text_sentiment_summary
+        return load_text_sentiment_summary() or {}
+    except Exception:
+        return {}
+
+
 def build_daily_facts(date: str = None, db_path: str = None,
                       now: datetime = None, market_status: str = None,
                       trading_day: bool = None) -> Dict:
@@ -351,6 +360,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
         "counterfactual_denial": denial_summary,
         "degradations": degradations,
         "vibe_factors": _vibe_factors_summary(),
+        "text_sentiment": _text_sentiment_summary(),
         "reviewed": reviewed,
         "latest_scan": latest_scan,
         "strategy": {
