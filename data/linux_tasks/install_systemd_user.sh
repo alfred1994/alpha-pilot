@@ -4,7 +4,7 @@ set -euo pipefail
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 
-chmod +x '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_auto.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/restart_auto.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_doctor.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_report.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_status.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_closure_repair.sh'
+chmod +x '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_auto.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/restart_auto.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_doctor.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_report.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_status.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_closure_repair.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_research_sync.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_pooled_ml.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_db_maintenance.sh' '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_laya_text.sh'
 install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-auto.service' "$SYSTEMD_USER_DIR/alpha-pilot-auto.service"
 install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-auto-restart.service' "$SYSTEMD_USER_DIR/alpha-pilot-auto-restart.service"
 install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-auto-restart.timer' "$SYSTEMD_USER_DIR/alpha-pilot-auto-restart.timer"
@@ -14,6 +14,14 @@ install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user
 install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-report.timer' "$SYSTEMD_USER_DIR/alpha-pilot-report.timer"
 install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-status.service' "$SYSTEMD_USER_DIR/alpha-pilot-status.service"
 install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-status.timer' "$SYSTEMD_USER_DIR/alpha-pilot-status.timer"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-research.service' "$SYSTEMD_USER_DIR/alpha-pilot-research.service"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-research.timer' "$SYSTEMD_USER_DIR/alpha-pilot-research.timer"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-pooled-ml.service' "$SYSTEMD_USER_DIR/alpha-pilot-pooled-ml.service"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-pooled-ml.timer' "$SYSTEMD_USER_DIR/alpha-pilot-pooled-ml.timer"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-db-maintenance.service' "$SYSTEMD_USER_DIR/alpha-pilot-db-maintenance.service"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-db-maintenance.timer' "$SYSTEMD_USER_DIR/alpha-pilot-db-maintenance.timer"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-laya-text.service' "$SYSTEMD_USER_DIR/alpha-pilot-laya-text.service"
+install -m 0644 '/home/ubuntu/projects/alpha-pilot/data/linux_tasks/systemd_user/alpha-pilot-laya-text.timer' "$SYSTEMD_USER_DIR/alpha-pilot-laya-text.timer"
 
 systemctl --user daemon-reload
 systemctl --user enable --now alpha-pilot-auto.service
@@ -21,6 +29,10 @@ systemctl --user enable --now alpha-pilot-auto-restart.timer
 systemctl --user enable --now alpha-pilot-doctor.timer
 systemctl --user enable --now alpha-pilot-report.timer
 systemctl --user enable --now alpha-pilot-status.timer
+systemctl --user enable --now alpha-pilot-research.timer
+systemctl --user enable --now alpha-pilot-pooled-ml.timer
+systemctl --user enable --now alpha-pilot-db-maintenance.timer
+systemctl --user enable --now alpha-pilot-laya-text.timer
 
 cat <<'EOF'
 AlphaPilot systemd --user tasks installed.

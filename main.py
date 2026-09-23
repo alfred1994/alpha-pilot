@@ -232,6 +232,24 @@ def cmd_research_sync(args):
     return {"errors": ["research_sync"] if result.get("status") != "success" else []}
 
 
+def cmd_laya_text(args):
+    """Laya本地财经文本情绪盘后评分；须盘后当天跑（新闻源不按日期过滤）。"""
+    from datetime import datetime
+    from strategy.laya_text import is_available, run_text_sentiment
+
+    if not is_available():
+        print("Laya 文本情绪未启用（LAYA_ENABLED != 1 或服务未起），跳过。")
+        return {"errors": []}
+    target = datetime.now().strftime("%Y-%m-%d")
+    result = run_text_sentiment(target)
+    if result is None:
+        # 服务不可用或当日无候选：以非零退出码暴露，让 systemd/doctor 可见。
+        print("Laya 文本情绪无结果（服务不可用/当日无候选），标记失败。")
+        return {"errors": ["laya_text"]}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return {"errors": []}
+
+
 def cmd_backfill_kline(args):
     """全市场/研究池日线回填到本地 k_daily（资源自适应，不参与交易）。"""
     from data.universe_backfill import run_backfill
@@ -899,6 +917,7 @@ def main():
     group.add_argument("--train-pooled-model", action="store_true", help="盘后训练 pooled ML 影子模型，不参与交易")
     group.add_argument("--pooled-ml-status", action="store_true", help="查看 pooled ML 影子模型状态")
     group.add_argument("--db-maintenance", action="store_true", help="数据库维护：完整性检查+在线备份+运维日志清理，不参与交易")
+    group.add_argument("--laya-text", action="store_true", help="Laya本地财经文本情绪盘后评分（须盘后当天跑，新闻源不按日期过滤）")
     group.add_argument("--db-vacuum", action="store_true", help="DB维护时执行VACUUM回收空间（建议每周一次）")
     group.add_argument("--shadow-report", action="store_true", help="查看影子策略排行榜与晋级候选(JSON)")
     group.add_argument("--shadow-approve", metavar="VARIANT_ID", default=None, help="批准影子晋级候选（人工闭环，只记审批不改正式参数）")
@@ -1076,6 +1095,8 @@ def main():
         result = cmd_closure_check(args)
     elif args.closure_repair:
         result = cmd_closure_repair(args)
+    elif args.laya_text:
+        result = cmd_laya_text(args)
     elif args.realtime:
         cmd_realtime()
         return

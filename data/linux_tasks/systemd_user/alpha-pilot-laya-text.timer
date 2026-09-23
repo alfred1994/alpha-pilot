@@ -1,0 +1,10 @@
+[Unit]
+Description=AlphaPilot Laya 财经文本情绪盘后评分（须盘后当天跑，新闻源不按日期过滤）
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:05:00
+Unit=alpha-pilot-laya-text.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

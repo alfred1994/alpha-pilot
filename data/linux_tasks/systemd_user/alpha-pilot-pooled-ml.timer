@@ -1,0 +1,10 @@
+[Unit]
+Description=AlphaPilot 盘后 pooled ML 影子训练
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 21:10:00
+Unit=alpha-pilot-pooled-ml.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

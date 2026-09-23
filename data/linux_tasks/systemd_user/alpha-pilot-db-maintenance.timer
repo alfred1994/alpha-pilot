@@ -1,0 +1,10 @@
+[Unit]
+Description=AlphaPilot 每日数据库维护
+
+[Timer]
+OnCalendar=*-*-* 23:40:00
+Unit=alpha-pilot-db-maintenance.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

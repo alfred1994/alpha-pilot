@@ -1,0 +1,10 @@
+[Unit]
+Description=AlphaPilot 盘后宽股票池研究同步
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 19:10:00
+Unit=alpha-pilot-research.service
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -3,7 +3,7 @@ set -uo pipefail
 
 PROJECT_DIR='/home/ubuntu/projects/alpha-pilot'
 PYTHON_CMD='python3'
-LOG_FILE='/home/ubuntu/projects/alpha-pilot/logs/closure_repair.log'
+LOG_FILE='/home/ubuntu/projects/alpha-pilot/logs/research_sync.log'
 HERMES_ENV_FILE="${HERMES_ENV_FILE:-$HOME/.hermes/.env}"
 
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -36,8 +36,8 @@ export PYTHONUNBUFFERED=1
 
 
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
-echo "===== $stamp START --closure-repair =====" >> "$LOG_FILE"
-$PYTHON_CMD main.py --closure-repair >> "$LOG_FILE" 2>&1
+echo "===== $stamp START --research-sync =====" >> "$LOG_FILE"
+timeout --kill-after=15s 900s $PYTHON_CMD main.py --research-sync >> "$LOG_FILE" 2>&1
 exit_code=$?
 stamp="$(date '+%Y-%m-%d %H:%M:%S')"
 echo "===== $stamp END exit=$exit_code =====" >> "$LOG_FILE"

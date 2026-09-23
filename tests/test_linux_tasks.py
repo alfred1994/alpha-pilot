@@ -59,6 +59,7 @@ def main():
             "run_closure_repair",
             "run_research_sync",
             "run_pooled_ml",
+            "run_laya_text",
             "install",
             "uninstall",
         ]:
@@ -72,6 +73,7 @@ def main():
         run_closure_repair = _read(paths["run_closure_repair"])
         run_research_sync = _read(paths["run_research_sync"])
         run_pooled_ml = _read(paths["run_pooled_ml"])
+        run_laya_text = _read(paths["run_laya_text"])
         install = _read(paths["install"])
         auto_service = _read(paths["auto_service"])
         auto_restart_service = _read(paths["auto_restart_service"])
@@ -102,6 +104,9 @@ def main():
         assert_true("main.py --closure-repair" in run_closure_repair, "闭环修复脚本已生成")
         assert_true("main.py --research-sync" in run_research_sync, "研究数据同步脚本已生成")
         assert_true("main.py --train-pooled-model" in run_pooled_ml, "pooled ML训练脚本已生成")
+        assert_true("main.py --laya-text" in run_laya_text, "Laya文本情绪脚本已生成")
+        assert_true("export BROKER_MODE=paper" in run_laya_text, "Laya文本情绪脚本默认模拟盘")
+        assert_true("systemctl --user enable --now alpha-pilot-test-laya-text.timer" in install, "安装脚本启用Laya文本情绪timer")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto.service" in install, "安装脚本启用Auto服务")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto-restart.timer" in install, "安装脚本启用Auto-Restart timer")
         assert_true("systemctl --user enable --now alpha-pilot-test-research.timer" in install, "安装脚本启用研究同步timer")

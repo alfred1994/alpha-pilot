@@ -1,0 +1,18 @@
+[Unit]
+Description=AlphaPilot 盘后 pooled ML 影子训练
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/env bash /home/ubuntu/projects/alpha-pilot/data/linux_tasks/run_pooled_ml.sh
+Environment=BROKER_MODE=paper
+Environment=PYTHONUNBUFFERED=1
+TimeoutStartSec=900
+
+Nice=10
+CPUQuota=300%
+MemoryMax=8G
+IOWeight=50
+Environment=OMP_NUM_THREADS=3
+Environment=OPENBLAS_NUM_THREADS=3
+Environment=MKL_NUM_THREADS=3
