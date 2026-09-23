@@ -275,7 +275,10 @@ def test_dashboard_frontend_uses_trader_journey_and_single_strategy_source():
     with open(os.path.join(project_dir, "web", "static", "js", "modules", "evolution.js"), "r", encoding="utf-8") as file:
         evolution_source = file.read()
 
-    assert_true("决策旅程" in html and "候选观察" in html and "待执行计划" in html, "首页按交易事实展示完整决策旅程")
+    # 决策旅程阶段由 dashboard.js 的 FUNNEL_STAGES 渲染进 journey-funnel 容器
+    assert_true("决策旅程" in html and "journey-funnel" in html
+                and "候选观察" in dashboard_source and "待执行计划" in dashboard_source,
+                "首页按交易事实展示完整决策旅程")
     assert_true("观察结论不等于交易信号" in html, "首页明确区分HOLD观察与BUY/SELL信号")
     assert_true("当前与下一交易日" in html, "当前策略与待生效策略同时展示")
     assert_true("activeDirective || pendingDirective" not in dashboard_source, "首页不再用当前策略覆盖明日策略")
