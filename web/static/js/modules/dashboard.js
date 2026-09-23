@@ -222,6 +222,27 @@ export class DashboardTab {
         this.setText('trade-count', `历史成交 ${totalTrades} 笔`);
     }
 
+    // 风险线：优先展示移动止损（更贴近当前行情），否则展示建仓时止损线。
+    // 返回 null 表示两条线都不可用，不渲染风险行。
+    riskLineCell(label, price, current, kind) {
+        if (!this.isKnownNumber(price) || !current) return null;
+        const value = Number(price);
+        // 止损线在现价下方：距离 = (现价-线)/现价，<=0 表示已跌破；
+        // 止盈线在现价上方：距离 = (线-现价)/现价，<=0 表示已达线。
+        const distance = kind === 'stop' ? (current - value) / current : (value - current) / current;
+        let state = '';
+        let note;
+        if (kind === 'stop') {
+            if (distance <= 0) { state = 'breached'; note = '已触及'; }
+            else if (distance <= 0.02) { state = 'near'; note = `距线 ${(distance * 100).toFixed(1)}%`; }
+            else note = `距线 ${(distance * 100).toFixed(1)}%`;
+        } else {
+            if (distance <= 0) { state = 'near'; note = '已达线'; }
+            else note = `距线 ${(distance * 100).toFixed(1)}%`;
+        }
+        return `<div class="${state}"><span>${label}</span><b>${this.money(value, 2)} · ${note}</b></div>`;
+    }
+
     renderPositions(positions) {
         const container = document.getElementById('positions-list');
         if (!container) return;
@@ -232,6 +253,13 @@ export class DashboardTab {
         container.innerHTML = positions.map(pos => {
             const decision = pos.latest_decision || {};
             const confidence = this.isKnownNumber(decision.confidence) ? `${(Number(decision.confidence) * 100).toFixed(0)}%` : '-';
+            const current = Number(pos.current_price || 0);
+            const trailing = this.isKnownNumber(pos.trailing_stop_price) ? Number(pos.trailing_stop_price) : null;
+            const stopCell = this.riskLineCell(trailing ? '移动止损' : '止损线', trailing ?? pos.stop_loss_price, current, 'stop');
+            const takeCell = this.riskLineCell('止盈线', pos.take_profit_price, current, 'take');
+            const riskRow = (stopCell || takeCell)
+                ? `<div class="position-risk">${stopCell || `<div><span>止损线</span><b>未记录</b></div>`}${takeCell || `<div><span>止盈线</span><b>未记录</b></div>`}</div>`
+                : '';
             return `
                 <article class="position-card">
                     <div class="position-head"><strong>${this.escape(pos.name || pos.code)}</strong><small>${this.escape(pos.code)}</small></div>

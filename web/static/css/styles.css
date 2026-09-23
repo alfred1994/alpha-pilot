@@ -183,6 +183,11 @@ button { color: inherit; }
 .position-numbers span { color: var(--muted); font-size: 9px; }
 .position-numbers b { margin-top: 5px; font-size: 11px; }
 .decision-confidence { margin-top: 12px; color: var(--muted); font-size: 10px; }
+.position-risk { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed rgba(52,66,52,.22); }
+.position-risk > div span { display: block; color: var(--muted); font-size: 9px; }
+.position-risk > div b { display: block; margin-top: 4px; font-size: 11px; }
+.position-risk .near b { color: var(--terracotta); }
+.position-risk .breached b { color: #a63b22; font-weight: 800; }
 
 .table-wrap { overflow-x: auto; margin-top: 18px; }
 table { width: 100%; border-collapse: collapse; min-width: 820px; }
