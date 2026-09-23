@@ -4,11 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AlphaPilot - 个人 AI 交易员</title>
+    <meta name="description" content="AlphaPilot 个人 AI 交易员仪表盘：展示 A 股模拟盘账户净值与收益、AI 候选覆盖与事后验证、决策流水、策略复盘与系统运行健康。模拟盘研究系统，不构成投资建议。">
+    <link rel="canonical" href="https://alphapilot.pp.ua/">
+    <meta property="og:title" content="AlphaPilot - 个人 AI 交易员">
+    <meta property="og:description" content="A 股模拟盘 AI 交易员仪表盘：收益表现、候选验证、决策流水、策略复盘与运行健康。">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://alphapilot.pp.ua/">
     <link rel="icon" href="data:,">
-    <link href="https://fonts.googleapis.com/css2?family=Epilogue:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="vendor/lucide.min.js?v=2026080201"></script>
-    <script src="vendor/echarts.min.js?v=2026080201"></script>
-    <link rel="stylesheet" href="css/styles.css?v=2026092301">
+    <script src="vendor/lucide.min.js?v=2026080201" defer></script>
+    <script src="vendor/echarts.min.js?v=2026080201" defer></script>
+    <link rel="stylesheet" href="css/styles.css?v=2026092401">
     <link rel="stylesheet" href="css/research.css?v=2026091702">
 </head>
 <body>
@@ -134,7 +139,7 @@
             </section>
 
             <section class="tab-content" id="tab-returns">
-                <div class="page-heading"><div><span class="eyebrow">账户结果与同期市场</span><h1>收益表现</h1></div><p>当前展示资产变化口径，未调整出入金，不等于已核实投资收益。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">账户结果与同期市场</span><h2>收益表现</h2></div><p>当前展示资产变化口径，未调整出入金，不等于已核实投资收益。</p></div>
                 <div class="filter-bar research-filters">
                     <button data-return-period="week">本周</button><button data-return-period="month">本月</button><button data-return-period="year">今年</button>
                     <label>开始日期 <input id="returns-start" type="date"></label><label>结束日期 <input id="returns-end" type="date"></label><button id="returns-apply">查询 / 刷新</button>
@@ -154,7 +159,7 @@
             </section>
 
             <section class="tab-content" id="tab-research">
-                <div class="page-heading"><div><span class="eyebrow">从过程到结果</span><h1>候选覆盖与事后验证</h1></div><p>看清候选为何停留在观察，以及当时判断后的表现。不是交易建议。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">从过程到结果</span><h2>候选覆盖与事后验证</h2></div><p>看清候选为何停留在观察，以及当时判断后的表现。不是交易建议。</p></div>
                 <div class="filter-bar research-filters">
                     <label>开始日期 <input type="date" id="research-start"></label>
                     <label>结束日期 <input type="date" id="research-end"></label>
@@ -179,7 +184,7 @@
             </section>
 
             <section class="tab-content" id="tab-decisions">
-                <div class="page-heading"><div><span class="eyebrow">判断不等于交易</span><h1>决策流水</h1></div><p>HOLD 是观察结论，只有 BUY 和 SELL 才是交易信号。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">判断不等于交易</span><h2>决策流水</h2></div><p>HOLD 是观察结论，只有 BUY 和 SELL 才是交易信号。</p></div>
                 <section class="metric-grid decision-metrics">
                     <article class="metric-card"><span>有效判断</span><strong id="dec-total-count">-</strong><small>本页统计，已过滤模型无响应</small></article>
                     <article class="metric-card"><span>交易信号</span><strong id="dec-signal-count">-</strong><small id="dec-buy-sell-ratio">-</small></article>
@@ -201,7 +206,7 @@
             </section>
 
             <section class="tab-content" id="tab-evolution">
-                <div class="page-heading"><div><span class="eyebrow">唯一策略事实源</span><h1>策略与复盘</h1></div><p>查看当前执行策略、下一交易日变化，以及上一假设是否被事实支持。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">唯一策略事实源</span><h2>策略与复盘</h2></div><p>查看当前执行策略、下一交易日变化，以及上一假设是否被事实支持。</p></div>
                 <div class="two-column strategy-full-grid">
                     <article class="card strategy-card" id="strategy-current-card"><div class="strategy-card-head"><span>当前执行</span><small id="strategy-current-date">-</small></div><h2 id="strategy-current-intent">等待策略</h2><p id="strategy-current-summary">-</p><dl id="strategy-current-params"></dl><div class="strategy-copy"><strong>当前假设</strong><p id="strategy-current-hypothesis">-</p></div></article>
                     <article class="card strategy-card pending" id="strategy-pending-card"><div class="strategy-card-head"><span>下一交易日</span><small id="strategy-pending-date">-</small></div><h2 id="strategy-pending-intent">尚未生成</h2><p id="strategy-pending-summary">-</p><dl id="strategy-pending-params"></dl><div class="strategy-copy"><strong>调整依据</strong><p id="strategy-pending-rationale">-</p></div></article>
@@ -219,7 +224,7 @@
             </section>
 
             <section class="tab-content" id="tab-health">
-                <div class="page-heading"><div><span class="eyebrow">服务存活不等于能力完整</span><h1>运行健康</h1></div><p>分别检查行情、信号、LLM、计划执行、日终复盘和自动循环。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">服务存活不等于能力完整</span><h2>运行健康</h2></div><p>分别检查行情、信号、LLM、计划执行、日终复盘和自动循环。</p></div>
                 <div class="health-grid" id="health-capability-grid"><div class="empty-state">正在读取能力状态</div></div>
                 <div class="two-column">
                     <article class="card"><div class="section-heading compact"><div><span class="eyebrow">需要关注</span><h2>当前提醒</h2></div></div><div class="fact-list" id="health-warning-list"><div class="empty-state">暂无提醒</div></div></article>

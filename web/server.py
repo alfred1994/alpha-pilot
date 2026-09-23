@@ -61,7 +61,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         if is_prod:
             response.headers.setdefault(
                 "Content-Security-Policy",
-                "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
+                "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
             )
             if request.url.path.startswith("/api/") or request.url.path == "/" or request.url.path.endswith((".html", ".js", ".css")):
                 response.headers.setdefault("Cache-Control", "no-store")
