@@ -51,6 +51,14 @@ def main():
         os.unlink(control_path)
         temp_paths.append(control_path)
 
+        # 临时锁文件：不落到默认生产锁 data/auto_trader.lock，
+        # 否则在常驻自动盘持锁的服务器上自愈循环会因锁冲突被跳过。
+        lock_file = tempfile.NamedTemporaryFile(suffix="_auto_doctor.lock", delete=False)
+        lock_path = lock_file.name
+        lock_file.close()
+        os.unlink(lock_path)
+        temp_paths.append(lock_path)
+
         now = datetime.now().replace(microsecond=0)
         today = now.strftime("%Y-%m-%d")
         stale_ts = now.timestamp() - 3600
@@ -101,6 +109,7 @@ def main():
             state_file=state_path,
             db_path=db_path,
             control_file=control_path,
+            lock_file=lock_path,
             services={
                 "check_stops_once": fake_check_stops_once,
                 "run_scan": fake_run_scan,
@@ -150,6 +159,7 @@ def main():
             state_file=state_path,
             db_path=db_path,
             control_file=control_path,
+            lock_file=lock_path,
             services={
                 "check_stops_once": fake_check_stops_once,
                 "run_scan": broken_run_scan,
@@ -226,6 +236,7 @@ def main():
             state_file=clean_state_path,
             db_path=clean_db_path,
             control_file=doctor_paused_control_path,
+            lock_file=lock_path,
             repair_closure=False,
             max_loop_lag_sec=120,
             max_scan_lag_sec=120,
@@ -253,6 +264,7 @@ def main():
             state_file=clean_state_path,
             db_path=clean_db_path,
             control_file=manual_paused_control_path,
+            lock_file=lock_path,
             repair_closure=False,
             max_loop_lag_sec=120,
             max_scan_lag_sec=120,
@@ -280,6 +292,7 @@ def main():
             state_file=clean_state_path,
             db_path=clean_db_path,
             control_file=clean_control_path,
+            lock_file=lock_path,
             repair_closure=True,
             closure_repair_func=fake_closure_repair,
             max_loop_lag_sec=120,

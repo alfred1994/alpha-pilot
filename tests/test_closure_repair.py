@@ -59,6 +59,12 @@ def _cleanup_db(path: str):
 
 def main():
     db_path = _temp_db()
+    # 临时锁文件：不落到默认生产锁 data/auto_trader.lock，
+    # 否则在常驻自动盘持锁的服务器上复盘自愈会被跳过，测试失真。
+    lock_file = tempfile.NamedTemporaryFile(suffix="_closure_repair.lock", delete=False)
+    lock_path = lock_file.name
+    lock_file.close()
+    os.unlink(lock_path)
     try:
         calls = []
         before_scan = _closure("盘中", "盘中扫描")
@@ -77,6 +83,7 @@ def main():
             date="2026-06-09",
             now=datetime(2026, 6, 9, 10, 0, 0),
             db_path=db_path,
+            lock_file=lock_path,
             closure_func=scan_closure_func,
             observe_func=fake_observe,
         )
@@ -109,6 +116,7 @@ def main():
             date="2026-06-09",
             now=datetime(2026, 6, 9, 15, 10, 0),
             db_path=db_path,
+            lock_file=lock_path,
             closure_func=review_closure_func,
             review_func=fake_review,
         )
@@ -127,6 +135,7 @@ def main():
             date="2026-06-09",
             now=datetime(2026, 6, 9, 15, 20, 0),
             db_path=db_path,
+            lock_file=lock_path,
             closure_func=review_gap_always,
             review_func=fake_review_once,
         )
@@ -147,6 +156,7 @@ def main():
             date="2026-06-09",
             now=datetime(2026, 6, 9, 15, 30, 0),
             db_path=db_path,
+            lock_file=lock_path,
             closure_func=wait_closure_func,
             observe_func=fake_observe,
         )
@@ -156,6 +166,7 @@ def main():
         print("正式模拟盘闭环缺口自愈测试通过")
     finally:
         _cleanup_db(db_path)
+        _cleanup_db(lock_path)
 
 
 if __name__ == "__main__":
