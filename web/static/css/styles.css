@@ -227,6 +227,25 @@ td:last-child { max-width: 360px; line-height: 1.55; }
 .evaluation-verdict.supported { background: var(--leaf); color: var(--sand); }
 .evaluation-verdict.refuted { background: var(--terracotta); color: var(--sand); }
 .evaluation-card p { color: var(--muted); font-size: 11px; line-height: 1.65; }
+.shadow-status { color: var(--muted); font-size: 10px; }
+.shadow-board { display: grid; gap: 10px; margin-top: 18px; }
+.shadow-head, .shadow-row { display: grid; grid-template-columns: 200px 1.4fr 120px 100px 1fr; gap: 14px; align-items: center; }
+.shadow-head { padding: 0 14px; color: var(--muted); font-size: 9px; }
+.shadow-row { padding: 13px 14px; border-radius: var(--radius-md); background: rgba(139,157,131,.1); border: 1px solid transparent; }
+.shadow-row.baseline { background: rgba(198,107,61,.08); border-color: rgba(198,107,61,.28); }
+.shadow-id { display: flex; justify-content: space-between; align-items: center; gap: 10px; min-width: 0; }
+.shadow-id strong { display: block; font-size: 12px; }
+.shadow-id small { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; }
+.shadow-return { display: grid; grid-template-columns: 1fr 68px; gap: 10px; align-items: center; }
+.shadow-bar-track { height: 8px; border-radius: 4px; background: rgba(52,66,52,.1); overflow: hidden; }
+.shadow-bar { height: 100%; border-radius: 4px; background: var(--leaf); }
+.shadow-bar.pos { background: var(--terracotta); }
+.shadow-return strong { font-size: 12px; text-align: right; }
+.shadow-cell span { display: block; color: var(--muted); font-size: 9px; }
+.shadow-cell strong { display: block; margin-top: 3px; font-size: 12px; }
+.shadow-badge { flex: 0 0 auto; padding: 5px 10px; border-radius: 999px; background: rgba(107,114,94,.14); color: var(--muted); font-size: 9px; font-weight: 700; white-space: nowrap; }
+.shadow-badge.mature { background: rgba(85,113,91,.16); color: var(--leaf); }
+.shadow-badge.candidate { background: var(--terracotta); color: var(--sand); }
 .lesson-item { padding: 18px; border-radius: var(--radius-md); background: rgba(139,157,131,.12); }
 .lesson-head { display: flex; justify-content: space-between; gap: 12px; font-size: 10px; }
 .lesson-head span:last-child { color: var(--muted); }
@@ -264,6 +283,7 @@ td:last-child { max-width: 360px; line-height: 1.55; }
     .capability-rail { grid-template-columns: repeat(3, 1fr); }
     .trader-brief { grid-template-columns: 1fr; }
     .health-grid { grid-template-columns: repeat(2, 1fr); }
+    .shadow-head, .shadow-row { grid-template-columns: 160px 1.2fr 100px 84px 1fr; gap: 10px; }
 }
 @media (max-width: 760px) {
     .page-wrap { width: min(100% - 24px, 1480px); padding-top: 20px; }
@@ -284,6 +304,9 @@ td:last-child { max-width: 360px; line-height: 1.55; }
     .strategy-handoff { grid-template-columns: 1fr; }
     .strategy-handoff > svg { transform: rotate(90deg); justify-self: center; }
     .strategy-card dl, .position-numbers { grid-template-columns: 1fr 1fr; }
+    .shadow-head { display: none; }
+    .shadow-row { grid-template-columns: 1fr 1fr; }
+    .shadow-id, .shadow-return { grid-column: 1 / -1; }
 }
 @media (max-width: 460px) {
     .capability-rail, .metric-grid, .health-grid { grid-template-columns: 1fr; }
