@@ -22,6 +22,11 @@ RESEARCH_HISTORY_DAYS = int(os.environ.get("RESEARCH_HISTORY_DAYS", "730"))
 RESEARCH_ITEM_TIMEOUT = int(os.environ.get("RESEARCH_ITEM_TIMEOUT", "95"))
 RESEARCH_JOB_TIMEOUT = int(os.environ.get("RESEARCH_JOB_TIMEOUT", "840"))
 RESEARCH_LOCK_FILE = os.path.join(DATA_DIR, "research_sync.lock")
+# IPO容忍度：窗口内上市的股票起点缺口是其生命周期使然。自首根K线起
+# 数据密集且无内部间隙时按"完整的新上市标的"计为同步成功，避免这类
+# 标的永久占据重试队列、让整批结果永远停在 partial。
+RESEARCH_SYNC_NEW_LISTING_MIN_SPAN_DENSITY = float(
+    os.environ.get("RESEARCH_SYNC_NEW_LISTING_MIN_SPAN_DENSITY", "0.90"))
 
 
 def _load_universe(path: str = None) -> Dict:
@@ -175,6 +180,42 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
     return payload
 
 
+def _span_trading_days(first_date: str, last_date: str) -> int:
+    """统计 [first_date, last_date] 内交易日数量(含端点，动态交易日历)。"""
+    from data.history import _load_year_trading_days
+    d = datetime.strptime(str(first_date)[:10], "%Y-%m-%d").date()
+    end = datetime.strptime(str(last_date)[:10], "%Y-%m-%d").date()
+    count = 0
+    while d <= end:
+        if d.strftime("%Y%m%d") in _load_year_trading_days(d.year):
+            count += 1
+        d += timedelta(days=1)
+    return count
+
+
+def _is_new_listing_coverage(df, attrs) -> bool:
+    """判断 incomplete 是否属于"窗口内上市"而非源端缺数。
+
+    起点缺口超出容忍 + 无内部交易日间隙 + 末端新鲜 + 自首根K线起的
+    交易日密度达标：数据在其可用生命周期内完整，重试无法补齐上市前
+    的历史，继续按 incomplete 重试只会永久占据重试队列。
+    """
+    from data.history import (
+        HISTORY_COVERAGE_GRACE_DAYS,
+        HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS,
+    )
+    if int(attrs.get("missing_start_days") or 0) <= HISTORY_COVERAGE_GRACE_DAYS:
+        return False
+    if int(attrs.get("coverage_max_internal_gap_trading_days") or 0) > HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS:
+        return False
+    if int(attrs.get("coverage_end_gap_days") or 0) > HISTORY_COVERAGE_GRACE_DAYS:
+        return False
+    span_days = _span_trading_days(df["date"].min(), df["date"].max())
+    if span_days <= 0:
+        return False
+    return len(df) / span_days >= RESEARCH_SYNC_NEW_LISTING_MIN_SPAN_DENSITY
+
+
 def _sync_one(item: Dict, start_date: str, end_date: str) -> Dict:
     code = str(item.get("code") or "")
     try:
@@ -197,7 +238,11 @@ def _sync_one(item: Dict, start_date: str, end_date: str) -> Dict:
         missing_start = int(attrs.get("missing_start_days") or 0)
         if coverage_status == "ok" and cache_stale:
             coverage_status = "stale"
-        return {
+        new_listing = False
+        if coverage_status == "incomplete" and _is_new_listing_coverage(df, attrs):
+            coverage_status = "ok"
+            new_listing = True
+        row = {
             "code": code,
             "status": coverage_status,
             "rows": int(len(df)),
@@ -207,6 +252,9 @@ def _sync_one(item: Dict, start_date: str, end_date: str) -> Dict:
             "max_internal_gap_days": int(attrs.get("coverage_max_internal_gap_days") or 0),
             "observed_density": float(attrs.get("coverage_observed_density") or 0),
         }
+        if new_listing:
+            row["new_listing"] = True
+        return row
     except Exception as exc:
         return {"code": code, "status": "error", "error": str(exc)[:160], "rows": 0}
 

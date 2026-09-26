@@ -97,6 +97,27 @@ def main():
         )
         assert_true(coverage["status"] == "stale", "缺失末端历史不会被报告为ok")
 
+        # 窗口内上市: 起点缺口是标的生命周期使然，不是源端缺数，
+        # 不得永久占据重试队列(否则整批结果永远停在 partial)。
+        from scheduler.market_calendar import _fallback_calendar_with_holidays
+        history._trading_calendar_cache = {
+            year: _fallback_calendar_with_holidays(year) for year in (2024, 2025, 2026)
+        }
+        ipo_dates = pd.bdate_range("2026-07-13", "2026-09-24").strftime("%Y-%m-%d")
+        history.get_daily = lambda *args, **kwargs: pd.DataFrame({"date": ipo_dates, "close": 10})
+        new_listing = research_universe._sync_one({"code": "301583"}, "2024-09-27", "2026-09-24")
+        assert_true(new_listing["status"] == "ok", "窗口内上市且数据密集计为同步成功")
+        assert_true(new_listing.get("new_listing") is True, "新上市标的显式标记便于观测")
+        assert_true(new_listing["missing_start_days"] > 10, "起点缺口如实保留供观测")
+
+        # 中段缺口两周以上仍是数据缺失，不得按新上市放行。
+        hole_all = list(pd.bdate_range("2026-05-04", "2026-09-24").strftime("%Y-%m-%d"))
+        hole_dates = [d for d in hole_all if not ("2026-05-26" <= d <= "2026-06-19")]
+        history.get_daily = lambda *args, **kwargs: pd.DataFrame({"date": hole_dates, "close": 10})
+        hole = research_universe._sync_one({"code": "002081"}, "2024-09-27", "2026-09-24")
+        assert_true(hole["status"] == "incomplete", "中段两周以上缺口不按新上市放行")
+        assert_true("new_listing" not in hole, "数据缺失保持incomplete标记")
+
         # 两个失败重试项不能占满两个槽位；游标必须持续带动未重试项轮转。
         fair_path = f"{path}.fair"
         fair_payload = {
