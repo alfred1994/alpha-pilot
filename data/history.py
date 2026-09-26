@@ -1,12 +1,13 @@
 """
-历史数据模块 - 同花顺 + Baostock + 长桥 + SQLite缓存
+历史数据模块 - 同花顺 + 腾讯KT + 长桥 + Baostock + SQLite缓存
 适合获取日线/周线/月线/分钟线历史数据
 
 数据获取优先级:
     1. SQLite本地缓存
     2. 同花顺API（显式启用且已配置）
-    3. 长桥API（如已配置）
-    4. Baostock（兜底）
+    3. 腾讯KT日线（ifzq.gtimg.cn 前复权，日内链路同源）
+    4. 长桥API（如已配置）
+    5. Baostock（兜底）
 """
 import baostock as bs
 import math
@@ -31,9 +32,60 @@ HISTORY_CACHE_MAX_STALE_DAYS = int(os.environ.get("HISTORY_CACHE_MAX_STALE_DAYS"
 HISTORY_COVERAGE_GRACE_DAYS = int(os.environ.get("HISTORY_COVERAGE_GRACE_DAYS", "10"))
 HISTORY_COVERAGE_MIN_DENSITY = float(os.environ.get("HISTORY_COVERAGE_MIN_DENSITY", "0.20"))
 
+# 内部间隙按【交易日】计数的容忍度：A股最长法定休市(春节)约6个交易日，
+# 10个交易日可容纳任何节假日，同时仍能拦截两周以上的真实数据空洞
+# (严重停牌/源端缺数据)。旧版按日历日计间隙(容忍10天)，2026年春节
+# (02-13→02-24，11个日历日)会把完整数据整段误判为 incomplete。
+HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS = int(
+    os.environ.get("HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS", "10"))
+
+# 逐年交易日集合缓存(多年度)。_assess_daily_coverage 的间隙检查会跨年份
+# 查询交易日历；这里独立于 market_calendar 的单年缓存，避免自动盘循环
+# (当前年) 与日线覆盖检查(历史年份) 互相驱逐、反复触发 Baostock 查询。
+_trading_calendar_cache: dict = {}
+
 # 字段映射
 DAILY_FIELDS = "date,code,open,high,low,close,preclose,volume,amount,turn,pctChg,peTTM,pbMRQ,psTTM,pcfNcfTTM"
 DAILY_SIMPLE_FIELDS = "date,code,open,high,low,close,volume,amount,turn,pctChg"
+
+
+def _load_year_trading_days(year: int) -> set:
+    """加载指定年份交易日集合(带多年度缓存)。
+
+    优先复用 scheduler.market_calendar 的既有链路(Baostock → 本地节假日表 →
+    工作日兜底)；热路径只给 Baostock 10秒超时，服务过载时快速降级到
+    本地节假日表，不阻塞日线获取。
+    """
+    if year in _trading_calendar_cache:
+        return _trading_calendar_cache[year]
+    days = None
+    try:
+        from scheduler.market_calendar import _load_trading_calendar
+        days = _load_trading_calendar(year, timeout=10)
+    except Exception as exc:
+        logger.debug("交易日历加载失败(%s): %s", year, type(exc).__name__)
+    if not days:
+        # 日历模块整体不可用时的最后兜底：周一至周五为交易日
+        # (会把节假日误判为交易日，但春节缺口也只计6个交易日，仍在容忍度内)
+        d = datetime(year, 1, 1)
+        days = set()
+        while d.year == year:
+            if d.weekday() < 5:
+                days.add(d.strftime("%Y%m%d"))
+            d += timedelta(days=1)
+    _trading_calendar_cache[year] = days
+    return days
+
+
+def _count_trading_days_between(start_day, end_day) -> int:
+    """统计开区间 (start_day, end_day) 内的交易日数量(动态节假日)。"""
+    count = 0
+    d = start_day + timedelta(days=1)
+    while d < end_day:
+        if d.strftime("%Y%m%d") in _load_year_trading_days(d.year):
+            count += 1
+        d += timedelta(days=1)
+    return count
 
 
 def _assess_daily_coverage(df: pd.DataFrame, start_date: str, end_date: str) -> Optional[pd.DataFrame]:
@@ -88,6 +140,20 @@ def _assess_daily_coverage(df: pd.DataFrame, start_date: str, end_date: str) -> 
     ordered_dates = dates.sort_values().reset_index(drop=True)
     internal_gaps = ordered_dates.diff().dt.days.dropna()
     max_internal_gap_days = int(internal_gaps.max()) if not internal_gaps.empty else 0
+    # 内部间隙按交易日计数(动态交易日历，节假日不计入)：法定长假
+    # (如春节11个日历日/6个交易日)不再是缺口，两周以上的真实数据空洞
+    # (严重停牌/源端缺数)仍会被拦截。仅对日历间隙>3天的相邻对查日历，
+    # 正常连续交易日与周末无需查询。
+    max_internal_gap_trading_days = 0
+    for i in range(1, len(ordered_dates)):
+        prev_day = ordered_dates.iloc[i - 1].date()
+        cur_day = ordered_dates.iloc[i].date()
+        if (cur_day - prev_day).days <= 3:
+            continue
+        max_internal_gap_trading_days = max(
+            max_internal_gap_trading_days,
+            _count_trading_days_between(prev_day, cur_day),
+        )
     # 密度必须相对完整请求窗口计算，而不是已返回数据的首尾；否则一根
     # 位于短窗口中间的数据会把分母缩成 1 并被误判为完整。使用工作日只是
     # 无网络的保守下界：节假日/停牌会被标记 incomplete，而不会伪造齐全。
@@ -97,7 +163,7 @@ def _assess_daily_coverage(df: pd.DataFrame, start_date: str, end_date: str) -> 
     if end_gap_days > HISTORY_COVERAGE_GRACE_DAYS:
         status = "stale"
     elif (missing_start_days > HISTORY_COVERAGE_GRACE_DAYS
-          or max_internal_gap_days > HISTORY_COVERAGE_GRACE_DAYS
+          or max_internal_gap_trading_days > HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS
           or observed_density < HISTORY_COVERAGE_MIN_DENSITY):
         status = "incomplete"
     frame = frame.sort_values("date").reset_index(drop=True)
@@ -108,6 +174,7 @@ def _assess_daily_coverage(df: pd.DataFrame, start_date: str, end_date: str) -> 
         coverage_latest=latest.strftime("%Y-%m-%d"),
         coverage_end_gap_days=end_gap_days,
         coverage_max_internal_gap_days=max_internal_gap_days,
+        coverage_max_internal_gap_trading_days=max_internal_gap_trading_days,
         coverage_expected_weekdays=expected_weekdays,
         coverage_observed_density=observed_density,
         missing_start_days=missing_start_days,
@@ -402,6 +469,49 @@ def _try_hithink(code: str, start_date: str, end_date: str,
     return None
 
 
+def _try_kt_daily(code: str, start_date: str, end_date: str,
+                  adjust: str = "qfq") -> Optional[pd.DataFrame]:
+    """
+    可选腾讯KT日线源(ifzq.gtimg.cn 前复权)；失败不改变已有源的降级顺序。
+
+    与日内1分钟线同源，前缀覆盖(含301/302段)已验证；单请求最多1000根，
+    足够覆盖研究任务的730天区间。已知限制：腾讯契约无已验证成交额字段，
+    amount/turn 落 NULL(同花顺恢复后其行会覆盖回完整字段)。
+    """
+    if adjust != "qfq":
+        return None
+    try:
+        from data.kt_realtime import get_kt_client
+        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        span_days = max(1, (end - start).days)
+        # 约244个交易日/年，上浮10%余量并加30根安全边距，上限取API的1000
+        count = min(1000, int(span_days * 0.7) + 30)
+        raw = get_kt_client().get_kline(code, period="d", count=count)
+        if raw is None or raw.empty:
+            return None
+        if raw.attrs.get("adjustment") != "qfq":
+            logger.warning(f"腾讯日线无前复权数据，回退已有源: {code}")
+            return None
+        frame = pd.DataFrame({
+            "date": raw["data_date"].astype(str),
+            "open": raw["open"].astype(float),
+            "high": raw["high"].astype(float),
+            "low": raw["low"].astype(float),
+            "close": raw["close"].astype(float),
+            "volume": raw["volume_raw"].astype(float),
+            "amount": raw["amount_yuan"].astype(float),
+            "turn": float("nan"),
+        })
+        frame["pctChg"] = (frame["close"].pct_change() * 100).round(4)
+        frame.attrs["adjust"] = adjust
+        frame.attrs["source"] = "kt"
+        return frame
+    except Exception as exc:
+        logger.warning(f"腾讯日线不可用，回退已有源: {type(exc).__name__}")
+    return None
+
+
 def _try_longbridge(code: str, start_date: str, end_date: str,
                     adjust: str = "qfq") -> Optional[pd.DataFrame]:
     """
@@ -472,9 +582,11 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
         if status == "ok" or (status == "incomplete" and not require_full_range):
             return frame
         logger.warning(
-            "历史数据覆盖不足: %s source=%s status=%s latest=%s end_gap=%sd start_gap=%sd",
+            "历史数据覆盖不足: %s source=%s status=%s latest=%s end_gap=%sd "
+            "start_gap=%sd internal_gap=%s交易日",
             code, source, status, frame.attrs.get("coverage_latest"),
             frame.attrs.get("coverage_end_gap_days"), frame.attrs.get("missing_start_days"),
+            frame.attrs.get("coverage_max_internal_gap_trading_days"),
         )
         degraded.append(frame)
         return None
@@ -495,7 +607,13 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
             _save_to_cache(code, df, adjust, source="hithink")
             return df
 
-        # 同花顺未配置、失败或不支持时，保持原有回退。
+        # 同花顺未配置、失败或不支持时，先尝试日内同源的腾讯KT日线。
+        df = accept_source(_try_kt_daily(code, start_date, end_date, adjust), "kt")
+        if df is not None:
+            _save_to_cache(code, df, adjust, source="kt")
+            return df
+
+        # 再回退长桥(仅365根窗口)与 Baostock(兜底)。
         df = accept_source(_try_longbridge(code, start_date, end_date, adjust), "longport")
         if df is not None:
             _save_to_cache(code, df, adjust, source="longport")

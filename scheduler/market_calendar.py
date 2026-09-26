@@ -51,7 +51,7 @@ _HOLIDAY_WEEKDAYS: dict = {
     },
     2026: {
         "0101", "0102",                            # 元旦(1/1-1/3)
-        "0216", "0217", "0218", "0219", "0220",    # 春节(2/15-2/22)
+        "0216", "0217", "0218", "0219", "0220", "0223",  # 春节(2/15-2/22,交易所实际休市至2/23,指数K线核实)
         "0406",                                    # 清明(4/4-4/6)
         "0501", "0504", "0505",                    # 劳动节(5/1-5/5)
         "0619",                                    # 端午(6/19-6/21)
@@ -79,12 +79,14 @@ def _fallback_calendar_with_holidays(year: int) -> set:
     return dates
 
 
-def _load_trading_calendar(year: int = None) -> set:
+def _load_trading_calendar(year: int = None, timeout: int = None) -> set:
     """
     加载交易日历(带缓存)
 
     Args:
         year: 年份, 默认当前年
+        timeout: Baostock查询超时秒数; None用默认值。热路径调用方
+            (如日线覆盖检查)应传短超时, 失败自动降级本地节假日表。
 
     Returns:
         set of str: 交易日期集合, 格式 "YYYYMMDD"
@@ -100,7 +102,10 @@ def _load_trading_calendar(year: int = None) -> set:
 
     try:
         from data.history import query_baostock_trade_dates
-        raw = query_baostock_trade_dates(f"{year}-01-01", f"{year}-12-31")
+        if timeout is None:
+            raw = query_baostock_trade_dates(f"{year}-01-01", f"{year}-12-31")
+        else:
+            raw = query_baostock_trade_dates(f"{year}-01-01", f"{year}-12-31", timeout=timeout)
         data = (raw or {}).get("data") or []
 
         if data:
