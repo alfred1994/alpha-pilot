@@ -9,6 +9,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
 from execution.broker import PaperBrokerAdapter
+from risk.system_risk import SystemRiskController
 from scheduler.pipeline import execute_trade_plan
 
 
@@ -17,6 +18,10 @@ def main():
         account_path = os.path.join(d, "paper.json")
         db_path = os.path.join(d, "quant.db")
         broker = PaperBrokerAdapter(account_file=account_path, db_path=db_path)
+        # 隔离风控状态文件: 临时账户的资产口径不得写入生产 system_risk.json
+        # (曾把 INITIAL_CAPITAL 当作当日总资产，误触发单日亏损熔断)。
+        risk_controller = SystemRiskController(
+            state_file=os.path.join(d, "system_risk.json"))
 
         def quote(codes):
             return [SimpleNamespace(
@@ -45,6 +50,7 @@ def main():
             market_status="盘中",
             update_memory=False,
             allow_historical_plan=True,
+            system_risk_controller=risk_controller,
         )
         assert not result.errors, result.errors
         assert broker.get_positions()["113000"]["shares"] % 10 == 0
