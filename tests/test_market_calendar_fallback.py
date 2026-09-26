@@ -37,7 +37,8 @@ def test_holiday_table_fallback():
         assert_true(mc.is_trading_day("20251009"), "10/9是交易日")
         assert_true(not mc.is_trading_day("20260101"), "2026元旦不是交易日")
         assert_true(not mc.is_trading_day("20260217"), "2026春节(2/17)不是交易日")
-        assert_true(mc.is_trading_day("20260223"), "2026春节后首个周一(2/23)是交易日")
+        assert_true(not mc.is_trading_day("20260223"), "2026春节休市延续(2/23)不是交易日")
+        assert_true(mc.is_trading_day("20260224"), "2026春节后首个交易日是2/24(周二)")
         assert_true(mc.next_trading_day("20250127") == "20250205",
                     f"春节跨越: 1/27的下一交易日是2/5 (got {mc.next_trading_day('20250127')})")
         assert_true(mc.prev_trading_day("20250101") == "20241231",

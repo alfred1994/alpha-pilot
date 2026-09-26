@@ -31,7 +31,7 @@ class HiThinkIntegrationTests(unittest.TestCase):
     def test_daily_cache_source_and_units(self):
         client = Mock()
         client.get_daily.return_value = self.frame()
-        with patch("data.hithink.get_client", return_value=client), patch.object(history, "_try_cache", return_value=None), patch.object(history, "_save_to_cache") as save, patch.object(history, "_try_longbridge") as fallback:
+        with patch("data.hithink.get_client", return_value=client), patch.object(history, "_try_cache", return_value=None), patch.object(history, "_try_kt_daily", return_value=None), patch.object(history, "_save_to_cache") as save, patch.object(history, "_try_longbridge") as fallback:
             df = history.get_daily("600519", "20260901", "20260902")
             self.assertEqual(df.iloc[0].volume, 1000)
             self.assertEqual(df.iloc[0].amount, 10500)
@@ -46,7 +46,7 @@ class HiThinkIntegrationTests(unittest.TestCase):
             client.get_daily.side_effect = response if isinstance(response, Exception) else None
             client.get_daily.return_value = response
             legacy = self.frame()
-            with patch("data.hithink.get_client", return_value=client), patch.object(history, "_try_cache", return_value=None), patch.object(history, "_save_to_cache"), patch.object(history, "_try_longbridge", return_value=legacy) as fallback:
+            with patch("data.hithink.get_client", return_value=client), patch.object(history, "_try_cache", return_value=None), patch.object(history, "_try_kt_daily", return_value=None), patch.object(history, "_save_to_cache"), patch.object(history, "_try_longbridge", return_value=legacy) as fallback:
                 result = history.get_daily("600519", "20260901", "20260902")
                 self.assertEqual(result.attrs["source"], "longport")
                 self.assertEqual(result.iloc[0].close, legacy.iloc[0].close)
