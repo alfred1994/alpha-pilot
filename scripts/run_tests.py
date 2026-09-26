@@ -1,7 +1,10 @@
 """Discover and run offline regression scripts in separate Python processes."""
 import argparse
+import atexit
 import ipaddress
 import os
+import shutil
+import tempfile
 from pathlib import Path
 import runpy
 import subprocess
@@ -73,6 +76,12 @@ def main():
         parser.error("--timeout must be positive")
     os.environ.update(BROKER_MODE="paper", ALPHAPILOT_ENV="testing",
                       HITHINK_ENABLED="0", PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
+    # 回归用例一律不得写入生产风控/信号状态文件：曾出现测试把临时账户的
+    # INITIAL_CAPITAL 当作当日净值写进 data/circuit_breaker.json，把最大回撤
+    # 伪造成 -15% 并使熔断阈值失效。隔离目录在本次运行结束后自动清理。
+    state_dir = tempfile.mkdtemp(prefix="alphapilot-test-state-")
+    os.environ["ALPHAPILOT_RISK_STATE_DIR"] = state_dir
+    atexit.register(shutil.rmtree, state_dir, True)
     if args.run_one:
         return run_one(args.run_one)
     tests = discover_tests(ROOT / "tests")

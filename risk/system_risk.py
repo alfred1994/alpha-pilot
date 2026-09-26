@@ -13,6 +13,7 @@ from config import (
     DAILY_LOSS_LIMIT,
     CONSECUTIVE_LOSS_DAYS,
     POSITION_REDUCE_RATIO,
+    LOSS_STREAK_DEADZONE,
     DATA_DIR,
 )
 
@@ -58,11 +59,15 @@ class SystemRiskController:
         consecutive_loss_days: int = None,
         position_reduce_ratio: float = None,
         state_file: str = None,
+        loss_deadzone: float = None,
     ):
         self.daily_loss_limit = daily_loss_limit if daily_loss_limit is not None else DAILY_LOSS_LIMIT
         self.consecutive_loss_days_threshold = consecutive_loss_days or CONSECUTIVE_LOSS_DAYS
         self.position_reduce_ratio = position_reduce_ratio or POSITION_REDUCE_RATIO
         self.state_file = state_file or SYSTEM_RISK_FILE
+        self.loss_deadzone = (
+            loss_deadzone if loss_deadzone is not None else LOSS_STREAK_DEADZONE
+        )
 
         self.state = SystemRiskState()
 
@@ -167,15 +172,20 @@ class SystemRiskController:
             logger.info(f"当日盈亏修复至{daily_pnl:+.2%}，解除禁止开新仓标记")
 
         # --- 规则2: 连续亏损从日记录幂等重算（而非累加计数） ---
+        # 死区：|日收益率| < LOSS_STREAK_DEADZONE 视为持平，既不打断也不累加连亏。
+        # 收盘估值的取整噪声（实测 -0.003% ≈ -30 元）不应被当成亏损日。
         streak = 0
+        last_date = None
         for record in reversed(records[-60:]):
             pnl = record.get("daily_pnl")
             if pnl is None:
                 break
-            if pnl < 0:
-                streak += 1
-            else:
+            if pnl > -self.loss_deadzone:
                 break
+            # 同一天可能有多条记录（盘中估值），只按交易日计一次
+            if record.get("date") != last_date:
+                streak += 1
+                last_date = record.get("date")
         self.state.consecutive_loss_days = streak
 
         if streak >= self.consecutive_loss_days_threshold:

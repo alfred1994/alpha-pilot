@@ -194,6 +194,39 @@ class DrawdownController:
             ),
         }
 
+    def preview(self, total_assets: float, date: str = None) -> dict:
+        """
+        只读推演：按给定净值算出当前回撤/预警级别，供状态展示使用。
+
+        与 update() 的区别是绝不落盘——"查看风控状态"不应改写峰值或最大回撤，
+        否则一次误算（例如临时账户的 INITIAL_CAPITAL）就会永久污染熔断基线。
+        """
+        if date is None:
+            date = datetime.now().strftime("%Y-%m-%d")
+        peak = max(self.state.peak_value, total_assets)
+        drawdown = (total_assets - peak) / peak if peak > 0 else 0.0
+        snapshot = self.state
+        self.state = DrawdownState(
+            peak_value=peak,
+            current_value=total_assets,
+            current_drawdown=drawdown,
+            max_drawdown=self.state.max_drawdown,
+            max_drawdown_date=self.state.max_drawdown_date,
+            is_circuit_breaker=self.state.is_circuit_breaker,
+            circuit_breaker_until=self.state.circuit_breaker_until,
+        )
+        try:
+            level = self.get_warning_level()
+        finally:
+            self.state = snapshot
+        return {
+            "current_drawdown": drawdown,
+            "max_drawdown": self.state.max_drawdown,
+            "peak_value": peak,
+            "is_circuit_breaker": self.state.is_circuit_breaker,
+            "warning_level": level,
+        }
+
     def get_warning_level(self) -> str:
         """
         获取风险预警级别

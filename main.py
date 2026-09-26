@@ -723,7 +723,7 @@ def cmd_account():
 
 
 def cmd_risk():
-    """查看风控状态"""
+    """查看风控状态（只读，不写入任何风控状态文件）"""
     from risk.drawdown import DrawdownController
     from risk.stop_loss import StopLossManager
     from execution.paper_account import PaperAccount
@@ -731,9 +731,9 @@ def cmd_risk():
     dc = DrawdownController()
     account = PaperAccount()
 
-    # 回撤状态
+    # 只读展示：不调用 dc.update()，避免"查看状态"这一动作改写回撤峰值/最大回撤
     total_assets = account.total_assets()
-    dc.update(total_assets)
+    dc.preview(total_assets)
     print(dc.format_status(total_assets))
 
     # 止损止盈概览

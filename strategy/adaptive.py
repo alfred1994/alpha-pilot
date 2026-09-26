@@ -39,6 +39,25 @@ POSITION_SCALE_MIN = 0.50
 POSITION_SCALE_MAX = 1.20
 
 
+def _coerce_dim_score(raw):
+    """把 dimensions 里的维度取值统一成数值分数。
+
+    落库形态有两种：裸数字（signal_cache 精简形态）和
+    {"score": 41.2, "confidence": 0.53, "detail": "..."}（完整形态）。
+    其余形态（None、字符串、嵌套 dict）返回 None，由调用方跳过。
+    """
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return float(raw)
+    if isinstance(raw, dict):
+        value = raw.get("score")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            return None
+        return float(value)
+    return None
+
+
 class AdaptiveEngine:
     """
     自适应策略调整引擎
@@ -377,7 +396,13 @@ class AdaptiveEngine:
                 score = t.get("signal_score", 50)
                 dims = {"overall": score}
 
-            for dim_name, dim_score in dims.items():
+            for dim_name, dim_raw in dims.items():
+                # dimensions 落库形态是 {"technical": {"score": 41.2, "confidence": ...}}，
+                # 直接拿 dict 与阈值比较会抛 TypeError（自适应分析自 2026-07-10 起
+                # 每天 15:05 崩溃、参数再未更新）。此处统一取出数值分数。
+                dim_score = _coerce_dim_score(dim_raw)
+                if dim_score is None:
+                    continue
                 stats = dim_stats[dim_name]
                 stats["total"] += 1
                 stats["scores"].append(dim_score)

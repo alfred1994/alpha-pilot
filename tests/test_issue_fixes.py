@@ -50,11 +50,15 @@ def test_issue1_cb_isolation():
     assert decision_default["position_pct"] <= 0.08
     ok("should_buy 默认仓位不超过 8% 试验上限")
 
-    # should_sell 专用规则
-    sell_stop = should_sell("113000", 96.0, 100.0)  # -4% 跌幅
+    # should_sell 专用规则（CB_STOP_LOSS=-6%，宽于转债噪声带）
+    sell_noise = should_sell("113000", 96.0, 100.0)  # -4% 跌幅
+    assert sell_noise["sell"] is False
+    ok("should_sell -4% 跌幅在噪声带内继续持有")
+
+    sell_stop = should_sell("113000", 93.0, 100.0)  # -7% 跌幅
     assert sell_stop["sell"] is True
     assert "止损" in sell_stop["reason"]
-    ok("should_sell 正确触发 -3% 止损")
+    ok("should_sell 正确触发 -6% 止损")
 
     sell_hold = should_sell("113000", 99.0, 100.0)  # -1% 跌幅
     assert sell_hold["sell"] is False
@@ -67,8 +71,11 @@ def test_issue1_cb_isolation():
         acc = PaperAccount(filepath=acc_file, db_path=db_file)
         # 买入转债 (10张一手, allow_t0=True)
         acc.buy("113000", "测试转债", price=100.0, shares=100, allow_t0=True, trade_unit=10)
-        # 现价 96.5 (-3.5%)
-        triggered = acc.check_stop_conditions({"113000": 96.5})
+        # 现价 96.5 (-3.5%)：噪声带内不触发（CB_STOP_LOSS=-6%）
+        assert acc.check_stop_conditions({"113000": 96.5}) == []
+        ok("PaperAccount -3.5% 在噪声带内不止损")
+        # 现价 93.0 (-7%)：触发可转债专用止损
+        triggered = acc.check_stop_conditions({"113000": 93.0})
         assert len(triggered) == 1
         assert "可转债止损" in triggered[0]["reason"]
         assert "113000" not in acc.positions

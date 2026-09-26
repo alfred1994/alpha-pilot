@@ -38,6 +38,9 @@ from config import (
     FAST_SCAN_LLM_RESULT_TIMEOUT,
     FAST_SCAN_SELL_LLM_TIMEOUT,
     FAST_SCAN_STOCK_PICK_TIMEOUT,
+    DECISION_MIN_BUY_TECHNICAL,
+    MAX_SIGNAL_PRICE_DRIFT,
+    DATA_DIR,
 )
 
 # P2-8: LLM连续超时自动关闭计数器
@@ -94,6 +97,7 @@ class TradePlan:
                     "priority": o.priority,
                     "target_weight": o.target_weight,
                     "max_price": o.max_price,
+                    "ref_price": o.ref_price,
                     "reason": o.reason,
                     "score": o.score,
                     "conviction": o.conviction,
@@ -125,6 +129,7 @@ class TradeOrder:
     priority: int      # 1=最优先
     target_weight: float  # 目标仓位比例 0.0-1.0
     max_price: float   # 最高买入价/最低卖出价
+    ref_price: float = 0.0  # 信号参考价（打分基准）；与实时价偏离过大则放弃该信号
     reason: str = ""
     score: float = 0.0
     conviction: float = 0.0  # 置信度
@@ -237,19 +242,44 @@ def prefetch(candidate_codes: List[str] = None):
 # ═══════════════════════════════════════════════════════════════════
 
 def select_llm_candidates(scored: List[dict], top_k: int, min_score: float,
-                          max_llm_candidates: Optional[int] = None) -> Tuple[List[dict], Dict[str, str]]:
+                          max_llm_candidates: Optional[int] = None,
+                          trading_date: str = None,
+                          stability_tracker=None) -> Tuple[List[dict], Dict[str, str]]:
     """从已打分候选中选出需要 LLM 判断的名单。
 
     与旧的“仅前 top_k”不同：所有综合分过线的候选都可进入判断，
     判断广度由 max_llm_candidates 单独控制，避免把“开仓数量预算”
     错当成“判断名额”。返回 (入选列表, 拒绝原因)。
+
+    两道准入闸门（缺一不可）：
+    1. 技术面硬门槛——技术分是唯一价量维度，缺失或不达标一律不进 LLM，
+       不允许舆情/情绪单独把综合分推过线（见 config.DECISION_MIN_BUY_TECHNICAL）。
+    2. 信号稳定性——需连续 N 轮站上 min_score，滤掉盘中单次尖峰。
     """
+    from strategy.signal_stability import SignalStabilityTracker, technical_gate_score
+
+    tracker = stability_tracker or SignalStabilityTracker()
     selected = []
     hold_reasons: Dict[str, str] = {}
     for s in sorted(scored, key=lambda item: float(item.get("composite") or 0), reverse=True):
         composite = float(s.get("composite") or 0)
+        technical = technical_gate_score(s.get("dimensions"))
+        if technical is None:
+            hold_reasons[s["code"]] = f"HOLD_NO_TECHNICAL(score={composite:.0f})"
+            continue
+        if technical < DECISION_MIN_BUY_TECHNICAL:
+            hold_reasons[s["code"]] = (
+                f"HOLD_TECH_LOW({technical:.0f}<{DECISION_MIN_BUY_TECHNICAL:.0f})"
+            )
+            continue
         if composite < min_score:
             hold_reasons[s["code"]] = f"HOLD_SCORE_LOW({composite:.0f}<{min_score})"
+            continue
+        if not tracker.observe(trading_date or "", s["code"], composite, min_score):
+            hold_reasons[s["code"]] = (
+                f"HOLD_UNCONFIRMED({tracker.streak(s['code'])}/"
+                f"{tracker.required_rounds})"
+            )
             continue
         if max_llm_candidates is not None and len(selected) >= max_llm_candidates:
             hold_reasons[s["code"]] = (
@@ -651,6 +681,7 @@ def fast_scan(
     top_candidates, gate_reasons = select_llm_candidates(
         scored, top_k=top_k, min_score=min_score,
         max_llm_candidates=max_llm_candidates,
+        trading_date=plan.date,
     )
     plan.hold_reasons.update(gate_reasons)
 
@@ -820,6 +851,7 @@ def fast_scan(
             priority=i + 1,
             target_weight=round(weight, 3),
             max_price=s.get("latest_price", 0) * 1.02,  # 最高价=现价+2%
+            ref_price=float(s.get("latest_price", 0) or 0),
             reason=llm_reason or s.get("top_signal", ""),
             score=s["composite"],
             conviction=s.get("llm_confidence", s.get("avg_confidence", 0.5)),
@@ -1335,6 +1367,31 @@ def _trade_plan_identity(plan_data: dict) -> tuple[str, str]:
     return plan_id, payload_hash
 
 
+def _risk_state_dir(broker) -> Optional[str]:
+    """
+    解析风控状态文件所在目录，使其跟随被跟踪账户的存储位置。
+
+    生产模拟盘账户位于 DATA_DIR，返回 None 表示沿用 config 中的生产默认路径；
+    测试/回放用的临时账户位于临时目录，返回该临时目录，使风控状态与账户同源。
+    """
+    override = os.environ.get("ALPHAPILOT_RISK_STATE_DIR")
+    if override:
+        return override
+    account = getattr(broker, "account", None)
+    filepath = getattr(account, "filepath", None)
+    if not filepath:
+        return None
+    directory = os.path.dirname(os.path.abspath(filepath))
+    if os.path.abspath(directory) == os.path.abspath(DATA_DIR):
+        return None  # 生产账户，沿用默认风控路径
+    return directory
+
+
+def _risk_state_file(directory: Optional[str], filename: str):
+    """按目录拼风控状态文件路径；目录为 None 时返回 None 以使用生产默认值。"""
+    return os.path.join(directory, filename) if directory else None
+
+
 def execute_trade_plan(
     plan_data: dict,
     *,
@@ -1447,11 +1504,17 @@ def execute_trade_plan(
     from risk.drawdown import DrawdownController
     from risk.system_risk import SystemRiskController
     pm = PositionManager()
-    dc = drawdown_controller or DrawdownController()
-    sr = system_risk_controller or SystemRiskController()
+    # 风控状态必须与被跟踪的账户同源：临时/回放账户的净值绝不能写进生产
+    # data/circuit_breaker.json 与 data/system_risk.json（曾把 INITIAL_CAPITAL 当作
+    # 真实净值写入，把最大回撤伪造成 -15% 并让熔断阈值失效）。
+    risk_state_dir = _risk_state_dir(broker)
+    dc = drawdown_controller or DrawdownController(
+        state_file=_risk_state_file(risk_state_dir, "circuit_breaker.json"))
+    sr = system_risk_controller or SystemRiskController(
+        state_file=_risk_state_file(risk_state_dir, "system_risk.json"))
 
     total_assets = broker.total_assets()
-    dc.update(total_assets)
+    dc.update(total_assets, date=result.date)
 
     # 系统级风控更新
     sr_result = sr.update(total_assets)
@@ -1613,6 +1676,7 @@ def execute_trade_plan(
             code = order["code"]
             target_weight = order.get("target_weight", 0.10)
             max_price = order.get("max_price", 0)
+            max_signal_price_drift = MAX_SIGNAL_PRICE_DRIFT
 
             # 系统级风控: 禁止开新仓时跳过所有BUY
             if not buy_allowed["allowed"]:
@@ -1657,6 +1721,25 @@ def execute_trade_plan(
                     _audit_order(
                         result, order, "blocked", "超过硬限价",
                         price=current_price, hard_limit=round(hard_limit, 4),
+                    )
+                    continue
+
+            # 双向漂移熔断：信号是按 ref_price 打分的，若实时价已偏离该基准
+            # 超过阈值，说明标的已经走样——涨太多是追高（实测漫步者 09-22
+            # 按 10.02 打分、10.26 成交，白付 2.4%），跌太多则技术前提已失效。
+            # 原实现只挡上行的硬限价，下跌方向完全没有保护。
+            ref_price = float(order.get("ref_price", 0) or 0)
+            if ref_price > 0 and max_signal_price_drift > 0:
+                drift = (current_price - ref_price) / ref_price
+                if abs(drift) > max_signal_price_drift:
+                    result.errors.append(
+                        f"{code} 现价{current_price}偏离信号基准{ref_price:.2f} "
+                        f"{drift:+.2%}，超过{ max_signal_price_drift:.0%}，放弃该信号"
+                    )
+                    _audit_order(
+                        result, order, "blocked", "信号价格漂移超限",
+                        price=current_price, ref_price=round(ref_price, 4),
+                        drift=round(drift, 4),
                     )
                     continue
 

@@ -58,7 +58,11 @@ def test_should_sell_preserves_zero_and_missing_semantics():
     )
     assert premium["sell"] is True and "溢价扩大" in premium["reason"]
 
-    price_stop = should_sell("113000", {"cb_price": 96.5}, 100.0)
+    # 止损阈值 CB_STOP_LOSS=-6%：-3.5% 落在转债噪声带内不再触发，-7% 才止损
+    noise_band = should_sell("113000", {"cb_price": 96.5}, 100.0)
+    assert noise_band["sell"] is False, "-3.5% 在噪声带内不触发止损"
+
+    price_stop = should_sell("113000", {"cb_price": 93.0}, 100.0)
     assert price_stop["sell"] is True and "止损" in price_stop["reason"]
 
 
@@ -184,7 +188,10 @@ def test_pure_evaluation_does_not_sell_but_execution_uses_full_context():
         assert "113000" not in account.positions
 
         price_only_account = _new_account(directory, "price_only")
-        trades = price_only_account.check_stop_conditions({"113000": 96.5})
+        # 无正股上下文时按价格止损，阈值 CB_STOP_LOSS=-6%
+        assert price_only_account.check_stop_conditions({"113000": 96.5}) == [], \
+            "-3.5% 在噪声带内，不触发价格止损"
+        trades = price_only_account.check_stop_conditions({"113000": 93.0})
         assert len(trades) == 1 and "止损" in trades[0]["reason"]
 
 
@@ -219,7 +226,11 @@ def test_scheduled_stop_uses_context_but_falls_back_to_price_stop():
         assert result["sold"] == 0 and "113000" in missing_account.positions
 
         price_account = _new_account(directory, "scheduled_price")
+        # 无正股上下文时按价格止损，阈值 CB_STOP_LOSS=-6%
         result = run_once(price_account, 96.5, {})
+        assert result["sold"] == 0 and "113000" in price_account.positions, \
+            "-3.5% 在噪声带内不触发计划止损"
+        result = run_once(price_account, 93.0, {})
         assert result["sold"] == 1 and "113000" not in price_account.positions
 
 

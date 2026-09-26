@@ -475,6 +475,33 @@ def load_pooled_model(model_path: str = None, metadata_path: str = None,
         )
 
 
+def drop_in_progress_bar(frame: pd.DataFrame, now=None) -> pd.DataFrame:
+    """
+    丢弃尚未收盘的当日 bar。
+
+    盘中链路会把"半成品"当日日线写进 k_daily（成交量/最高价都只走了一半）。
+    模型特征里有量比、换手等对 bar 形态极敏感的列，用半根 bar 反复重算会让
+    同一只票的 ML 分数在盘中大幅漂移（实测单日摆动 42 分），进而让"取当日
+    最高分"的选股逻辑在噪声上开仓。收盘（15:00）之后当日 bar 才是完整的。
+
+    Args:
+        frame: 含 date 列的日线
+        now: 覆盖当前时间，供测试注入；None 时取北京时间
+    """
+    if frame is None or frame.empty or "date" not in frame.columns:
+        return frame
+    if now is None:
+        from scheduler.market_calendar import _now_bj
+        now = _now_bj()
+    if now.hour < 15:
+        cutoff = now.strftime("%Y-%m-%d")
+        trimmed = frame[frame["date"].astype(str) < cutoff]
+        # 全部 bar 都是当日时不做任何裁剪，交由数据陈旧度检查处理
+        if not trimmed.empty:
+            return trimmed.reset_index(drop=True)
+    return frame
+
+
 def predict_pooled(codes: List[str], db_path: str = None,
                    model_path: str = None, metadata_path: str = None,
                    max_data_age_days: int = MAX_DATA_AGE_DAYS,
@@ -499,6 +526,10 @@ def predict_pooled(codes: List[str], db_path: str = None,
                 FROM k_daily WHERE code=? ORDER BY date
             """, (code,)).fetchall()
             frame = pd.DataFrame([dict(row) for row in rows])
+            if frame.empty:
+                result[code] = {"status": "insufficient_data"}
+                continue
+            frame = drop_in_progress_bar(frame)
             if frame.empty:
                 result[code] = {"status": "insufficient_data"}
                 continue

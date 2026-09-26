@@ -26,7 +26,11 @@ MIN_TRADE_UNIT = 100             # A股最小交易单位 100股
 # ══════════════════════════════════════════════════════════════════
 STOP_LOSS = -0.08                # 止损 -8%（A股波动大，-5%太紧）
 TAKE_PROFIT = 0.10               # 止盈 +10%
-TRAILING_STOP = -0.06            # 移动止损：最高点回撤 -6%，避免正常噪声触发
+# 移动止损：最高点回撤阈值。实测 58-62 分入场带的 5 日 MFE 为 +5.08%、MAE 为
+# -4.94%，即噪声带约 ±5%；原 -6% 恰好卡在噪声边缘，17 次触发仅 3 次盈利、
+# 合计 -58,531，等于专门砍掉 MFE 那一半。放宽到 -10%（大于固定止损 -8%）后，
+# 它的角色从"砍噪音的止损"变回"给浮盈设回撤保护"。
+TRAILING_STOP = float(os.environ.get("TRAILING_STOP", "-0.10"))
 MAX_DRAWDOWN = -0.15             # 最大回撤 -15%（触发熔断）
 CIRCUIT_BREAKER_DAYS = 1         # 熔断暂停天数
 
@@ -64,6 +68,18 @@ TRADE_ADAPTIVE_MIN_SCORE_BASE = 55
 DECISION_BUY_THRESHOLD = 60      # 综合分 >= 60 触发买入（原65太高）
 DECISION_SELL_THRESHOLD = 35     # 综合分 <= 35 触发卖出
 DECISION_MIN_CONFIDENCE = 0.4    # 最低置信度
+# 买入的技术面硬门槛：技术分是唯一由价量驱动的维度，舆情/情绪/ML 都可能在
+# 与价格无关的情况下把综合分推过阈值。实测 2026-09-22~24 的 5 笔买入里 3 笔
+# 技术分低于 58（41.9 / 52.1 / 54.3），其中 09-24 沪电股份的买入完全由
+# 舆情分 65->78 触发，技术分全天锁死在 54.3 从未达标。
+# 综合分是加权平均：价量维度低于门槛时，平均是被非价格维度拉上去的，
+# 因此这里取与买入门槛同值（指令当前 min_score=58），要求技术面独立达标。
+# 代价是交易频率下降；可用环境变量按需放宽。
+DECISION_MIN_BUY_TECHNICAL = float(os.environ.get("DECISION_MIN_BUY_TECHNICAL", "58"))
+# 信号价格漂移上限：信号按 ref_price（打分基准价）产生，实时价偏离超过该比例
+# 则放弃本次下单。双向生效——上行是追高（实测 09-22 漫步者按 10.02 打分、
+# 10.26 成交，白付 2.4%），下行意味着技术前提已经失效。0 表示关闭该保护。
+MAX_SIGNAL_PRICE_DRIFT = float(os.environ.get("MAX_SIGNAL_PRICE_DRIFT", "0.03"))
 
 # ══════════════════════════════════════════════════════════════════
 # 调度参数
@@ -120,6 +136,10 @@ AUTO_RESCUE_POSITION_SCALE = float(os.environ.get("AUTO_RESCUE_POSITION_SCALE", 
 DAILY_LOSS_LIMIT = -0.05         # 单日亏损阈值 -5%（次日禁止开新仓）
 CONSECUTIVE_LOSS_DAYS = 3        # 连续亏损天数阈值（触发降仓）
 POSITION_REDUCE_RATIO = 0.5      # 降仓缩放系数（连亏后仓位降至50%）
+# 连亏判定死区：日收益率绝对值低于此值视为持平，既不记亏损日也不累加连亏。
+# 收盘估值存在取整噪声（实测出现过 -0.003% 即 -30 元的"亏损日"），
+# 无死区时这些噪声会累积成虚假连亏并误触发半仓。
+LOSS_STREAK_DEADZONE = float(os.environ.get("LOSS_STREAK_DEADZONE", "0.001"))  # 0.1%
 
 # ══════════════════════════════════════════════════════════════════
 # Vibe-Trading 研究层（外置 venv，进程隔离）
@@ -148,7 +168,9 @@ LAYA_DATA_DIR = os.path.join(DATA_DIR, "laya")   # 影子对照结果（不入�
 # 可转债T+0策略配置
 # ══════════════════════════════════════════════════════════════════
 CB_MAX_PREMIUM = 0.30        # 最大溢价率30%
-CB_STOP_LOSS = -0.03         # 可转债止损-3%
+# 可转债止损：转债波动高于正股，-3% 低于其噪声带（实测万讯转债被同一 -3% 止损
+# 连续触发 4 次、合计 -21,748，且从未有过一次盈利离场）。与正股口径对齐到 -6%。
+CB_STOP_LOSS = float(os.environ.get("CB_STOP_LOSS", "-0.06"))
 CB_SINGLE_POSITION = float(os.environ.get("CB_SINGLE_POSITION", "0.08"))    # 单只可转债试验仓位上限8%（避免20%超额单票风险）
 CB_MIN_SCORE = 70            # 最低入选分数70
 CB_T0_ENABLED = True         # 是否启用可转债T+0

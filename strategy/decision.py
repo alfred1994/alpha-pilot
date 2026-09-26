@@ -13,7 +13,19 @@ from config import (
     DECISION_BUY_THRESHOLD,
     DECISION_SELL_THRESHOLD,
     DECISION_MIN_CONFIDENCE,
+    DECISION_MIN_BUY_TECHNICAL,
 )
+
+
+def _technical_gate_passed(dimensions: Dict[str, "DimensionScore"]) -> bool:
+    """技术面（唯一价量维度）是否达到买入硬门槛。
+
+    缺失技术分时按不通过处理：宁可不买，也不让舆情/情绪单独驱动开仓。
+    """
+    technical = (dimensions or {}).get("technical")
+    if technical is None:
+        return False
+    return float(getattr(technical, "score", 0) or 0) >= DECISION_MIN_BUY_TECHNICAL
 
 
 def _get_adaptive_params() -> dict:
@@ -369,7 +381,14 @@ def make_decision(
 
     # 决策
     if composite >= buy_threshold and confidence >= DECISION_MIN_CONFIDENCE:
-        action = "BUY"
+        if _technical_gate_passed(dimensions):
+            action = "BUY"
+        else:
+            action = "HOLD"
+            logger.info(
+                f"[技术面门槛] {code} 综合分{composite:.1f}已过买入线{buy_threshold}，"
+                f"但技术分低于{DECISION_MIN_BUY_TECHNICAL:.0f}，本轮不买入"
+            )
     elif composite <= sell_threshold and confidence >= DECISION_MIN_CONFIDENCE:
         action = "SELL"
     else:
@@ -512,7 +531,14 @@ def make_decision_with_cache(
     confidence = weighted_conf / total_weight
 
     if composite >= buy_threshold and confidence >= DECISION_MIN_CONFIDENCE:
-        action = "BUY"
+        if _technical_gate_passed(dims):
+            action = "BUY"
+        else:
+            action = "HOLD"
+            logger.info(
+                f"[技术面门槛] {code} 综合分{composite:.1f}已过买入线{buy_threshold}，"
+                f"但技术分低于{DECISION_MIN_BUY_TECHNICAL:.0f}，本轮不买入"
+            )
     elif composite <= sell_threshold and confidence >= DECISION_MIN_CONFIDENCE:
         action = "SELL"
     else:
