@@ -313,12 +313,48 @@ def test_shadow_candidate_approval():
         cleanup(db_path)
 
 
+def test_benchmark_fetch_date_guard():
+    print("测试6: 基准取数日期守卫(陈旧K线不得冒充当日涨跌)")
+    import pandas as pd
+    from unittest.mock import patch
+
+    # 最后K线是09-21、目标日是09-24 → 取数失败，累计链延续上一日
+    stale_df = pd.DataFrame({
+        "date": ["2026-09-18", "2026-09-21"],
+        "close": [4500.0, 4539.57],
+    })
+    with patch("data.history.get_daily", return_value=stale_df), \
+            patch("scheduler.market_calendar.is_trading_day", return_value=True):
+        assert_true(daily_review_mod._fetch_hs300_daily_pct("2026-09-24") is None,
+                    "陈旧K线按取数失败处理，不再伪造当日涨跌")
+
+    # 最后K线正是目标日 → 返回当日涨跌
+    fresh_df = pd.DataFrame({
+        "date": ["2026-09-23", "2026-09-24"],
+        "close": [4530.0, 4560.0],
+    })
+    with patch("data.history.get_daily", return_value=fresh_df), \
+            patch("scheduler.market_calendar.is_trading_day", return_value=True):
+        pct = daily_review_mod._fetch_hs300_daily_pct("2026-09-24")
+        assert_true(pct is not None and abs(pct - (4560.0 / 4530.0 - 1.0)) < 1e-9,
+                    f"新鲜K线返回当日涨跌 (got {pct})")
+
+    # 目标日是非交易日(周末) → 接受最近交易日(周五)的K线
+    with patch("data.history.get_daily", return_value=fresh_df), \
+            patch("scheduler.market_calendar.is_trading_day", return_value=False), \
+            patch("scheduler.market_calendar.prev_trading_day", return_value="2026-09-24"):
+        pct_sat = daily_review_mod._fetch_hs300_daily_pct("2026-09-26")
+        assert_true(pct_sat is not None and abs(pct_sat - (4560.0 / 4530.0 - 1.0)) < 1e-9,
+                    "非交易日接受最近交易日K线作基准")
+
+
 def main():
     test_welch_t_test_statistics()
     test_information_ratio()
     test_run_review_wires_performance_benchmark_regime()
     test_ab_test_significance_gate()
     test_shadow_candidate_approval()
+    test_benchmark_fetch_date_guard()
     print("\n全部复盘研究闭环与纪律门槛测试通过")
 
 

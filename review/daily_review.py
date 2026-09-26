@@ -19,18 +19,32 @@ REVIEW_DIR = os.path.join(DATA_DIR, "reviews")
 
 
 def _fetch_hs300_daily_pct(date: str = None) -> Optional[float]:
-    """获取沪深300指定日期日涨跌幅（小数）。失败返回 None。"""
+    """获取沪深300指定日期日涨跌幅（小数）。失败返回 None。
+
+    最后一根K线必须来自目标日期(非交易日则为其前一交易日)：陈旧K线
+    被当作"当日涨跌"会让基准链整体失真(2026-09 曾以 09-21 的 +0.71%
+    连续三天复合)。取不到合格K线时返回 None，由累计链延续上一日。
+    """
     try:
         from data.history import get_daily
-        end = (date or datetime.now().strftime("%Y-%m-%d")).replace("-", "")
+        from scheduler.market_calendar import is_trading_day, prev_trading_day
+        target = date or datetime.now().strftime("%Y-%m-%d")
+        end = target.replace("-", "")
         df = get_daily("000300", start_date="20240101", end_date=end)
         if df is None or len(df) < 2 or "close" not in df.columns:
+            return None
+        last_date = str(df["date"].iloc[-1]).strip()[:10]
+        expected = target if is_trading_day(target) else prev_trading_day(target)
+        if last_date != expected:
+            logger.warning(
+                f"沪深300基准最后K线 {last_date} 早于 {target} 的最近交易日 "
+                f"{expected}，按取数失败处理(延续上一日累计基准)"
+            )
             return None
         closes = df["close"].astype(float)
         cur, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
         if prev <= 0:
             return None
-        # 若最后一根K线不是目标日期，仍使用可用最新一根作为基准参考
         return (cur / prev) - 1.0
     except Exception as exc:
         logger.warning(f"沪深300基准获取失败(不影响复盘): {exc}")
