@@ -261,6 +261,12 @@ class Database:
             c.execute("ALTER TABLE trades ADD COLUMN pnl REAL")
         except sqlite3.OperationalError:
             pass
+        # is_replay 标记回放/引导期写入的成交：生产账户 2026-06-25 凌晨曾被写入
+        # 7 笔盘外成交（2 分钟内往返 +81%~+117%），这些不是交易样本，混进胜率、
+        # 逐笔统计与 LLM 复盘会给出严重误导的结论。默认 0，报表按需排除。
+        trade_columns = {row[1] for row in c.execute("PRAGMA table_info(trades)")}
+        if "is_replay" not in trade_columns:
+            c.execute("ALTER TABLE trades ADD COLUMN is_replay INTEGER NOT NULL DEFAULT 0")
         try:
             c.execute("ALTER TABLE trades ADD COLUMN pnl_pct REAL")
         except sqlite3.OperationalError:
@@ -768,10 +774,34 @@ class Database:
         self.conn.commit()
         return c.lastrowid
 
+    def _column_exists(self, table: str, column: str) -> bool:
+        """列是否存在。
+
+        只读连接刻意不跑迁移（见 __enter__），因此在尚未被读写连接迁移过的库上
+        直接引用新列会让整条查询抛 no such column。部署顺序上 Web 服务完全可能
+        先以只读方式打开数据库，所以新增列的查询必须先探测。
+        """
+        cache = getattr(self, "_column_cache", None)
+        if cache is None:
+            cache = self._column_cache = {}
+        key = (table, column)
+        if key not in cache:
+            rows = self.conn.execute(f"PRAGMA table_info({table})").fetchall()
+            cache[key] = any(row[1] == column for row in rows)
+        return cache[key]
+
     def get_trades(self, code: str = None, start_date: str = None,
-                   end_date: str = None, limit: int = 100) -> List[Dict]:
-        """查询交易记录"""
+                   end_date: str = None, limit: int = 100,
+                   include_replay: bool = False) -> List[Dict]:
+        """查询交易记录
+
+        Args:
+            include_replay: 默认排除 is_replay=1 的回放成交。绩效统计、复盘与
+                看板都应保持默认——回放成交不是交易样本，计入会给出错误结论。
+        """
         conditions, params = [], []
+        if not include_replay and self._column_exists("trades", "is_replay"):
+            conditions.append("COALESCE(is_replay, 0) = 0")
         if code:
             conditions.append("code = ?")
             params.append(code)

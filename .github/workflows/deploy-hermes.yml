@@ -15,6 +15,33 @@ permissions:
   contents: read
 
 jobs:
+  blocked:
+    name: Report blocked deploy
+    # deploy job 的 if 不满足时整份 workflow 只有一个 skipped 条目，GitHub 既不发
+    # 通知也不标记失败——2026-09-28 生产静默停留在旧版本两天就是这么发生的。
+    # 这个 job 把"CI 挡住了部署"变成一个显式失败事件。
+    if: >-
+      ${{ github.repository == 'alfred1994/alpha-pilot' &&
+          github.event.workflow_run.head_branch == 'main' &&
+          github.event.workflow_run.conclusion != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Report
+        run: |
+          sha='${{ github.event.workflow_run.head_sha }}'
+          title='${{ github.event.workflow_run.name }}'
+          link='${{ github.event.workflow_run.html_url }}'
+          {
+            echo "::error title=部署被阻断::CI 未通过，生产环境没有部署 ${sha:0:8}。"
+            echo "- 上游工作流：${title}"
+            echo "- 结论：${{ github.event.workflow_run.conclusion }}"
+            echo "- 提交：${sha}"
+            echo "- 详情：${link}"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "deploy blocked by a failing CI run: ${link}"
+          exit 1
+
   deploy:
     name: Deploy to Hermes
     if: >-

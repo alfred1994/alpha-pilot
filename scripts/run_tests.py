@@ -76,6 +76,9 @@ def main():
         parser.error("--timeout must be positive")
     os.environ.update(BROKER_MODE="paper", ALPHAPILOT_ENV="testing",
                       HITHINK_ENABLED="0", ALPHAPILOT_OFFLINE_TEST="1",
+                      # 用例按自己的假时钟构造成交，账户层的交易时段闸门对它们
+                      # 只是噪声；闸门本身由 test_architecture_risk_data 单独覆盖。
+                      ALPHAPILOT_ALLOW_OFFSESSION_TRADE="1",
                       PYTHONDONTWRITEBYTECODE="1", PYTHONIOENCODING="utf-8")
     # 回归用例一律不得写入生产风控/信号状态文件：曾出现测试把临时账户的
     # INITIAL_CAPITAL 当作当日净值写进 data/circuit_breaker.json，把最大回撤

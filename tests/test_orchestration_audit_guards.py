@@ -23,14 +23,18 @@ def test_json_cross_process_merge():
         update_json(path, lambda previous: {"counter": 0})
         code = "from scheduler.persistence import update_json; import sys; [update_json(sys.argv[1], lambda old: {'counter': old['counter'] + 1}) for _ in range(30)]"
         processes = [subprocess.Popen([sys.executable, "-c", code, path], cwd=Path(__file__).resolve().parents[1]) for _ in range(3)]
+        # 三个进程抢同一把文件锁做 90 次读-改-写（每次含 fsync + os.replace）。
+        # 共享 CI runner 只有 2 核且磁盘慢，30s 在上面偶发不够；这个用例验证的
+        # 是跨进程原子性而不是吞吐，给足等待而不是让部署被一次抖动挡掉。
+        wait_seconds = 180
         try:
-            statuses = [process.wait(timeout=30) for process in processes]
+            statuses = [process.wait(timeout=wait_seconds) for process in processes]
             assert statuses == [0, 0, 0]
         finally:
             for process in processes:
                 if process.poll() is None:
                     process.terminate()
-                process.wait(timeout=10)
+                process.wait(timeout=30)
         assert json.loads(Path(path).read_text(encoding="utf-8"))["counter"] == 90
 
 

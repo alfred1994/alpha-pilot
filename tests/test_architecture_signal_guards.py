@@ -148,6 +148,38 @@ class SignalGuards(unittest.TestCase):
         self.assertNotIn(199, predictor._model.fits[-1][:, 0])
         qlib._model_cache.clear()
 
+    def test_sell_prompt_carries_live_price_and_unrealized_pnl(self):
+        """卖出提示词必须带现价与浮动盈亏。
+
+        曾经只标注成本价，LLM 于是反复以"无当前价/无法确认止损位"为由默认
+        HOLD——2026-09-28 的 20 次决策里多次出现，止盈止损判断形同盲判。
+        """
+        from strategy.llm_trader import _build_decision_prompt
+        from strategy.decision import DimensionScore
+
+        dims = {name: DimensionScore(name=name, score=50.0, confidence=0.8)
+                for name in ("technical", "sentiment", "capital", "ml", "fundamental", "emotion")}
+        positions = {"600519": {"code": "600519", "name": "测试", "shares": 1000,
+                                "buy_price": 10.0, "current_price": 9.2,
+                                "unrealized_pnl_pct": -0.08,
+                                "buy_date": "2026-09-20"}}
+        prompt = _build_decision_prompt("600519", "测试", dims, regime="sideways",
+                                        current_positions=positions,
+                                        total_assets=100000.0, cash=50000.0)
+        self.assertIn("现价: 9.20", prompt, "卖出分析必须给出现价")
+        self.assertIn("浮动盈亏: -8.00%", prompt, "卖出分析必须给出浮动盈亏")
+        self.assertIn("现价9.20", prompt, "持仓清单必须给出现价")
+
+        # 没有现价时不得伪造数字，只保留成本并如实说明。
+        bare = {"600519": {"code": "600519", "name": "测试", "shares": 1000,
+                           "buy_price": 10.0, "buy_date": "2026-09-20"}}
+        bare_prompt = _build_decision_prompt("600519", "测试", dims, regime="sideways",
+                                             current_positions=bare,
+                                             total_assets=100000.0, cash=50000.0)
+        self.assertIn("成本: 10.00", bare_prompt)
+        self.assertNotIn("浮动盈亏:", bare_prompt.split("持仓卖出分析")[-1],
+                         "无现价时不得编造浮动盈亏")
+
     def test_strategy_backtest_uses_prior_signal_and_costs(self):
         import strategy.backtest as backtest
         frame = pd.DataFrame({'date': pd.bdate_range('2024-01-01', periods=35).strftime('%Y-%m-%d'),

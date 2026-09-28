@@ -364,7 +364,14 @@ def _build_decision_prompt(
     if current_positions:
         pos_lines = []
         for pcode, pos in current_positions.items():
-            pos_lines.append(f"- {pos.get('name', pcode)}({pcode}): {pos.get('shares', 0)}股 成本{pos.get('buy_price', 0):.2f}")
+            line = f"- {pos.get('name', pcode)}({pcode}): {pos.get('shares', 0)}股 成本{pos.get('buy_price', 0):.2f}"
+            last_price = float(pos.get("current_price") or 0)
+            pnl_pct = pos.get("unrealized_pnl_pct")
+            if last_price > 0:
+                line += f" 现价{last_price:.2f}"
+                if pnl_pct is not None:
+                    line += f" 浮动盈亏{float(pnl_pct) * 100:+.2f}%"
+            pos_lines.append(line)
         position_text = f"\n当前持仓:\n" + "\n".join(pos_lines)
         position_text += f"\n总资产: {total_assets:,.0f} 可用现金: {cash:,.0f}"
 
@@ -380,17 +387,25 @@ def _build_decision_prompt(
         allow_t0 = bool(pos.get('allow_t0', False))
         today = datetime.now().strftime("%Y-%m-%d")
         t1_locked = (not allow_t0) and bool(buy_date) and buy_date >= today
-        # 尝试从dimensions中获取当前价格估算盈亏
+        # 止盈/止损判断必须有现价。这里曾经只标注成本价，于是提示词对 LLM 而言
+        # 等于"没有价格"——2026-09-28 的 20 次决策里反复出现"无当前价/无法确认
+        # 止损位"而默认 HOLD，卖出判断因此形同盲判。
         pnl_text = ""
+        last_price = float(pos.get("current_price") or 0)
+        pnl_pct = pos.get("unrealized_pnl_pct")
         if buy_price > 0:
-            # 用technical中的detail尝试提取价格信息，或者直接标注成本
             pnl_text = f"成本: {buy_price:.2f}"
+            if last_price > 0:
+                pnl_text += f"  现价: {last_price:.2f}"
+                if pnl_pct is not None:
+                    pnl_text += f"  浮动盈亏: {float(pnl_pct) * 100:+.2f}%"
             if buy_date:
                 pnl_text += f"  买入日期: {buy_date}"
         sell_analysis = f"""
 
 【⚠ 持仓卖出分析 - {name}({code})】
 当前持有: {shares}股 {pnl_text}
+** 请结合上面的现价与浮动盈亏判断止盈/止损，不要因为缺现价而回避判断。**
 ** 请重点分析该持仓股是否应该卖出（止盈/减仓/清仓）**
 """
         if t1_locked:

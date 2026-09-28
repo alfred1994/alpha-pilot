@@ -972,12 +972,41 @@ def fast_scan(
                         _df_sell = None
                         try:
                             from data.history import get_daily
-                            _df_sell = get_daily(_pos_code, start_date="20240101")
+                            from strategy.technical_screen import completed_daily_cutoff
+                            # 与候选打分路径(见上方)保持一致：只用已收盘日线。
+                            # 这里曾漏掉 end_date，卖出判断读的是半成品当日 bar。
+                            _cutoff_sell = completed_daily_cutoff(_now_bj())
+                            _df_sell = get_daily(_pos_code, start_date="20240101",
+                                                 end_date=_cutoff_sell.replace("-", ""))
                         except Exception:
                             pass
 
                         _dims_sell = compute_dimension_scores(_pos_code, _df_sell)
                         _pos_name = _pos_info.get("name", _pos_code)
+
+                        # 卖出判断必须带现价。只把成本价交给 LLM 会让它反复以
+                        # "无当前价/无法确认止损位"为由默认 HOLD（2026-09-28 实测
+                        # 20 次决策中多次出现），止盈止损判断因此形同盲判。
+                        _sell_ctx_positions = _positions_sell
+                        _last_price = float(_pos_info.get("current_price") or 0)
+                        try:
+                            for _q in (_quote_provider([_pos_code]) or []):
+                                if float(getattr(_q, "price", 0) or 0) > 0:
+                                    _last_price = float(_q.price)
+                                    break
+                        except Exception as _qe:
+                            logger.debug("[快链路-卖出] 现价获取失败，沿用账户标记价: %s", _qe)
+                        try:
+                            _cost = float(_pos_info.get("buy_price") or 0)
+                            if _last_price > 0 and _cost > 0:
+                                _sell_ctx_positions = dict(_positions_sell)
+                                _sell_ctx_positions[_pos_code] = {
+                                    **_pos_info,
+                                    "current_price": _last_price,
+                                    "unrealized_pnl_pct": (_last_price - _cost) / _cost,
+                                }
+                        except Exception as _pe:
+                            logger.debug("[快链路-卖出] 浮盈计算失败: %s", _pe)
 
                         from strategy.llm_trader import make_decision
                         _sell_decision = make_decision(
@@ -985,7 +1014,7 @@ def fast_scan(
                             name=_pos_name,
                             dimensions=_dims_sell,
                             regime=regime,
-                            current_positions=_positions_sell,
+                            current_positions=_sell_ctx_positions,
                             total_assets=_total_assets_sell,
                             cash=_cash_sell,
                             strategy_directive=directive,

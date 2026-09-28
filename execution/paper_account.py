@@ -312,6 +312,22 @@ class PaperAccount:
         from risk.drawdown import DrawdownController
         from risk.system_risk import SystemRiskController
 
+        # 成交必须落在真实交易时段内。生产账户曾在 2026-06-25 凌晨 05:12 被写入
+        # 7 笔"成交"（2 分钟内往返 +81%~+117%，A 股当时尚未开盘），凭空抬高净值
+        # 约 15.7 万，之后绩效、熔断基准与复盘全部被污染。闸门放在账户层是最后
+        # 一道：编排层、回放脚本与手工命令都绕不过。运维确需盘外成交时用
+        # ALPHAPILOT_ALLOW_OFFSESSION_TRADE=1 显式放行。
+        if os.environ.get("ALPHAPILOT_ALLOW_OFFSESSION_TRADE") != "1":
+            try:
+                from scheduler.market_calendar import get_market_status
+                market_status = get_market_status()
+            except Exception as exc:
+                logger.error("交易日历不可读，拒绝交易: %s", exc)
+                return False
+            if market_status != "盘中":
+                logger.warning("非交易时段(%s)，拒绝%s: %s", market_status, side, trade_date)
+                return False
+
         control = get_auto_control_state(self._risk_state_path("auto_control.json"))
         if control.get("paused"):
             logger.warning("交易暂停: %s", control.get("reason", ""))

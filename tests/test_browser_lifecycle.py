@@ -18,6 +18,21 @@ def assert_true(condition, message):
     print(f"  OK {message}")
 
 
+#: 这里的并发顺序完全由 Event 驱动，秒数只是防死锁的兜底上限。共享 CI runner
+#: 只有 2 核且被节流，1~2 秒的墙钟断言足以让整个部署被一次调度抖动挡掉。
+EVENT_WAIT_SECONDS = 60
+
+
+def _wait_until(predicate, timeout_seconds, poll_seconds=0.05):
+    """轮询到条件成立；避免用固定 sleep 赌共享 runner 上的调度时序。"""
+    deadline = time.monotonic() + timeout_seconds
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(poll_seconds)
+    return bool(predicate())
+
+
 class _FakePage:
     def __init__(self):
         self.closed = False
@@ -72,7 +87,7 @@ def main():
 
         def delayed_new_event_loop():
             loop_creation_started.set()
-            assert allow_loop_creation.wait(timeout=2), "测试未释放事件循环启动"
+            assert allow_loop_creation.wait(timeout=EVENT_WAIT_SECONDS), "测试未释放事件循环启动"
             return original_new_event_loop()
 
         import data.eastmoney as eastmoney
@@ -83,17 +98,19 @@ def main():
                 futures = [pool.submit(
                     manager.fetch, "https://example.invalid/data", "https://example.invalid/"
                 ) for _ in range(4)]
-                assert_true(loop_creation_started.wait(timeout=1), "首个事件循环进入延迟启动窗口")
+                assert_true(loop_creation_started.wait(timeout=EVENT_WAIT_SECONDS), "首个事件循环进入延迟启动窗口")
                 time.sleep(0.05)
                 allow_loop_creation.set()
-                results = [future.result(timeout=2) for future in futures]
+                results = [future.result(timeout=EVENT_WAIT_SECONDS) for future in futures]
         finally:
             eastmoney.asyncio.new_event_loop = original_factory
         assert_true(len(launches) == 1, "并发请求只启动一个共享浏览器实例")
         assert_true(all(result == {"data": {"ok": True}} for result in results), "共享浏览器返回全部请求结果")
         assert_true(all(page.closed for page in launches[0].pages), "每次请求结束均关闭页面子进程资源")
-        time.sleep(0.15)
-        assert_true(launches[0].closed, "空闲20分钟策略可由可配置短周期验证自动回收")
+        # 回收由 idle_seconds=0.05 驱动，这里只等它到期；共享 runner 上 0.15s
+        # 余量太小，下面用轮询等到条件成立而不是赌一次 sleep 够长。
+        assert_true(_wait_until(lambda: launches[0].closed, EVENT_WAIT_SECONDS),
+                    "空闲20分钟策略可由可配置短周期验证自动回收")
         assert_true(not manager.snapshot()["browser_active"], "回收后管理器不再保留浏览器引用")
 
         class _Proc:

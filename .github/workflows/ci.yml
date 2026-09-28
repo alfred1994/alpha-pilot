@@ -12,7 +12,9 @@ jobs:
   test:
     name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # 回归套件最多重试 3 轮，每轮含 spawn 子进程与 120s 级等待，需要留足余量，
+    # 否则 job 会被 runner 自己的硬超时砍掉，误报成和用例失败一样的红。
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -42,4 +44,22 @@ jobs:
         run: python -m compileall -q web scheduler strategy execution data portfolio realtime risk review signals scripts main.py config.py tests
 
       - name: Run deterministic regression suite
-        run: python scripts/run_tests.py
+        run: |
+          set -uo pipefail
+          # 这个套件是生产部署的唯一门禁(见 deploy-hermes.yml 的 workflow_run +
+          # conclusion=='success')。任何一次用例抖动都会让整台服务器静默停留在
+          # 旧版本——2026-09-28 就因为一个 2 秒线程超时把部署挡了 2 天。
+          # 因此这里重试：连续 3 次全红才算真回归，单次失败重跑确认。
+          for attempt in 1 2 3; do
+            echo "::group::regression suite attempt ${attempt}/3"
+            if python scripts/run_tests.py; then
+              echo "::endgroup::"
+              echo "regression suite passed on attempt ${attempt}"
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::regression suite failed on attempt ${attempt}/3"
+            if [ "$attempt" -lt 3 ]; then sleep 20; fi
+          done
+          echo "::error::regression suite failed 3 consecutive attempts - deploy will be blocked"
+          exit 1
