@@ -3,7 +3,7 @@ import sys
 import json
 from datetime import datetime, timedelta
 
-def build_agent_status_snapshot():
+def build_agent_status_snapshot(*, readonly: bool = False):
     """统一构建 AlphaPilot 系统当前的运行态、健康态、资产、自适应指标及未决崩溃状态"""
     from scheduler.health import run_health_check
     from scheduler.watchdog import run_auto_watchdog
@@ -13,7 +13,7 @@ def build_agent_status_snapshot():
     health_ok = True
     health_failed = []
     try:
-        health_items = run_health_check()
+        health_items = run_health_check(readonly=readonly)
         health_ok = all(item.ok or not item.required for item in health_items)
         health_failed = [item.name for item in health_items if not item.ok and item.required]
     except Exception as e:
@@ -24,7 +24,7 @@ def build_agent_status_snapshot():
     watchdog_ok = True
     watchdog_criticals = []
     try:
-        watchdog_items = run_auto_watchdog()
+        watchdog_items = run_auto_watchdog(readonly=readonly)
         watchdog_criticals = [item.name for item in watchdog_items if item.severity == "critical"]
         watchdog_ok = (len(watchdog_criticals) == 0)
     except Exception as e:
@@ -49,19 +49,22 @@ def build_agent_status_snapshot():
     total_pnl = 0.0
     total_pnl_pct = 0.0
     account_available = False
+    account_data_as_of = None
     try:
         from execution.paper_account import PaperAccount
-        account = PaperAccount()
+        account = PaperAccount(read_only=readonly)
         price_map = {}
         if account.positions:
             try:
                 from data.realtime import get_realtime
                 quotes = get_realtime(list(account.positions.keys()))
-                price_map = {
-                    quote.code: quote.price
-                    for quote in quotes
-                    if getattr(quote, "price", 0) > 0
-                }
+                from data.quote_validation import validate_quote
+                price_map = {}
+                for quote in quotes:
+                    code = str(getattr(quote, "code", "") or "")
+                    checked = validate_quote(quote, expected_code=code)
+                    if code in account.positions and checked.valid:
+                        price_map[code] = checked.price
             except Exception:
                 price_map = {}
         total_assets = account.total_assets(price_map or None)
@@ -71,6 +74,7 @@ def build_agent_status_snapshot():
         total_pnl = total_assets - initial_capital
         total_pnl_pct = total_pnl / initial_capital if initial_capital > 0 else 0.0
         account_available = True
+        account_data_as_of = getattr(account, "updated_at", None)
     except Exception:
         pass
         
@@ -103,12 +107,13 @@ def build_agent_status_snapshot():
     try:
         from strategy.directive import get_effective_trade_policy
         from data.database import Database
-        today = datetime.now().strftime("%Y-%m-%d")
+        from scheduler.market_calendar import _now_bj
+        today = _now_bj().strftime("%Y-%m-%d")
         strategy_directive = get_effective_trade_policy(
             today,
             (adaptive_params or {}).get("regime", "sideways"),
         )
-        with Database() as db:
+        with Database(readonly=readonly) as db:
             pending_strategy_directive = db.get_next_strategy_directive(today)
     except Exception:
         pass
@@ -117,10 +122,10 @@ def build_agent_status_snapshot():
     regime_current = None
     try:
         from data.database import Database
-        with Database() as db:
+        with Database(readonly=readonly) as db:
             latest_regime = db.conn.execute(
                 "SELECT date, regime, confidence FROM market_regimes WHERE date <= ? ORDER BY date DESC LIMIT 1",
-                (datetime.now().strftime("%Y-%m-%d"),),
+                (_now_bj().strftime("%Y-%m-%d"),),
             ).fetchone()
             latest_regime = dict(latest_regime) if latest_regime else None
         if latest_regime and latest_regime.get("regime"):
@@ -129,7 +134,7 @@ def build_agent_status_snapshot():
                 "date": latest_regime.get("date"),
                 "confidence": latest_regime.get("confidence"),
                 "source": "market_regimes",
-                "fresh": latest_regime.get("date", "") >= (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d"),
+                "fresh": latest_regime.get("date", "") >= (_now_bj() - timedelta(days=1)).strftime("%Y-%m-%d"),
             }
     except Exception:
         regime_current = None
@@ -161,18 +166,22 @@ def build_agent_status_snapshot():
         try:
             with open(AUTO_STATE_FILE, "r", encoding="utf-8") as f:
                 state_data = json.load(f)
-            today = datetime.now().strftime("%Y-%m-%d")
+            from scheduler.market_calendar import _now_bj
+            from datetime import timezone
+            bj_tz = timezone(timedelta(hours=8))
+            now_bj = _now_bj()
+            today = now_bj.strftime("%Y-%m-%d")
             
             pipeline_progress["prefetch"] = (state_data.get("last_prefetch_date") == today)
             
             last_scan_at = state_data.get("last_scan_at", 0.0)
             if last_scan_at > 0:
-                scan_date = datetime.fromtimestamp(last_scan_at).strftime("%Y-%m-%d")
+                scan_date = datetime.fromtimestamp(last_scan_at, tz=bj_tz).strftime("%Y-%m-%d")
                 pipeline_progress["scan"] = (scan_date == today)
                 
             last_execute_at = state_data.get("last_execute_at", 0.0)
             if last_execute_at > 0:
-                exec_date = datetime.fromtimestamp(last_execute_at).strftime("%Y-%m-%d")
+                exec_date = datetime.fromtimestamp(last_execute_at, tz=bj_tz).strftime("%Y-%m-%d")
                 pipeline_progress["execute"] = (exec_date == today)
                 
             pipeline_progress["review"] = (state_data.get("last_review_date") == today)
@@ -187,7 +196,7 @@ def build_agent_status_snapshot():
     recent_logs = []
     try:
         from data.database import Database
-        with Database() as db:
+        with Database(readonly=readonly) as db:
             events = db.get_auto_events(limit=15)
             for event in events:
                 actions = event.get("actions")
@@ -232,7 +241,7 @@ def build_agent_status_snapshot():
     capabilities = []
     try:
         from scheduler.trader_brief import build_daily_facts
-        daily_trader = build_daily_facts()
+        daily_trader = build_daily_facts(readonly=readonly)
         if control_paused:
             daily_trader.update({
                 "state": "paused",
@@ -318,6 +327,16 @@ def build_agent_status_snapshot():
             "next_action": "自动循环不受影响，等待下一次状态刷新。",
         }
 
+    execution_reviews = {"plans": [], "reviews": []}
+    try:
+        from data.database import Database
+        with Database(readonly=readonly) as db:
+            execution_reviews = db.list_execution_reviews(older_than_seconds=1800)
+        if execution_reviews["plans"] or execution_reviews["reviews"]:
+            risk_warnings.append("存在中断或未完成的计划/复盘，禁止自动重放，需核对成交与执行记录")
+    except Exception as exc:
+        execution_reviews = {"available": False, "error": str(exc)}
+
     return {
         "timestamp": datetime.now().isoformat(),
         "health": {
@@ -334,6 +353,7 @@ def build_agent_status_snapshot():
         },
         "account": {
             "available": account_available,
+            "data_as_of": account_data_as_of,
             "initial_capital": initial_capital,
             "total_assets": total_assets,
             "cash": cash,
@@ -349,6 +369,7 @@ def build_agent_status_snapshot():
         "pipeline_progress": pipeline_progress,
         "recent_logs": recent_logs[:20],
         "risk_warnings": risk_warnings,
+        "execution_reviews": execution_reviews,
         "daily_trader": daily_trader,
         "capabilities": capabilities,
         "loop_count": loop_count,

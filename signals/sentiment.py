@@ -74,6 +74,27 @@ def _call_llm(prompt: str, max_tokens: int = 2000,
         return None
 
 
+def _parse_valid_llm_response(raw: Optional[str]) -> Optional[tuple]:
+    """仅将字段完整且类型有效的响应视为可用情感证据。"""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict) or isinstance(data.get("score"), bool):
+            return None
+        score = float(data["score"])
+        import math
+        if not math.isfinite(score):
+            return None
+        direction = {"买入": Direction.BUY, "卖出": Direction.SELL, "持有": Direction.HOLD}[data["direction"]]
+        summary = data.get("summary", "")
+        if not isinstance(summary, str):
+            return None
+        return max(0, min(100, int(score))), direction, summary
+    except (json.JSONDecodeError, ValueError, TypeError, KeyError):
+        return None
+
+
 def _parse_llm_response(raw: Optional[str]) -> tuple:
     """
     解析LLM返回的JSON
@@ -84,17 +105,11 @@ def _parse_llm_response(raw: Optional[str]) -> tuple:
     if not raw:
         return 50, Direction.HOLD, "LLM无响应"
 
-    try:
-        data = json.loads(raw)
-        score = int(data.get("score", 50))
-        score = max(0, min(100, score))
-        dir_str = data.get("direction", "持有")
-        direction = {"买入": Direction.BUY, "卖出": Direction.SELL, "持有": Direction.HOLD}.get(dir_str, Direction.HOLD)
-        summary = data.get("summary", "")
-        return score, direction, summary
-    except (json.JSONDecodeError, ValueError, TypeError) as e:
-        logger.warning(f"LLM返回解析失败: {raw[:100]}")
-        return 50, Direction.HOLD, f"解析失败: {e}"
+    parsed = _parse_valid_llm_response(raw)
+    if parsed is not None:
+        return parsed
+    logger.warning("LLM返回解析失败")
+    return 50, Direction.HOLD, "解析失败"
 
 
 def sentiment_signal(code: str = None, weibo_posts: list = None,
@@ -143,8 +158,9 @@ def sentiment_signal(code: str = None, weibo_posts: list = None,
     )
 
     raw = _call_llm(prompt)
-    score, direction, summary = _parse_llm_response(raw)
-    conf = 0.7 if raw else 0.0
+    parsed = _parse_valid_llm_response(raw)
+    score, direction, summary = parsed if parsed is not None else _parse_llm_response(raw)
+    conf = 0.7 if parsed is not None else 0.0
 
     detail = summary if summary else f"LLM舆情分析 score={score}"
     return SignalResult("舆情分析", score, direction, conf, detail)

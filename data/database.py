@@ -20,6 +20,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
+from contextlib import nullcontext
+from scheduler.persistence import json_file_lock
 
 import config
 
@@ -27,6 +29,11 @@ logger = logging.getLogger("data.database")
 
 # 数据库路径
 DB_PATH = os.path.join(config.DATA_DIR, "quant.db")
+_UNSET_VERSION = object()
+
+
+class AccountStateConflict(RuntimeError):
+    """另一个写入方已更新账户；调用方必须重载后重新评估交易。"""
 
 
 class Database:
@@ -38,25 +45,53 @@ class Database:
             db.get_kline_cached("600519", "2024-01-01", "2024-12-31", source_func)
     """
 
-    def __init__(self, db_path: str = None):
+    SCHEMA_VERSION = 1
+
+    def __init__(self, db_path: str = None, readonly: bool = False):
         self.db_path = db_path or DB_PATH
+        self.readonly = readonly
         self._conn = None
 
     def __enter__(self):
-        self._ensure_dir()
-        self._conn = sqlite3.connect(self.db_path)
-        self._conn.row_factory = sqlite3.Row
-        self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA foreign_keys=ON")
-        self._conn.execute("PRAGMA busy_timeout=5000")
-        self._init_tables()
+        if not self.readonly:
+            self._ensure_dir()
+        # WAL 模式切换与首次 DDL 也需要进程间串行；SQLite 的 busy_timeout
+        # 无法保证并发 PRAGMA journal_mode=WAL 在全新库上不报 database is locked。
+        schema_lock = nullcontext() if self.readonly else json_file_lock(os.path.abspath(self.db_path), timeout=30)
+        with schema_lock:
+            if self.readonly:
+                from pathlib import Path
+                if not Path(self.db_path).is_file():
+                    raise FileNotFoundError(f"只读数据库不存在: {self.db_path}")
+                self._conn = sqlite3.connect(Path(self.db_path).resolve().as_uri() + "?mode=ro", uri=True)
+            else:
+                self._conn = sqlite3.connect(self.db_path, timeout=30)
+            self._conn.row_factory = sqlite3.Row
+            try:
+                if self.readonly:
+                    self._conn.execute("PRAGMA query_only=ON")
+                else:
+                    self._conn.execute("PRAGMA busy_timeout=30000")
+                    if self._conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+                        self._conn.execute("PRAGMA journal_mode=WAL")
+                    self._conn.execute("PRAGMA foreign_keys=ON")
+                    if self._conn.execute("PRAGMA user_version").fetchone()[0] < self.SCHEMA_VERSION:
+                        self._conn.execute("BEGIN IMMEDIATE")
+                        if self._conn.execute("PRAGMA user_version").fetchone()[0] < self.SCHEMA_VERSION:
+                            self._init_tables()
+                        else:
+                            self._conn.commit()
+            except Exception:
+                self._conn.close()
+                self._conn = None
+                raise
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self._conn:
             if exc_type:
                 self._conn.rollback()
-            else:
+            elif not self.readonly:
                 self._conn.commit()
             self._conn.close()
             self._conn = None
@@ -144,6 +179,9 @@ class Database:
                 cost               REAL,
                 highest_price      REAL,
                 current_price      REAL,
+                price_updated_at   TEXT,
+                allow_t0           INTEGER NOT NULL DEFAULT 0,
+                atr_at_buy         REAL,
                 market_regime_at_buy TEXT,
                 trade_unit         INTEGER DEFAULT 100
             )
@@ -172,7 +210,8 @@ class Database:
                 total_assets    REAL,
                 position_count  INTEGER,
                 positions       TEXT,
-                updated_at      TEXT DEFAULT CURRENT_TIMESTAMP
+                updated_at      TEXT DEFAULT CURRENT_TIMESTAMP,
+                version         INTEGER NOT NULL DEFAULT 0
             )
         """)
 
@@ -230,6 +269,17 @@ class Database:
             c.execute("ALTER TABLE positions ADD COLUMN trade_unit INTEGER DEFAULT 100")
         except sqlite3.OperationalError:
             pass
+        position_columns = {row[1] for row in c.execute("PRAGMA table_info(positions)")}
+        for column, definition in (
+            ("price_updated_at", "TEXT"),
+            ("allow_t0", "INTEGER NOT NULL DEFAULT 0"),
+            ("atr_at_buy", "REAL"),
+        ):
+            if column not in position_columns:
+                c.execute(f"ALTER TABLE positions ADD COLUMN {column} {definition}")
+        account_columns = {row[1] for row in c.execute("PRAGMA table_info(account_state)")}
+        if "version" not in account_columns:
+            c.execute("ALTER TABLE account_state ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
 
         # ── 交易教训库 ──
         c.execute("""
@@ -289,6 +339,15 @@ class Database:
                 claimed_at    TEXT NOT NULL,
                 completed_at  TEXT,
                 error         TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS review_executions (
+                review_date  TEXT PRIMARY KEY,
+                status       TEXT NOT NULL,
+                claimed_at   TEXT NOT NULL,
+                completed_at TEXT,
+                error        TEXT
             )
         """)
 
@@ -398,6 +457,7 @@ class Database:
             ON k_minute (period, datetime)
         """)
 
+        self.conn.execute(f"PRAGMA user_version={self.SCHEMA_VERSION}")
         self.conn.commit()
         logger.debug(f"数据库初始化完成: {self.db_path}")
 
@@ -499,14 +559,25 @@ class Database:
         c = self.conn.cursor()
         for r in records:
             c.execute("""
-                INSERT OR REPLACE INTO k_daily
+                INSERT INTO k_daily
                 (code, date, open, high, low, close, volume, amount, turn, pctChg, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(code, date) DO UPDATE SET
+                    open=COALESCE(excluded.open, k_daily.open),
+                    high=COALESCE(excluded.high, k_daily.high),
+                    low=COALESCE(excluded.low, k_daily.low),
+                    close=COALESCE(excluded.close, k_daily.close),
+                    volume=COALESCE(excluded.volume, k_daily.volume),
+                    amount=COALESCE(excluded.amount, k_daily.amount),
+                    turn=COALESCE(excluded.turn, k_daily.turn),
+                    pctChg=COALESCE(excluded.pctChg, k_daily.pctChg),
+                    source=excluded.source
+                WHERE excluded.source != 'kt' OR k_daily.source='kt' OR k_daily.close IS NULL
             """, (
                 r["code"], r["date"],
                 r.get("open"), r.get("high"), r.get("low"), r.get("close"),
                 r.get("volume"), r.get("amount"),
-                r.get("turn", 0), r.get("pctChg", 0),
+                r.get("turn"), r.get("pctChg"),
                 source,
             ))
         self.conn.commit()
@@ -1398,21 +1469,17 @@ class Database:
             )
             total_assets = state.get("cash", 0) + market_value
 
-        c = self.conn.cursor()
-        c.execute("""
-            INSERT OR REPLACE INTO account_state
-            (id, initial_capital, cash, total_assets, position_count, positions, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?, ?)
-        """, (
-            state.get("initial_capital", 0),
-            state.get("cash", 0),
-            total_assets,
-            len(positions),
-            json.dumps(positions, ensure_ascii=False),
-            state.get("updated_at", datetime.now().isoformat()),
-        ))
+        state = {**state, "total_assets": total_assets}
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            version = self._write_account_state(cursor, state)
+        except Exception:
+            self.conn.rollback()
+            raise
         self.conn.commit()
         logger.debug("模拟账户状态写入SQLite")
+        return version
 
     def _write_account_state(self, cursor, state: Dict):
         """在调用方控制的事务内写入账户快照。"""
@@ -1425,10 +1492,26 @@ class Database:
                 if isinstance(pos, dict)
             )
             total_assets = state.get("cash", 0) + market_value
+        row = cursor.execute("SELECT version FROM account_state WHERE id=1").fetchone()
+        current_version = int(row[0]) if row else None
+        expected_version = state.get("_expected_version", _UNSET_VERSION)
+        if expected_version is not _UNSET_VERSION and expected_version != current_version:
+            raise AccountStateConflict(
+                f"账户状态版本冲突: expected={expected_version}, current={current_version}"
+            )
+        next_version = (current_version + 1) if current_version is not None else 0
         cursor.execute("""
-            INSERT OR REPLACE INTO account_state
-            (id, initial_capital, cash, total_assets, position_count, positions, updated_at)
-            VALUES (1, ?, ?, ?, ?, ?, ?)
+            INSERT INTO account_state
+            (id, initial_capital, cash, total_assets, position_count, positions, updated_at, version)
+            VALUES (1, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                initial_capital=excluded.initial_capital,
+                cash=excluded.cash,
+                total_assets=excluded.total_assets,
+                position_count=excluded.position_count,
+                positions=excluded.positions,
+                updated_at=excluded.updated_at,
+                version=excluded.version
         """, (
             state.get("initial_capital", 0),
             state.get("cash", 0),
@@ -1436,7 +1519,9 @@ class Database:
             len(positions),
             json.dumps(positions, ensure_ascii=False),
             state.get("updated_at", datetime.now().isoformat()),
+            next_version,
         ))
+        return next_version
 
     @staticmethod
     def _replace_positions(cursor, positions: Dict[str, Dict]):
@@ -1446,8 +1531,9 @@ class Database:
             cursor.execute("""
                 INSERT INTO positions
                 (code, name, shares, buy_price, buy_date, cost,
-                 highest_price, current_price, market_regime_at_buy, trade_unit)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 highest_price, current_price, price_updated_at, allow_t0,
+                 atr_at_buy, market_regime_at_buy, trade_unit)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 code,
                 pos.get("name", ""),
@@ -1457,6 +1543,9 @@ class Database:
                 pos.get("cost", 0),
                 pos.get("highest_price", 0),
                 pos.get("current_price") or pos.get("buy_price", 0),
+                pos.get("price_updated_at"),
+                int(bool(pos.get("allow_t0", False))),
+                pos.get("atr_at_buy"),
                 pos.get("market_regime_at_buy", ""),
                 pos.get("trade_unit", 100),
             ))
@@ -1493,20 +1582,22 @@ class Database:
         cursor = self.conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         try:
-            self._write_account_state(cursor, state)
+            version = self._write_account_state(cursor, state)
             self._replace_positions(cursor, state.get("positions", {}) or {})
         except Exception:
             self.conn.rollback()
             raise
         else:
             self.conn.commit()
+            return version
 
-    def record_account_transaction(self, state: Dict, trade: Dict) -> int:
+    def record_account_transaction(self, state: Dict, trade: Dict,
+                                   return_version: bool = False):
         """原子写入账户、持仓和成交，三者不会出现半成功状态。"""
         cursor = self.conn.cursor()
         cursor.execute("BEGIN IMMEDIATE")
         try:
-            self._write_account_state(cursor, state)
+            version = self._write_account_state(cursor, state)
             self._replace_positions(cursor, state.get("positions", {}) or {})
             trade_id = self._insert_trade(cursor, trade)
         except Exception:
@@ -1514,7 +1605,7 @@ class Database:
             raise
         else:
             self.conn.commit()
-            return trade_id
+            return (trade_id, version) if return_version else trade_id
 
     def claim_trade_plan_execution(self, plan_id: str, plan_date: str, payload_hash: str) -> Dict[str, Any]:
         """领取一次交易计划执行权；已领取的同一计划绝不重复下单。"""
@@ -1543,6 +1634,84 @@ class Database:
             SET status='completed', completed_at=?, error=?
             WHERE plan_id=? AND status='executing'
         """, (datetime.now().isoformat(), error or None, plan_id))
+        self.conn.commit()
+
+    def mark_trade_plan_needs_review(self, plan_id: str, error: str):
+        """执行异常可能已有部分成交，保留认领记录并要求人工核账。"""
+        self.conn.execute("""
+            UPDATE trade_plan_executions
+            SET status='needs_review', completed_at=?, error=?
+            WHERE plan_id=? AND status='executing'
+        """, (datetime.now().isoformat(), str(error)[:2000], plan_id))
+        self.conn.commit()
+
+    def get_trade_plan_execution(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM trade_plan_executions WHERE plan_id=?", (plan_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_execution_reviews(self, older_than_seconds: int = 0) -> Dict[str, List[Dict[str, Any]]]:
+        """列出已标复核及可能因崩溃滞留的领取，不更改状态或重放交易。"""
+        cutoff = (datetime.now() - timedelta(seconds=max(0, older_than_seconds))).isoformat()
+        result = {}
+        for table, key in (("trade_plan_executions", "plans"), ("review_executions", "reviews")):
+            rows = self.conn.execute(f"""
+                SELECT * FROM {table}
+                WHERE status='needs_review' OR (status='executing' AND claimed_at<=?)
+                ORDER BY claimed_at
+            """, (cutoff,)).fetchall()
+            result[key] = [dict(row) for row in rows]
+        return result
+
+    def mark_stale_executions_needs_review(self, older_than_seconds: int) -> Dict[str, int]:
+        """仅将超时的孤儿领取转人工复核；不重领、不重放。"""
+        if older_than_seconds <= 0:
+            raise ValueError("older_than_seconds 必须大于 0")
+        cutoff = (datetime.now() - timedelta(seconds=older_than_seconds)).isoformat()
+        changed = {}
+        cursor = self.conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
+        try:
+            for table, key in (("trade_plan_executions", "plans"), ("review_executions", "reviews")):
+                cursor.execute(f"""
+                    UPDATE {table}
+                    SET status='needs_review', completed_at=?,
+                        error=COALESCE(error, '领取超时，需核对已执行副作用')
+                    WHERE status='executing' AND claimed_at<=?
+                """, (datetime.now().isoformat(), cutoff))
+                changed[key] = cursor.rowcount
+        except Exception:
+            self.conn.rollback()
+            raise
+        self.conn.commit()
+        return changed
+
+    def claim_review_execution(self, review_date: str) -> Dict[str, Any]:
+        """同一交易日仅领取一次；崩溃后的 executing 需人工复核。"""
+        now = datetime.now().isoformat()
+        try:
+            self.conn.execute("""
+                INSERT INTO review_executions (review_date, status, claimed_at)
+                VALUES (?, 'executing', ?)
+            """, (review_date, now))
+            self.conn.commit()
+            return {"claimed": True, "status": "executing"}
+        except sqlite3.IntegrityError:
+            row = self.conn.execute(
+                "SELECT * FROM review_executions WHERE review_date=?", (review_date,)
+            ).fetchone()
+            return {"claimed": False, **(dict(row) if row else {"status": "unknown"})}
+
+    def complete_review_execution(self, review_date: str, error: str = ""):
+        self.conn.execute("""
+            UPDATE review_executions
+            SET status=?, completed_at=?, error=?
+            WHERE review_date=? AND status='executing'
+        """, (
+            "needs_review" if error else "completed",
+            datetime.now().isoformat(), error[:2000] or None, review_date,
+        ))
         self.conn.commit()
 
     def get_account_state(self) -> Optional[Dict]:

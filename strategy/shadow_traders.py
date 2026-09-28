@@ -60,12 +60,11 @@ def _adjust_score(entry: dict, variant: dict) -> float:
     if factor is None:
         return float(entry.get("composite", 50.0))
     from config import SIGNAL_WEIGHTS
+    from strategy.decision import get_effective_signal_weights
     dims = entry.get("dimensions") or {}
     weighted_sum = 0.0
     weight_total = 0.0
-    for name, weight in SIGNAL_WEIGHTS.items():
-        if name not in dims:
-            continue
+    for name, weight in get_effective_signal_weights(dims, SIGNAL_WEIGHTS).items():
         effective_weight = weight * (factor if name == "ml" else 1.0)
         weighted_sum += effective_weight * float(dims[name].get("score", 50.0))
         weight_total += effective_weight
@@ -178,7 +177,7 @@ def _load_outcome_map(db) -> Dict[tuple, float]:
     return outcome_map
 
 
-def compute_variant_metrics(db, variant_id: str) -> dict:
+def compute_variant_metrics(db, variant_id: str, outcome_map: Dict = None) -> dict:
     """
     汇总一个变体的影子绩效指标（基于 T+5 净收益反事实回填）。
 
@@ -189,7 +188,8 @@ def compute_variant_metrics(db, variant_id: str) -> dict:
         "SELECT decision_date, code, action FROM shadow_decisions WHERE variant_id=?",
         (variant_id,),
     ).fetchall()
-    outcome_map = _load_outcome_map(db)
+    if outcome_map is None:
+        outcome_map = _load_outcome_map(db)
 
     buy_returns: List[float] = []
     hold_returns: List[float] = []

@@ -397,7 +397,7 @@ class SimpleBacktestEngine:
         Returns:
             BacktestResult
         """
-        from data.history import get_daily
+        from data.history import get_daily, daily_history_usable
         from data.atr import calc_atr
         from risk.stop_loss import StopLossManager
 
@@ -408,7 +408,7 @@ class SimpleBacktestEngine:
         for code in stock_codes:
             try:
                 df = get_daily(code, start_date=start_date, end_date=end_date)
-                if df is not None and len(df) > 30:
+                if daily_history_usable(df) and len(df) > 30:
                     # 统一列名为小写
                     df.columns = [c.lower() for c in df.columns]
                     # 确保数值类型
@@ -431,10 +431,12 @@ class SimpleBacktestEngine:
         try:
             bm_code = benchmark_code.replace(".SH", "").replace(".SZ", "")
             benchmark_df = get_daily(bm_code, start_date=start_date, end_date=end_date)
-            if benchmark_df is not None:
+            if daily_history_usable(benchmark_df):
                 benchmark_df.columns = [c.lower() for c in benchmark_df.columns]
                 benchmark_df["close"] = pd.to_numeric(benchmark_df["close"], errors="coerce")
                 logger.info(f"  基准{benchmark_code}: {len(benchmark_df)}条K线")
+            else:
+                benchmark_df = None
         except Exception as e:
             logger.warning(f"  基准数据获取失败: {e}")
 
@@ -783,7 +785,7 @@ class SimpleBacktestEngine:
         from signals.technical import (
             ichimoku_signal, volume_profile_signal, macd_signal
         )
-        from strategy.decision import TradeDecision, DimensionScore
+        from strategy.decision import TradeDecision, DimensionScore, get_effective_signal_weights
         from config import SIGNAL_WEIGHTS, DECISION_BUY_THRESHOLD
 
         if df is None or len(df) < 30:
@@ -811,8 +813,9 @@ class SimpleBacktestEngine:
         dims["fundamental"] = DimensionScore("fundamental", 50, 0.0, "回测跳过")
 
         # 计算综合分
-        total_w = sum(SIGNAL_WEIGHTS.get(k, 0) for k in dims)
-        composite = sum(dims[k].score * SIGNAL_WEIGHTS.get(k, 0) for k in dims) / total_w if total_w > 0 else 50
+        effective = get_effective_signal_weights(dims, SIGNAL_WEIGHTS)
+        total_w = sum(effective.values())
+        composite = sum(dims[k].score * w for k, w in effective.items()) / total_w if total_w > 0 else 50
 
         # 决策
         if composite >= DECISION_BUY_THRESHOLD:

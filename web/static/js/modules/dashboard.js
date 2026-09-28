@@ -1,13 +1,12 @@
-// 漏斗阶段 → 候选验证页的"拒绝阶段"筛选。
-// 点击某阶段 = 查看停留在该关卡的候选证据；计划/成交属执行事实，不做跳转。
+// 漏斗是通过人数；拒绝筛选另设明确入口，避免把通过人数映射到拒绝原因。
 const FUNNEL_STAGES = [
-    { key: 'candidates', label: '候选观察', layer: '' },
-    { key: 'scored', label: '完成打分', layer: 'score_gate' },
-    { key: 'llm_evaluated', label: 'LLM 判断', layer: 'ranking_gate' },
-    { key: 'observations', label: '观察结论', layer: 'llm' },
-    { key: 'signals', label: '交易信号', layer: 'buy_budget' },
-    { key: 'planned_orders', label: '待执行计划', layer: null },
-    { key: 'filled', label: '模拟成交', layer: null },
+    { key: 'candidates', label: '候选观察' },
+    { key: 'scored', label: '完成打分' },
+    { key: 'llm_evaluated', label: 'LLM 判断' },
+    { key: 'observations', label: '观察结论' },
+    { key: 'signals', label: '交易信号' },
+    { key: 'planned_orders', label: '待执行计划' },
+    { key: 'filled', label: '模拟成交' },
 ];
 
 const FUNNEL_COLORS = ['#c66b3d', '#c08e3a', '#9a8b4f', '#7a8f6f', '#6b8a6e', '#55715b', '#3f5d4e'];
@@ -17,6 +16,9 @@ export class DashboardTab {
         this.app = app;
         this.chart = null;
         this.funnelChart = null;
+        this.requestId = 0;
+        document.getElementById('journey-all-candidates')?.addEventListener('click', () => this.jumpToResearchLayer(''));
+        document.getElementById('journey-rejected-candidates')?.addEventListener('click', () => this.jumpToResearchLayer('score_gate'));
         window.addEventListener('resize', () => {
             this.chart?.resize();
             this.funnelChart?.resize();
@@ -37,12 +39,14 @@ export class DashboardTab {
     }
 
     money(value, digits = 0) {
-        const number = Number(value || 0);
+        if (!this.isKnownNumber(value)) return '未知';
+        const number = Number(value);
         return `￥${number.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
     }
 
     signedMoney(value, digits = 0) {
-        const number = Number(value || 0);
+        if (!this.isKnownNumber(value)) return '未知';
+        const number = Number(value);
         return `${number > 0 ? '+' : number < 0 ? '-' : ''}${this.money(Math.abs(number), digits)}`;
     }
 
@@ -51,12 +55,13 @@ export class DashboardTab {
     }
 
     pct(value, digits = 1) {
-        const number = Number(value || 0) * 100;
+        if (!this.isKnownNumber(value)) return '未知';
+        const number = Number(value) * 100;
         return `${number > 0 ? '+' : ''}${number.toFixed(digits)}%`;
     }
 
     actionText(action) {
-        return { BUY: '买入', SELL: '卖出', HOLD: '观察' }[action] || this.text(action);
+        return { BUY: '买入', SELL: '卖出', HOLD: '观察' }[action] || this.escape(action);
     }
 
     tradePnlText(trade) {
@@ -83,6 +88,7 @@ export class DashboardTab {
     }
 
     async load() {
+        const requestId = ++this.requestId;
         const data = this.app.globalData;
         if (!data || !data.account) return;
         const [positionsData, performanceData, tradesData] = await Promise.all([
@@ -90,6 +96,7 @@ export class DashboardTab {
             this.fetchJson(`${this.app.apiBase}/performance?days=30`, { performance: [] }),
             this.fetchJson(`${this.app.apiBase}/trades?limit=30`, { total: 0, trades: [] }),
         ]);
+        if (requestId !== this.requestId || this.app.currentTab !== 'dashboard' || this.app.statusUnavailable) return;
         const positions = positionsData?.positions || [];
         const performance = performanceData?.performance || [];
         const trades = tradesData?.trades || [];
@@ -158,18 +165,22 @@ export class DashboardTab {
     }
 
     funnelValue(funnel, key) {
-        if (key === 'signals') return Number(funnel.buy_signals || 0) + Number(funnel.sell_signals || 0);
-        return Number(funnel[key] || 0);
+        if (key === 'signals') return this.isKnownNumber(funnel.buy_signals) && this.isKnownNumber(funnel.sell_signals)
+            ? Number(funnel.buy_signals) + Number(funnel.sell_signals) : null;
+        return this.isKnownNumber(funnel[key]) ? Number(funnel[key]) : null;
     }
 
     renderJourney(brief) {
         const funnel = brief.funnel || {};
         const data = FUNNEL_STAGES.map(stage => ({ ...stage, value: this.funnelValue(funnel, stage.key) }));
-        const signals = data.find(item => item.key === 'signals')?.value || 0;
+        const signals = data.find(item => item.key === 'signals')?.value;
+        const formatCount = value => this.isKnownNumber(value) ? String(value) : '未知';
         const footer = brief.is_trading_day === false
             ? '休市日不执行扫描和交易，所有阶段均为不适用。'
-            : `今日扫描 ${funnel.scan_cycles || 0} 轮；BUY ${funnel.buy_signals || 0}，SELL ${funnel.sell_signals || 0}，HOLD ${funnel.observations || 0}。${signals ? '交易信号仍需经过计划、风控和执行。' : '当前没有可执行交易信号。'}`;
+            : `今日扫描 ${formatCount(funnel.scan_cycles)} 轮；BUY ${formatCount(funnel.buy_signals)}，SELL ${formatCount(funnel.sell_signals)}，HOLD ${formatCount(funnel.observations)}。${signals === 0 ? '当前没有可执行交易信号。' : '交易信号仍需经过计划、风控和执行。'}`;
         this.setText('journey-foot', footer);
+        const list = document.getElementById('journey-values');
+        if (list) list.innerHTML = data.map(stage => `<li><span>${stage.label}</span><strong>${formatCount(stage.value)}</strong></li>`).join('');
         this.renderFunnel(data, brief.is_trading_day === false);
     }
 
@@ -182,36 +193,29 @@ export class DashboardTab {
         }
         if (!this.funnelChart) this.funnelChart = window.echarts.init(dom);
         this.funnelChart.off('click');
-        if (data.every(item => item.value === 0)) {
+        const knownStages = data.filter(item => item.value !== null);
+        if (data.every(item => item.value === 0 || item.value === null)) {
             this.funnelChart.clear();
             this.funnelChart.setOption({
                 title: {
-                    text: isClosedDay ? '休市日不执行扫描和交易' : '今日尚无决策旅程事实',
+                    text: isClosedDay ? '休市日不执行扫描和交易' : data.every(item => item.value === null) ? '阶段数量未知' : '今日尚无决策旅程事实',
                     left: 'center', top: 'middle',
-                    textStyle: { color: '#6f725e', fontSize: 11, fontWeight: 400 },
+                    textStyle: { color: '#4b5548', fontSize: 14, fontWeight: 400 },
                 },
                 series: [],
             }, true);
             setTimeout(() => this.funnelChart?.resize(), 50);
             return;
         }
-        this.funnelChart.on('click', params => {
-            const layer = data[params.dataIndex]?.layer;
-            if (layer === null || layer === undefined) return;
-            this.jumpToResearchLayer(layer);
-        });
         this.funnelChart.setOption({
             backgroundColor: 'transparent',
             tooltip: {
                 trigger: 'item',
                 backgroundColor: '#344234', borderWidth: 0,
-                textStyle: { color: '#e8dcc7', fontSize: 11 },
+                textStyle: { color: '#e8dcc7', fontSize: 12 },
                 formatter: params => {
-                    const stage = data[params.dataIndex];
-                    const hint = stage.layer === null ? '执行阶段事实，详见"计划结果"'
-                        : stage.layer === '' ? '点击查看全部候选证据'
-                            : '点击查看停留该关卡的候选证据';
-                    return `${params.name}：${params.value} 次<br/>${hint}`;
+                    const stage = knownStages[params.dataIndex];
+                    return `${stage?.label || params.name}：${stage?.value === undefined ? '未知' : `${stage.value} 次`}`;
                 },
             },
             series: [{
@@ -221,14 +225,14 @@ export class DashboardTab {
                 maxSize: '100%',
                 gap: 4,
                 left: 30, right: 30, top: 8, bottom: 8,
-                label: { show: true, position: 'inside', formatter: '{b}　{c}', color: '#2f392d', fontSize: 11, fontWeight: 600 },
+                label: { show: true, position: 'inside', formatter: '{b}　{c}', color: '#2f392d', fontSize: 12, fontWeight: 600 },
                 labelLine: { show: false },
                 itemStyle: { borderColor: 'transparent', opacity: 0.9 },
                 emphasis: { label: { fontSize: 12 } },
-                data: data.map((item, index) => ({
+                data: knownStages.map(item => ({
                     name: item.label,
                     value: item.value,
-                    itemStyle: { color: FUNNEL_COLORS[index] },
+                    itemStyle: { color: FUNNEL_COLORS[FUNNEL_STAGES.findIndex(stage => stage.key === item.key)] },
                 })),
             }],
         }, true);
@@ -238,14 +242,22 @@ export class DashboardTab {
     jumpToResearchLayer(layer) {
         const select = document.getElementById('research-layer');
         if (select) select.value = layer;
+        const today = this.app.globalData?.daily_trader?.date;
+        if (today) {
+            const start = document.getElementById('research-start');
+            const end = document.getElementById('research-end');
+            if (start) start.value = today;
+            if (end) end.value = today;
+        }
+        this.app.tabs.research.page = 1;
         this.app.switchTab('research');
     }
 
     renderAudit(brief) {
         const funnel = brief.funnel || {};
-        this.setText('audit-blocked', String(funnel.blocked || 0));
-        this.setText('audit-skipped', String(funnel.skipped || 0));
-        this.setText('audit-failed', String(funnel.failed || 0));
+        this.setText('audit-blocked', this.text(funnel.blocked, '未知'));
+        this.setText('audit-skipped', this.text(funnel.skipped, '未知'));
+        this.setText('audit-failed', this.text(funnel.failed, '未知'));
         const container = document.getElementById('order-audit-list');
         const audits = brief.order_audit || [];
         if (!container) return;
@@ -293,12 +305,14 @@ export class DashboardTab {
     renderAccount(data, positions, performance, totalTrades) {
         const account = data.account || {};
         const latest = performance.length ? performance[performance.length - 1] : {};
-        const totalPnl = account.total_pnl !== undefined ? Number(account.total_pnl) : Number(account.total_assets || 0) - Number(account.initial_capital || 0);
+        const totalPnl = this.isKnownNumber(account.total_pnl) ? Number(account.total_pnl)
+            : this.isKnownNumber(account.total_assets) && this.isKnownNumber(account.initial_capital)
+                ? Number(account.total_assets) - Number(account.initial_capital) : null;
         const positionValue = positions.reduce((sum, item) => sum + Number(item.market_value || 0), 0);
         const cashRatio = Number(account.total_assets || 0) > 0 ? Number(account.cash || 0) / Number(account.total_assets) : 0;
         this.setText('total-assets', this.money(account.total_assets));
         this.setText('total-pnl', `${this.signedMoney(totalPnl)} · ${this.pct(account.total_pnl_pct, 2)}`);
-        this.setText('daily-pnl', this.signedMoney(latest.daily_pnl || 0));
+        this.setText('daily-pnl', this.signedMoney(latest.daily_pnl));
         this.setText('available-cash', this.money(account.cash));
         this.setText('cash-ratio', `现金占比 ${(cashRatio * 100).toFixed(1)}%`);
         this.setText('position-count', `${positions.length} 只`);
@@ -349,7 +363,7 @@ export class DashboardTab {
                     <div class="position-head"><strong>${this.escape(pos.name || pos.code)}</strong><small>${this.escape(pos.code)}</small></div>
                     <div class="position-numbers">
                         <div><span>持股</span><b>${Number(pos.shares || 0).toLocaleString('zh-CN')} 股</b></div>
-                        <div><span>当前价格</span><b>${this.money(pos.current_price, 2)}</b></div>
+                        <div><span>${pos.price_fresh ? '实时价格' : '存储价格 · 非实时'}</span><b>${this.money(pos.current_price, 2)}</b><small>${this.escape(pos.price_as_of || '报价时间未知')}</small></div>
                         <div><span>浮动盈亏</span><b class="${this.pnlClass(pos.pnl)}">${this.signedMoney(pos.pnl)} ${this.pct(pos.pnl_pct, 2)}</b></div>
                     </div>
                     ${riskRow}
@@ -377,11 +391,12 @@ export class DashboardTab {
         const dom = document.getElementById('perf-chart');
         if (!dom || !window.echarts) return;
         if (!this.chart) this.chart = window.echarts.init(dom);
-        const values = performance.map(item => Number(item.total_assets || 0));
+        const values = performance.map(item => this.isKnownNumber(item.total_assets) ? Number(item.total_assets) : null);
         const firstAssets = values.find(v => v > 0) || 0;
-        const hasBenchmark = performance.some(item => Number(item.benchmark_pnl_pct || 0) !== 0);
+        const hasBenchmark = performance.some(item => this.isKnownNumber(item.benchmark_pnl_pct));
         const benchmarkValues = hasBenchmark && firstAssets > 0
-            ? performance.map(item => firstAssets * (1 + Number(item.benchmark_pnl_pct || 0)))
+            ? performance.map(item => this.isKnownNumber(item.benchmark_pnl_pct)
+                ? firstAssets * (1 + Number(item.benchmark_pnl_pct)) : null)
             : [];
         const series = [
             {
@@ -407,12 +422,12 @@ export class DashboardTab {
         this.chart.setOption({
             backgroundColor: 'transparent',
             legend: hasBenchmark
-                ? { data: ['账户净值', '沪深300基准'], textStyle: { color: '#6f725e', fontSize: 9 }, top: 0, right: 0 }
+                ? { data: ['账户净值', '沪深300基准'], textStyle: { color: '#4b5548', fontSize: 12 }, top: 0, right: 0 }
                 : undefined,
             tooltip: { trigger: 'axis', backgroundColor: '#344234', borderWidth: 0, textStyle: { color: '#e8dcc7' } },
             grid: { left: 10, right: 16, top: hasBenchmark ? 36 : 28, bottom: 18, containLabel: true },
-            xAxis: { type: 'category', data: performance.map(item => item.date?.slice(5)), axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, axisLabel: { color: '#6f725e', fontSize: 9 } },
-            yAxis: { type: 'value', scale: true, axisLabel: { color: '#6f725e', fontSize: 9, formatter: value => `${(value / 10000).toFixed(0)}万` }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.1)' } } },
+            xAxis: { type: 'category', data: performance.map(item => item.date?.slice(5)), axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, axisLabel: { color: '#4b5548', fontSize: 12 } },
+            yAxis: { type: 'value', scale: true, axisLabel: { color: '#4b5548', fontSize: 12, formatter: value => `${(value / 10000).toFixed(0)}万` }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.1)' } } },
             series,
         });
         setTimeout(() => this.chart?.resize(), 50);

@@ -43,7 +43,6 @@ _INTERNAL_PATTERNS = [
 
 _PROMPT_LEAK_MARKERS = (
     "推理推断",
-    "用户要求",
     "必须严格返回JSON",
     "严格返回JSON",
     "决策必须是BUY",
@@ -72,7 +71,12 @@ def sanitize_public_log_error(event_type: Any, error: Any) -> str:
         return ""
     if str(event_type or "") in _PUBLIC_INTERNAL_EVENT_ACTIONS:
         return ""
-    return "公开页面已隐藏错误细节"
+    text = str(error).lower()
+    if any(value in text for value in ("timeout", "超时", "connection", "连接")):
+        return "数据源暂时不可达，请稍后重试"
+    if any(value in text for value in ("sqlite", "database", "数据库")):
+        return "数据存储读取异常，等待维护检查"
+    return "该动作未完成，等待系统复查"
 
 
 def sanitize_public_text(value: Any, max_len: int = 220) -> str:
@@ -101,7 +105,12 @@ def sanitize_public_text(value: Any, max_len: int = 220) -> str:
 def _sanitize_strategy_directive(directive: Dict[str, Any]) -> Dict[str, Any]:
     """公开展示策略版本时保留产品信息，隐藏可能夹带的内部内容。"""
     directive_params = directive.get("params") or {}
+    if not isinstance(directive_params, dict):
+        directive_params = {}
     evaluation = directive.get("evaluation") or {}
+    if not isinstance(evaluation, dict):
+        evaluation = {}
+    from web.read_store import number
     return {
         "version": sanitize_public_text(directive.get("version"), 64),
         "effective_date": sanitize_public_text(directive.get("effective_date"), 16),
@@ -116,9 +125,9 @@ def _sanitize_strategy_directive(directive: Dict[str, Any]) -> Dict[str, Any]:
             "evidence": sanitize_public_text(evaluation.get("evidence"), 220),
         },
         "params": {
-            "top_k": directive_params.get("top_k"),
-            "min_score": directive_params.get("min_score"),
-            "max_weight": directive_params.get("max_weight"),
+            "top_k": number(directive_params.get("top_k")),
+            "min_score": number(directive_params.get("min_score")),
+            "max_weight": number(directive_params.get("max_weight")),
         },
     }
 
@@ -126,6 +135,10 @@ def _sanitize_strategy_directive(directive: Dict[str, Any]) -> Dict[str, Any]:
 def _sanitize_daily_trader(value: Dict[str, Any]) -> Dict[str, Any]:
     """公开每日简报保留交易事实，隐藏内部审计细节。"""
     funnel = value.get("funnel") or {}
+    from web.read_store import number
+    def count_or_unknown(key):
+        raw = number(funnel.get(key))
+        return int(raw) if raw is not None and raw >= 0 and raw.is_integer() else None
     strategy = value.get("strategy") or {}
     audits = []
     for item in (value.get("order_audit") or [])[:12]:
@@ -145,13 +158,15 @@ def _sanitize_daily_trader(value: Dict[str, Any]) -> Dict[str, Any]:
         "explanation": sanitize_public_text(value.get("explanation"), 220),
         "next_action": sanitize_public_text(value.get("next_action"), 220),
         "funnel": {
-            key: int(funnel.get(key) or 0)
+            key: count_or_unknown(key)
             for key in (
                 "scan_cycles", "candidates", "scored", "llm_evaluated", "observations",
                 "buy_signals", "sell_signals", "planned_orders", "filled", "blocked", "failed", "skipped"
             )
         },
         "order_audit": audits,
+        "order_audit_total": len(value.get("order_audit") or []),
+        "degradations_total": len(value.get("degradations") or []),
         "degradations": [
             {
                 "key": sanitize_public_text(item.get("key"), 24),
@@ -212,8 +227,23 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     account = snapshot.get("account") or {}
     directive = snapshot.get("strategy_directive") or {}
     pending_directive = snapshot.get("pending_strategy_directive") or {}
+    reviews = snapshot.get("execution_reviews") or {}
+    review_counts = {"plans": len(reviews.get("plans") or []), "reviews": len(reviews.get("reviews") or [])}
+    review_counts["requires_attention"] = bool(review_counts["plans"] or review_counts["reviews"])
+    if review_counts["requires_attention"]:
+        risk_warnings.append("存在未完成的执行或复盘，需核对，系统不会自动重放")
+    from web.read_store import number
+    adaptive = snapshot.get("adaptive") or {}
+    if not isinstance(adaptive, dict):
+        adaptive = {}
+    adaptive_weights = adaptive.get("weights") or {}
+    if not isinstance(adaptive_weights, dict):
+        adaptive_weights = {}
     return {
         "timestamp": snapshot.get("timestamp"),
+        "fetched_at": snapshot.get("fetched_at"),
+        "snapshot_at": snapshot.get("snapshot_at") or snapshot.get("timestamp"),
+        "data_as_of": snapshot.get("data_as_of"),
         "public_mode": True,
         "health": {
             "ok": bool(health.get("ok", True)),
@@ -227,27 +257,33 @@ def sanitize_status_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
             "paused": bool(control.get("paused")),
         },
         "account": {
-            "available": bool(account.get("available", True)),
-            "initial_capital": account.get("initial_capital", 0.0),
-            "total_assets": account.get("total_assets", 0.0),
-            "cash": account.get("cash", 0.0),
+            "available": bool(account.get("available")),
+            "data_as_of": account.get("data_as_of"),
+            "initial_capital": number(account.get("initial_capital")),
+            "total_assets": number(account.get("total_assets")),
+            "cash": number(account.get("cash")),
             "positions": account.get("positions", []),
-            "total_pnl": account.get("total_pnl", 0.0),
-            "total_pnl_pct": account.get("total_pnl_pct", 0.0),
+            "total_pnl": number(account.get("total_pnl")),
+            "total_pnl_pct": number(account.get("total_pnl_pct")),
         },
-        "adaptive": snapshot.get("adaptive") or {},
+        "adaptive": {**{key: number(adaptive.get(key)) for key in ("buy_threshold", "min_score", "position_scale", "top_k_delta")},
+                     "weights": {key: number(adaptive_weights.get(key)) for key in ("technical", "capital", "sentiment", "emotion", "fundamental", "ml")},
+                     "regime": sanitize_public_text(adaptive.get("regime"), 24),
+                     "last_update": sanitize_public_text(adaptive.get("last_update"), 32)},
         "regime_current": {
             "regime": sanitize_public_text(snapshot["regime_current"].get("regime"), 24),
             "date": sanitize_public_text(snapshot["regime_current"].get("date"), 16),
-            "confidence": snapshot["regime_current"].get("confidence"),
+            "confidence": number(snapshot["regime_current"].get("confidence")),
             "source": "market_regimes",
             "fresh": snapshot["regime_current"].get("fresh") is True,
         } if snapshot.get("regime_current") else None,
         "strategy_directive": _sanitize_strategy_directive(directive) if directive else None,
         "pending_strategy_directive": _sanitize_strategy_directive(pending_directive) if pending_directive else None,
         "crash_open": bool(snapshot.get("crash_open")),
-        "pipeline_progress": snapshot.get("pipeline_progress") or {},
+        "pipeline_progress": {key: bool((snapshot.get("pipeline_progress") if isinstance(snapshot.get("pipeline_progress"), dict) else {}).get(key)) for key in ("prefetch", "scan", "execute", "review")},
         "recent_logs": recent_logs,
+        "recent_logs_total": len(snapshot.get("recent_logs") or []),
+        "execution_reviews": review_counts,
         "risk_warnings": risk_warnings,
         "daily_trader": _sanitize_daily_trader(snapshot.get("daily_trader") or {}),
         "capabilities": [

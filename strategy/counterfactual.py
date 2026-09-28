@@ -10,11 +10,14 @@ import os
 import uuid
 from datetime import datetime
 from typing import Dict, List
+from config import PAPER_SLIPPAGE_RATE
 
 logger = logging.getLogger("strategy.counterfactual")
 
 HORIZONS = (1, 3, 5, 10)
-COUNTERFACTUAL_SLIPPAGE_RATE = float(os.environ.get("COUNTERFACTUAL_SLIPPAGE_RATE", "0.0005"))
+COUNTERFACTUAL_SLIPPAGE_RATE = float(
+    os.environ.get("COUNTERFACTUAL_SLIPPAGE_RATE", str(PAPER_SLIPPAGE_RATE))
+)
 
 
 def _scan_id(plan, observed_at: str) -> str:

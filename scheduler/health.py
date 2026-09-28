@@ -34,7 +34,7 @@ def _check_env(name: str, required: bool = False) -> HealthItem:
     return HealthItem(f"环境变量:{name}", not required, "未配置，将使用降级能力" if not required else "未配置", required)
 
 
-def run_health_check(db_path: str = None, control_file: str = None) -> List[HealthItem]:
+def run_health_check(db_path: str = None, control_file: str = None, *, readonly: bool = False) -> List[HealthItem]:
     """执行健康检查"""
     items = []
 
@@ -50,7 +50,7 @@ def run_health_check(db_path: str = None, control_file: str = None) -> List[Heal
     stats = {}
     try:
         from data.database import Database
-        with Database(db_path=db_path) as db:
+        with Database(db_path=db_path, readonly=readonly) as db:
             stats = db.get_stats()
         items.append(HealthItem("SQLite数据库", True, f"可用，表统计={stats}", True))
     except Exception as e:
@@ -58,16 +58,22 @@ def run_health_check(db_path: str = None, control_file: str = None) -> List[Heal
 
     # 交易通道
     try:
-        from execution.broker import get_broker_adapter
-        broker = get_broker_adapter()
-        items.append(HealthItem("交易通道", True, f"mode={broker.mode}", True))
+        from config import BROKER_MODE
+        if readonly:
+            mode = BROKER_MODE
+            if mode != "paper":
+                raise RuntimeError("只读状态检查仅确认模拟盘交易通道，未验证真实券商")
+        else:
+            from execution.broker import get_broker_adapter
+            mode = get_broker_adapter().mode
+        items.append(HealthItem("交易通道", True, f"mode={mode}", True))
     except Exception as e:
         items.append(HealthItem("交易通道", False, str(e), True))
 
     # 交易记忆闭环：复盘教训/决策记录/prompt进化建议
     try:
         from data.database import Database
-        with Database(db_path=db_path) as db:
+        with Database(db_path=db_path, readonly=readonly) as db:
             lessons = stats.get("lessons", 0)
             decisions = stats.get("llm_decisions", 0)
             try:

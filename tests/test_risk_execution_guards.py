@@ -49,8 +49,9 @@ def test_single_position_cap():
         total_assets = account.total_assets()
         cap_value = total_assets * MAX_SINGLE_PCT
 
-        # 初始资金100万, 20%上限=20万; 价格50元 → 上限内4000股
-        trade = account.buy("600519", "贵州茅台", 50.0, shares=6000)
+        # 历史固定价格场景显式回放；生产纸单成交会加滑点后重新计算上限。
+        trade = account.buy("600519", "贵州茅台", 50.0, shares=6000,
+                            execution_context="replay")
         assert_true(trade is not None, "买入订单可执行")
         assert_true(
             account.positions["600519"]["shares"] == int(cap_value / 50.0 / 100) * 100,
@@ -71,7 +72,8 @@ def test_single_position_cap_small_lot():
     try:
         account = PaperAccount(filepath=account_path, db_path=db_path)
         # 20%上限约20万, 请求单价5000元/股 → 上限内不足1手(100股=50万)
-        trade = account.buy("603001", "高价股", 5000.0, shares=100)
+        trade = account.buy("603001", "高价股", 5000.0, shares=100,
+                            execution_context="replay")
         assert_true(trade is None, "上限内不足1手买入被拒绝")
         assert_true(not account.positions, "账户无持仓")
     finally:

@@ -24,7 +24,9 @@ from config import (
     MIN_TRADE_UNIT,
     USE_ATR_STOP,
     ATR_MULTIPLIER,
+    PAPER_SLIPPAGE_RATE,
 )
+from data.quote_validation import validate_quote
 
 logger = logging.getLogger("execution.account")
 
@@ -54,10 +56,13 @@ class PaperAccount:
     # 【Phase1-Task5】添加线程锁，防止并发读写JSON文件导致数据损坏
     _lock = threading.RLock()  # 可重入锁：sell()内调用_save()需要嵌套加锁
 
-    def __init__(self, filepath: str = None, db_path: str = None):
+    def __init__(self, filepath: str = None, db_path: str = None, read_only: bool = False):
         self.filepath = filepath or PAPER_ACCOUNT_FILE
         self.db_path = db_path
-        self._ensure_data_dir()
+        self.read_only = read_only
+        self._version = None
+        if not read_only:
+            self._ensure_data_dir()
         self._load()
 
     def _ensure_data_dir(self):
@@ -88,27 +93,34 @@ class PaperAccount:
         with self._lock:
             try:
                 from data.database import Database
-                with Database(db_path=self.db_path) as db:
+                with Database(db_path=self.db_path, readonly=self.read_only) as db:
                     state = db.get_account_state()
                     
                 if state:
                     self.initial_capital = state.get("initial_capital", INITIAL_CAPITAL)
                     self.cash = state.get("cash", self.initial_capital)
                     self.positions = state.get("positions", {}) or {}
-                    with Database(db_path=self.db_path) as db:
+                    self._version = state.get("version")
+                    with Database(db_path=self.db_path, readonly=self.read_only) as db:
                         self.trades = db.get_trade_history(limit=200)
                     self.created_at = state.get("updated_at", datetime.now().isoformat())
                     self.updated_at = state.get("updated_at", datetime.now().isoformat())
                     logger.info(f"从SQLite加载账户: 现金={self.cash:.0f} 持仓={len(self.positions)}只")
                 else:
+                    if self.read_only:
+                        raise FileNotFoundError("只读账户缺少 SQLite 状态记录")
                     logger.info("SQLite中无账户状态记录，尝试从备份JSON载入...")
                     self._load_from_json()
             except Exception as e:
+                if self.read_only:
+                    raise
                 logger.error(f"从SQLite加载账户状态失败, 退回使用JSON备份载入: {e}")
                 self._load_from_json()
 
     def _init_new(self):
         """初始化新账户"""
+        if self.read_only:
+            raise RuntimeError("只读账户不可初始化")
         self.initial_capital = INITIAL_CAPITAL
         self.cash = INITIAL_CAPITAL
         self.positions = {}
@@ -130,9 +142,10 @@ class PaperAccount:
         }
         from data.database import Database
         with Database(db_path=self.db_path) as db:
-            db.save_account_snapshot({
+            self._version = db.save_account_snapshot({
                 **data,
-                "total_assets": self.total_assets()
+                "total_assets": self.total_assets(),
+                "_expected_version": self._version,
             })
 
     def _snapshot_data(self) -> dict:
@@ -165,6 +178,8 @@ class PaperAccount:
 
     def _save(self):
         """保存非交易账户状态；账户和持仓投影使用同一 SQLite 事务。"""
+        if self.read_only:
+            raise RuntimeError("只读账户不可保存")
         self.updated_at = datetime.now().isoformat()
         with self._lock:
             try:
@@ -213,16 +228,127 @@ class PaperAccount:
             return False
         return True
 
+    @staticmethod
+    def _quote_field(quote, key, default=None):
+        return quote.get(key, default) if isinstance(quote, dict) else getattr(quote, key, default)
+
+    def _validate_execution_quote(self, code: str, name: str, price: float,
+                                  quote, side: str) -> bool:
+        if quote is None:
+            logger.warning("拒绝交易: %s 缺少可验证的实时行情", code)
+            return False
+        checked = validate_quote(quote, expected_code=code)
+        if not checked.valid or abs(checked.price - float(price)) > max(0.01, checked.price * 0.001):
+            logger.warning("拒绝交易: %s 行情无效或价格不一致: %s", code, checked.reason)
+            return False
+        volume = self._quote_field(quote, "volume")
+        if volume is not None:
+            try:
+                traded_volume = float(volume)
+            except (TypeError, ValueError):
+                traded_volume = 0
+            if not math.isfinite(traded_volume) or traded_volume <= 0:
+                logger.warning("拒绝交易: %s 无有效成交量，可能停牌", code)
+                return False
+        # 可转债的涨跌幅制度与股票不同；只使用行情源明确提供的板价。
+        limit_key = "up_limit" if side == "BUY" else "down_limit"
+        limit = self._quote_field(quote, limit_key)
+        try:
+            limit = float(limit)
+        except (TypeError, ValueError):
+            limit = float("nan")
+        if not math.isfinite(limit) or limit <= 0:
+            if code.startswith(("11", "12", "5")):
+                if side == "BUY":
+                    logger.warning("拒绝买入: %s 缺少证券专属涨跌停价", code)
+                    return False
+                logger.warning("%s 缺少证券专属跌停价；依据新鲜报价模拟风险退出，成交可行性未知", code)
+                return True
+            previous = self._quote_field(quote, "close_prev")
+            try:
+                previous = float(previous)
+            except (TypeError, ValueError):
+                previous = 0.0
+            if previous <= 0:
+                if side == "BUY":
+                    logger.warning("拒绝买入: %s 缺少可核验昨收价", code)
+                    return False
+                logger.warning("%s 缺少昨收价；依据新鲜报价模拟风险退出，成交可行性未知", code)
+                return True
+            if code.startswith(("300", "301", "302", "688", "689")):
+                ratio = 0.20
+            elif code.startswith(("4", "8", "92")):
+                ratio = 0.30
+            elif str(name).upper().startswith(("ST", "*ST")):
+                ratio = 0.05
+            else:
+                ratio = 0.10
+            limit = round(previous * (1 + ratio if side == "BUY" else 1 - ratio) + 1e-8, 2)
+        fill_price = self._execution_price(price, side, "paper")
+        at_limit = fill_price >= limit - 0.005 if side == "BUY" else fill_price <= limit + 0.005
+        if at_limit:
+            logger.warning("拒绝交易: %s %s 封板价 %.2f", code, side, limit)
+            return False
+        return True
+
+    @staticmethod
+    def _execution_price(price: float, side: str, execution_context: str) -> float:
+        if execution_context not in ("paper", "replay"):
+            raise ValueError("execution_context 必须是 paper 或 replay")
+        if execution_context == "replay":
+            return float(price)
+        return float(price) * (1 + PAPER_SLIPPAGE_RATE if side == "BUY" else 1 - PAPER_SLIPPAGE_RATE)
+
+    def _risk_state_path(self, filename: str) -> str:
+        from config import DATA_DIR
+        override = os.environ.get("ALPHAPILOT_RISK_STATE_DIR")
+        directory = override or os.path.dirname(os.path.abspath(self.filepath))
+        if not override and os.path.abspath(directory) == os.path.abspath(DATA_DIR):
+            directory = DATA_DIR
+        return os.path.join(directory, filename)
+
+    def _check_execution_gate(self, side: str, trade_date: str = None) -> bool:
+        from scheduler.control import get_auto_control_state
+        from risk.drawdown import DrawdownController
+        from risk.system_risk import SystemRiskController
+
+        control = get_auto_control_state(self._risk_state_path("auto_control.json"))
+        if control.get("paused"):
+            logger.warning("交易暂停: %s", control.get("reason", ""))
+            return False
+        try:
+            drawdown = DrawdownController(state_file=self._risk_state_path("circuit_breaker.json"))
+            check = drawdown.is_trading_allowed(today=trade_date)
+            if not check["allowed"]:
+                logger.warning("回撤熔断: %s", check["reason"])
+                return False
+            system = SystemRiskController(state_file=self._risk_state_path("system_risk.json"))
+            if system.state.system_halted:
+                logger.warning("系统急停: %s", system.state.halt_reason)
+                return False
+            if side == "BUY" and not system.is_new_buy_allowed(today=trade_date)["allowed"]:
+                logger.warning("系统风控禁止开新仓")
+                return False
+        except Exception as exc:
+            logger.error("风控状态不可读取，拒绝交易: %s", exc)
+            return False
+        return True
+
     def _persist_trade(self, trade: dict):
         """将一次成交作为单一事务提交，再刷新 JSON 备份。"""
+        if self.read_only:
+            raise RuntimeError("只读账户不可交易")
         self.updated_at = datetime.now().isoformat()
         state = {
             **self._snapshot_data(),
             "total_assets": self.total_assets(),
+            "_expected_version": self._version,
         }
         from data.database import Database
         with Database(db_path=self.db_path) as db:
-            trade_id = db.record_account_transaction(state, trade)
+            trade_id, self._version = db.record_account_transaction(
+                state, trade, return_version=True,
+            )
             trade["id"] = trade_id
         try:
             self._write_json_snapshot(self._snapshot_data())
@@ -322,6 +448,9 @@ class PaperAccount:
         signal_detail: str = "",
         market_regime: str = "",
         dimensions: dict = None,
+        prices: Dict[str, float] = None,
+        quote=None,
+        execution_context: str = "paper",
     ) -> Optional[dict]:
         """
         买入股票（加锁保证读-改-写的原子性）
@@ -341,13 +470,29 @@ class PaperAccount:
             交易记录 dict 或 None
         """
         with self._lock:
+            if self.read_only:
+                return None
             effective_trade_date = self._normalize_trade_date(trade_date)
             if not effective_trade_date:
+                return None
+            if execution_context == "paper" and not self._check_execution_gate("BUY", effective_trade_date):
                 return None
             # T+0 只代表交收规则，不自动推断交易单位；可转债订单会显式传10。
             unit = max(1, int(trade_unit or MIN_TRADE_UNIT))
             if not self._validate_trade_input(code, price, shares=shares, amount=amount, trade_unit=unit):
                 return None
+            if execution_context == "paper" and not self._validate_execution_quote(code, name, price, quote, "BUY"):
+                return None
+            if execution_context == "paper" and prices is None and self.positions:
+                logger.warning("持仓缺少新鲜报价映射，禁止新买入")
+                return None
+            if prices is not None and any(
+                held not in prices or not self._is_positive_finite(prices[held])
+                for held in self.positions
+            ):
+                logger.warning("持仓新鲜报价不完整，禁止新买入")
+                return None
+            price = self._execution_price(price, "BUY", execution_context)
             if self.has_position(code):
                 logger.warning(f"已持有 {name}({code}), 不重复买入")
                 return None
@@ -368,7 +513,7 @@ class PaperAccount:
 
             # 单票仓位上限（MAX_SINGLE_PCT）对显式传入股数的路径同样强制生效，
             # 防止 LLM target_weight 或外部调用绕过约束。
-            account_total = self.total_assets()
+            account_total = self.total_assets(prices)
             cap_value = account_total * MAX_SINGLE_PCT
             requested_cost = shares * price
             if account_total > 0 and requested_cost > cap_value:
@@ -413,6 +558,7 @@ class PaperAccount:
                 "cost": cost,
                 "highest_price": price,
                 "current_price": price,
+                "price_updated_at": datetime.now().isoformat(),
                 "atr_at_buy": atr if atr and atr > 0 else 0.0,
                 "allow_t0": bool(allow_t0),
                 "trade_unit": unit,
@@ -460,6 +606,8 @@ class PaperAccount:
         signal_detail: str = "",
         market_regime: str = "",
         dimensions: dict = None,
+        quote=None,
+        execution_context: str = "paper",
     ) -> Optional[dict]:
         """
         卖出股票（加锁保证读-改-写的原子性）
@@ -475,11 +623,20 @@ class PaperAccount:
             交易记录 dict 或 None
         """
         with self._lock:
+            if self.read_only:
+                return None
+            if execution_context == "paper" and not self._check_execution_gate("SELL", trade_date):
+                return None
             if code not in self.positions:
                 logger.warning(f"未持有 {code}, 无法卖出")
                 return None
 
             pos = self.positions[code]
+            if execution_context == "paper" and not self._validate_execution_quote(
+                code, pos.get("name", code), price, quote, "SELL"
+            ):
+                return None
+            price = self._execution_price(price, "SELL", execution_context)
             if not self._validate_trade_input(
                 code, price, shares=shares, is_sell=True,
                 trade_unit=pos.get("trade_unit", MIN_TRADE_UNIT),
@@ -518,6 +675,7 @@ class PaperAccount:
             else:
                 pos["shares"] -= shares
                 pos["current_price"] = price
+                pos["price_updated_at"] = datetime.now().isoformat()
 
             profit_pct = (price - pos_snapshot["buy_price"]) / pos_snapshot["buy_price"] * 100
             pnl_val = (price - pos_snapshot["buy_price"]) * shares - commission - stamp_tax
@@ -561,10 +719,17 @@ class PaperAccount:
 
     def update_highest_price(self, code: str, price: float):
         """更新持仓最高价（用于移动止损）"""
-        if code in self.positions:
-            if price > self.positions[code]["highest_price"]:
+        with self._lock:
+            if self.read_only:
+                raise RuntimeError("只读账户不可更新持仓")
+            if code in self.positions and price > self.positions[code]["highest_price"]:
+                before = self.positions[code]["highest_price"]
                 self.positions[code]["highest_price"] = price
-                self._save()
+                try:
+                    self._save()
+                except Exception:
+                    self.positions[code]["highest_price"] = before
+                    raise
 
     def update_price(self, code: str, price: float):
         """更新持仓最新价（收盘快照写回，供每日净值/市值按真实价记账）。
@@ -572,12 +737,21 @@ class PaperAccount:
         current_price 此前只在买入和部分卖出时写入，盘后一直停留在买入价，
         导致收盘快照与次日复盘的日盈亏按成本价口径失真。
         """
-        if code in self.positions and self._is_positive_finite(price):
-            pos = self.positions[code]
-            pos["current_price"] = float(price)
-            if price > pos.get("highest_price", 0):
-                pos["highest_price"] = float(price)
-            self._save()
+        with self._lock:
+            if self.read_only:
+                raise RuntimeError("只读账户不可更新价格")
+            if code in self.positions and self._is_positive_finite(price):
+                pos = self.positions[code]
+                before = dict(pos)
+                pos["current_price"] = float(price)
+                pos["price_updated_at"] = datetime.now().isoformat()
+                if price > pos.get("highest_price", 0):
+                    pos["highest_price"] = float(price)
+                try:
+                    self._save()
+                except Exception:
+                    self.positions[code] = before
+                    raise
 
     def evaluate_stop_conditions(
         self,
@@ -654,6 +828,8 @@ class PaperAccount:
         atr_map: Dict[str, float] = None,
         trade_date: str = None,
         market_context: Dict[str, dict] = None,
+        quotes: Dict[str, object] = None,
+        execution_context: str = "paper",
     ) -> List[dict]:
         """检查并执行止损止盈；行情上下文契约见 evaluate_stop_conditions。"""
         for code in list(self.positions):
@@ -672,10 +848,17 @@ class PaperAccount:
         ):
             trade = self.sell(
                 signal["code"], signal["price"], reason=signal["reason"],
-                trade_date=trade_date,
+                shares=signal.get("shares"), trade_date=trade_date,
+                quote=(quotes or {}).get(signal["code"]),
+                execution_context=execution_context,
             )
             if trade:
                 triggered.append(trade)
+            else:
+                logger.warning(
+                    "止损未成交，需下次巡检重试: %s (T+1/停牌/跌停/报价异常/状态冲突)",
+                    signal["code"],
+                )
         return triggered
 
     def reset(self):

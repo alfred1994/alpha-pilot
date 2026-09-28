@@ -47,12 +47,6 @@ from config import (
 _llm_timeout_count = 0
 _LLM_AUTO_DISABLE_THRESHOLD = 3  # 连续3次超时自动关闭LLM
 from scheduler.market_calendar import is_trading_day, get_market_status
-from scheduler.notifier import (
-    send_signal_report,
-    send_decision_report,
-    send_daily_summary,
-    send_error_alert,
-)
 
 # ── 信号缓存路径 ──
 SIGNAL_CACHE_FILE = os.path.join(
@@ -294,6 +288,7 @@ def fast_scan(
     budget_seconds: int = FAST_SCAN_BUDGET_SECONDS,
     candidate_codes: Optional[List[str]] = None,
     candidate_items: Optional[List[dict]] = None,
+    *, persist_plan: bool = True,
 ) -> TradePlan:
     """
     快链路：早盘快速扫描
@@ -327,6 +322,10 @@ def fast_scan(
         scan_id=f"{scan_date}T{datetime.now().strftime('%H%M%S%f')}-{uuid.uuid4().hex[:12]}",
     )
     t0 = time.time()
+
+    def save_plan():
+        if persist_plan:
+            _save_trade_plan(plan)
 
     def elapsed():
         return time.time() - t0
@@ -488,7 +487,7 @@ def fast_scan(
                 plan.candidate_pool["refresh_attempted"] = True
                 plan.errors.append("选股失败，无候选股票")
                 plan.elapsed = elapsed()
-                _save_trade_plan(plan)
+                save_plan()
                 return plan
 
     if candidate_filter:
@@ -501,13 +500,13 @@ def fast_scan(
         if not candidates:
             plan.errors.append("候选白名单无匹配股票")
             plan.elapsed = elapsed()
-            _save_trade_plan(plan)
+            save_plan()
             return plan
 
     if remaining() < 10:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过打分")
         plan.elapsed = elapsed()
-        _save_trade_plan(plan)
+        save_plan()
         return plan
 
     # ── 10-30s: 市场环境 + 实时数据 ──
@@ -551,12 +550,16 @@ def fast_scan(
     try:
         from strategy.market_regime import get_regime_history
         history = get_regime_history(days=1)
-        if history:
+        if history and history[0].date == plan.date:
             regime = history[0].regime
             regime_conf = history[0].confidence
             logger.info(f"[快链路] 市场环境: {regime} conf={regime_conf:.0%}")
-    except Exception:
-        pass
+        else:
+            plan.errors.append("市场环境缺失或非当日，使用中性环境且置信度为0")
+            regime_conf = 0.0
+    except Exception as exc:
+        plan.errors.append(f"市场环境读取失败: {exc}")
+        regime_conf = 0.0
 
     plan.regime = regime
     plan.regime_confidence = regime_conf
@@ -564,7 +567,7 @@ def fast_scan(
     if remaining() < 20:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过打分")
         plan.elapsed = elapsed()
-        _save_trade_plan(plan)
+        save_plan()
         return plan
 
     # ── 30-60s: 并发打分 ──
@@ -615,7 +618,7 @@ def fast_scan(
     except Exception as exc:
         logger.warning(f"[快链路] pooled批量预取跳过: {exc}")
 
-    scored = _parallel_score(candidates, sentiment_scores, timeout=remaining())
+    scored = _parallel_score(candidates, sentiment_scores, timeout=remaining(), errors=plan.errors)
 
     # 排序
     scored.sort(key=lambda x: x["composite"], reverse=True)
@@ -624,7 +627,7 @@ def fast_scan(
     if remaining() < 30:
         logger.warning(f"[快链路] 时间不足({remaining():.0f}s)，跳过决策")
         plan.elapsed = elapsed()
-        _save_trade_plan(plan)
+        save_plan()
         return plan
 
     # ── 60-75s: 读取日终 AI 策略指令并决定 TopK ──
@@ -692,7 +695,7 @@ def fast_scan(
 
     # === P1-4: 快链路集成 LLM 决策（超时降级） ===
     # P2-8: 动态检查LLM可用性（环境变量 + 连续超时计数）
-    USE_LLM_IN_FAST = os.environ.get("USE_LLM_IN_FAST", "1") == "1" and _llm_timeout_count < _LLM_AUTO_DISABLE_THRESHOLD
+    USE_LLM_IN_FAST = os.environ.get("USE_LLM_IN_FAST", "1") == "1"
 
     if USE_LLM_IN_FAST and top_candidates:
         # 尝试加载账户信息（用于LLM决策上下文）
@@ -780,8 +783,6 @@ def fast_scan(
                         if _decision.confidence > 0:
                             _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
                             llm_count += 1
-                        else:
-                            _llm_timeout_count += 1
                         if _decision.action == "HOLD":
                             plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
                         elif _decision.action == "SELL":
@@ -789,6 +790,7 @@ def fast_scan(
                 except Exception as _e:
                     logger.warning(f"[快链路] LLM并发结果处理失败: {_e}")
         except concurrent.futures.TimeoutError:
+            plan.errors.append("LLM决策收集超时，未返回候选保持HOLD；下次扫描重新尝试")
             logger.warning(
                 f"[快链路] LLM决策超时({FAST_SCAN_LLM_RESULT_TIMEOUT}s)，已使用已有结果"
             )
@@ -1040,12 +1042,12 @@ def fast_scan(
             from strategy.cb_t0_strategy import scan_and_score, should_buy
             # 可转债试验预算受限于策略指令 max_weight 与单票上限，默认最高 8%
             _directive_max_weight = 0.08
-            if directive and hasattr(directive, "params"):
-                _directive_max_weight = float(getattr(directive.params, "max_weight", 0.08) or 0.08)
-            elif isinstance(directive, dict) and "params" in directive:
+            if isinstance(directive, dict) and "params" in directive:
                 _directive_max_weight = float(directive["params"].get("max_weight", 0.08) or 0.08)
 
             cb_results = scan_and_score()
+            if cb_results:
+                plan.errors.append("可转债仅观察：专属评分尚未提供等价技术门槛、LLM判断及稳定性证据，买入保持阻断")
             cb_buys = []
             for cb in cb_results:
                 decision = should_buy(cb, max_single_weight=_directive_max_weight)
@@ -1063,6 +1065,14 @@ def fast_scan(
                 for cb in cb_buys:
                     cb_code = str(cb.get("cb_code", "")).strip()
                     if not cb_code or cb_code in existing_codes:
+                        continue
+                    # CB评分不能冒充股票技术面/LLM判断；没有等价证据时仅保留机会诊断。
+                    if (sum(o.action == "BUY" for o in plan.orders) >= top_k
+                            or float(cb.get("total_score", 0) or 0) < min_score
+                            or float(cb.get("technical_score", 0) or 0) < DECISION_MIN_BUY_TECHNICAL
+                            or cb.get("llm_action") != "BUY"
+                            or not cb.get("stability_confirmed")):
+                        plan.hold_reasons[cb_code] = "HOLD_CB_UNIFIED_GATES(缺少等价技术/LLM/稳定性证据或买入预算)"
                         continue
                     decision = should_buy(cb, max_single_weight=_directive_max_weight)
                     cb_target_weight = min(float(decision.get("position_pct", 0)), _directive_max_weight, 0.08)
@@ -1101,11 +1111,11 @@ def fast_scan(
     logger.info(f"[快链路] 完成 | 耗时={plan.elapsed:.1f}s | 买入={len(plan.orders)} | HOLD={len(plan.hold_reasons)}")
 
     # 保存TradePlan
-    _save_trade_plan(plan)
+    save_plan()
     return plan
 
 
-def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
+def _parallel_score(candidates, sentiment_scores, timeout: int = 30, *, errors=None) -> list:
     """
     并发打分（带超时）
 
@@ -1130,9 +1140,25 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
             # K线(优先用缓存)
             df = None
             try:
-                df = get_daily(code, start_date="20240101")
-            except Exception:
-                pass
+                from strategy.technical_screen import completed_daily_cutoff
+                cutoff = completed_daily_cutoff(_now_bj())
+                df = get_daily(code, start_date="20240101", end_date=cutoff.replace("-", ""))
+                if df is not None:
+                    if (df.attrs.get("stale_cache_days", 0)
+                            or df.attrs.get("coverage_status") in {"stale", "invalid"}):
+                        raise ValueError(f"{code} 日线缓存陈旧")
+                    from data.history import HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS
+                    if (df.attrs.get("coverage_status") == "incomplete"
+                            and int(df.attrs.get("coverage_max_internal_gap_trading_days", 0) or 0)
+                            > HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS):
+                        raise ValueError(f"{code} 日线存在严重内部交易日缺口")
+                    import pandas as pd
+                    dates = pd.to_datetime(df["date"], errors="coerce")
+                    df = df.loc[dates.notna() & (dates <= pd.Timestamp(cutoff))].copy()
+                    if df.empty:
+                        raise ValueError(f"{code} 无已收盘日线")
+            except Exception as exc:
+                raise ValueError(f"{code} 日线不可用于决策: {exc}") from exc
 
             # 5维打分
             dims = compute_dimension_scores(code, df)
@@ -1213,7 +1239,9 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
     try:
         futures = {executor.submit(score_one, c): c for c in candidates}
-        done, _ = concurrent.futures.wait(futures, timeout=timeout)
+        done, pending = concurrent.futures.wait(futures, timeout=timeout)
+        if pending and errors is not None:
+            errors.append(f"候选打分超时: {len(done)}/{len(candidates)}已完成，部分候选未评估")
         for future in done:
             try:
                 results.append(future.result())
@@ -1221,6 +1249,8 @@ def _parallel_score(candidates, sentiment_scores, timeout: int = 30) -> list:
                 c = futures[future]
                 code = c.code if hasattr(c, "code") else c.get("code", "")
                 logger.warning(f"打分失败 {code}: {e}")
+                if errors is not None:
+                    errors.append(f"{code} 打分失败: {e}")
     finally:
         # 与快链路总预算对齐：超时后不等待慢数据源线程完成。
         executor.shutdown(wait=False, cancel_futures=True)
@@ -1236,12 +1266,8 @@ def _save_trade_plan(plan: TradePlan):
     payload = plan.to_dict()
     plan_id, _ = _trade_plan_identity(payload)
     payload["plan_id"] = plan_id
-    temp_path = f"{path}.tmp"
-    with open(temp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.flush()
-        os.fsync(f.fileno())
-    os.replace(temp_path, path)
+    from scheduler.persistence import update_json
+    update_json(path, lambda previous: payload)
     logger.info(f"TradePlan已保存: {path}")
 
 
@@ -1283,7 +1309,7 @@ def _default_realtime_func():
     return _quote_provider
 
 
-def _collect_position_prices(codes: list, realtime_func, *, allow_historical: bool = False) -> dict:
+def _collect_position_prices(codes: list, realtime_func, *, allow_historical: bool = False, quotes: dict = None) -> dict:
     """批量优先收集持仓最新价；批量未覆盖的逐个回退查询。
 
     批量结果按 quote.code 归并；自动执行会传入 ``allow_historical=False``，
@@ -1300,19 +1326,23 @@ def _collect_position_prices(codes: list, realtime_func, *, allow_historical: bo
             )
             if code and validation.valid:
                 prices[code] = validation.price
+                if quotes is not None:
+                    quotes[code] = quote
     except Exception as exc:
         logger.debug("批量获取持仓价格失败，回退逐个查询: %s", exc)
     for code in codes:
         if code in prices:
             continue
         try:
-            quotes = realtime_func([code])
-            if quotes:
+            quotes_returned = realtime_func([code])
+            if quotes_returned:
                 validation = validate_quote(
-                    quotes[0], expected_code=code, allow_historical=allow_historical,
+                    quotes_returned[0], expected_code=code, allow_historical=allow_historical,
                 )
                 if validation.valid:
                     prices[code] = validation.price
+                    if quotes is not None:
+                        quotes[code] = quotes_returned[0]
         except Exception as exc:
             logger.debug(f"获取 {code} 实时价格失败: {exc}")
     return prices
@@ -1392,7 +1422,21 @@ def _risk_state_file(directory: Optional[str], filename: str):
     return os.path.join(directory, filename) if directory else None
 
 
-def execute_trade_plan(
+def execute_trade_plan(plan_data: dict, **kwargs) -> PipelineResult:
+    """持久记录已领取计划的异常终态；禁止异常后自动重放已成交部分。"""
+    context = {}
+    try:
+        return _execute_trade_plan_impl(plan_data, _execution_context=context, **kwargs)
+    except Exception as exc:
+        result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"), errors=[f"计划执行异常: {exc}"])
+        if context:
+            from data.database import Database
+            with Database(db_path=context["db_path"]) as db:
+                db.mark_trade_plan_needs_review(context["plan_id"], str(exc))
+        return result
+
+
+def _execute_trade_plan_impl(
     plan_data: dict,
     *,
     broker=None,
@@ -1404,6 +1448,7 @@ def execute_trade_plan(
     allow_historical_plan: bool = False,
     allow_historical_quotes: bool = None,
     cb_market_context: dict = None,
+    _execution_context: dict = None,
 ) -> PipelineResult:
     """
     执行指定 TradePlan
@@ -1450,6 +1495,15 @@ def execute_trade_plan(
 
     result.market_status = market_status or get_market_status()
     result.trade_plan = {"plan_id": plan_id, "date": plan_data.get("date")}
+    if not allow_historical_plan:
+        from scheduler.control import get_auto_control_state
+        control = get_auto_control_state()
+        if control.get("paused"):
+            result.errors.append(f"交易已暂停: {control.get('reason', '')}")
+            return result
+        if not is_trading_day(result.date) or result.market_status != "盘中":
+            result.errors.append("仅允许交易日盘中执行计划")
+            return result
 
     # 加载交易通道（默认模拟盘）
     if broker is None:
@@ -1473,6 +1527,9 @@ def execute_trade_plan(
             f"TradePlan已被执行或正在执行: {plan_id} ({execution_claim.get('status', 'unknown')})"
         )
         return result
+
+    if _execution_context is not None:
+        _execution_context.update(plan_id=plan_id, db_path=getattr(account, "db_path", None))
 
     def complete_plan_execution():
         try:
@@ -1513,11 +1570,17 @@ def execute_trade_plan(
     sr = system_risk_controller or SystemRiskController(
         state_file=_risk_state_file(risk_state_dir, "system_risk.json"))
 
-    total_assets = broker.total_assets()
-    dc.update(total_assets, date=result.date)
+    positions = broker.get_positions()
+    prices = _collect_position_prices(list(positions), realtime_func, allow_historical=allow_historical_quotes)
+    valuation_complete = all(code in prices for code in positions)
+    total_assets = broker.total_assets(prices)
+    if valuation_complete:
+        dc.update(total_assets, date=plan_data["date"])
 
     # 系统级风控更新
-    sr_result = sr.update(total_assets)
+    sr_result = sr.update(total_assets, date=plan_data["date"]) if valuation_complete else {
+        "daily_pnl": 0.0, "consecutive_loss": 0, "reduce_position": False,
+    }
     logger.info(
         f"系统风控: 日盈亏={sr_result['daily_pnl']:+.2%} "
         f"连亏={sr_result['consecutive_loss']}天 "
@@ -1525,7 +1588,7 @@ def execute_trade_plan(
     )
 
     # 检查熔断
-    trading_check = dc.is_trading_allowed()
+    trading_check = dc.is_trading_allowed(today=plan_data["date"])
     if not trading_check["allowed"]:
         result.risk_triggered.append(trading_check["reason"])
         result.errors.append(f"风控熔断: {trading_check['reason']}")
@@ -1541,7 +1604,10 @@ def execute_trade_plan(
         return result
 
     # 检查是否允许开新仓（单日亏损熔断）
-    buy_allowed = sr.is_new_buy_allowed()
+    buy_allowed = sr.is_new_buy_allowed(today=plan_data["date"])
+    if not valuation_complete:
+        buy_allowed = {"allowed": False, "reason": "持仓新鲜报价不完整，禁止使用成本价估值开新仓"}
+        result.errors.append(buy_allowed["reason"])
     if not buy_allowed["allowed"]:
         logger.warning(f"系统风控禁止开新仓: {buy_allowed['reason']}")
         result.risk_triggered.append(f"禁止开新仓: {buy_allowed['reason']}")
@@ -1562,10 +1628,15 @@ def execute_trade_plan(
 
         if positions:
             # 获取持仓股票实时价格（批量优先，逐个回退）
+            stop_quotes = {}
             prices = _collect_position_prices(
                 list(positions), realtime_func,
                 allow_historical=allow_historical_quotes,
+                quotes=stop_quotes,
             )
+            valuation_complete = all(code in prices for code in positions)
+            if not valuation_complete:
+                buy_allowed = {"allowed": False, "reason": "持仓新鲜报价不完整，禁止开新仓"}
 
             market_context = cb_market_context or {}
             if not allow_historical_quotes and cb_market_context is None:
@@ -1578,6 +1649,8 @@ def execute_trade_plan(
             # 检查止损条件（内部会自动执行卖出）
             stop_trades = broker.check_stop_conditions(
                 prices, trade_date=plan_data["date"], market_context=market_context,
+                quotes=None if allow_historical_quotes else stop_quotes,
+                execution_context="replay" if allow_historical_plan else "paper",
             )
 
             # 记录止损执行结果
@@ -1602,7 +1675,11 @@ def execute_trade_plan(
             if stop_trades:
                 logger.info(f"闭环止损执行: {len(stop_trades)}笔止损卖出")
                 # 止损后总资产可能变化，更新风控
-                total_assets = broker.total_assets()
+                total_assets = broker.total_assets(prices)
+                if valuation_complete:
+                    dc.update(total_assets, date=plan_data["date"])
+                    sr.update(total_assets, date=plan_data["date"])
+                buy_allowed = sr.is_new_buy_allowed(today=plan_data["date"]) if valuation_complete else buy_allowed
     except Exception as e:
         logger.error(f"闭环止损执行异常: {e}")
         result.errors.append(f"止损检查异常: {e}")
@@ -1613,6 +1690,21 @@ def execute_trade_plan(
 
     orders = plan_data.get("orders", [])
     for order in orders:
+        if not allow_historical_plan:
+            from scheduler.control import is_auto_paused
+            if is_auto_paused():
+                result.errors.append("执行期间交易暂停，后续订单停止")
+                break
+        total_assets = broker.total_assets(prices)
+        if valuation_complete:
+            dc.update(total_assets, date=plan_data["date"])
+            sr.update(total_assets, date=plan_data["date"])
+        risk_gate = dc.is_trading_allowed(today=plan_data["date"])
+        if not risk_gate["allowed"] or sr.check_system_health()["system_halted"]:
+            result.errors.append("成交后风控复评阻断后续订单")
+            break
+        if valuation_complete:
+            buy_allowed = sr.is_new_buy_allowed(today=plan_data["date"])
         code = order.get("code", "")
         action = order.get("action", "")
 
@@ -1647,6 +1739,7 @@ def execute_trade_plan(
                     _audit_order(result, order, "blocked", reason)
                     continue
                 price = validation.price
+                prices[code] = price
                 reason = order.get("reason", "LLM卖出建议")
                 positions = broker.get_positions()
                 shares = min(int(positions[code]["shares"]), int(sellable_shares))
@@ -1657,13 +1750,15 @@ def execute_trade_plan(
                     signal_score=order.get("score"),
                     signal_detail=order.get("signal_detail") or reason,
                     dimensions=order.get("dimensions"),
+                    quote=None if allow_historical_quotes else rt[0],
+                    execution_context="replay" if allow_historical_plan else "paper",
                 )
                 if trade:
                     result.executed_orders.append(trade)
-                    record_ab_sell(code, price, trade.get("pnl_pct", 0))
+                    record_ab_sell(code, trade.get("price", price), trade.get("pnl_pct", 0))
                     _audit_order(
                         result, order, "filled", reason,
-                        price=price, shares=trade.get("shares", 0),
+                        price=trade.get("price", price), shares=trade.get("shares", 0),
                     )
                     logger.info(f"LLM卖出执行: {code} @ {price} ({reason})")
                 else:
@@ -1712,6 +1807,7 @@ def execute_trade_plan(
                 _audit_order(result, order, "blocked", reason)
                 continue
             current_price = validation.price
+            prices[code] = current_price
 
             # 检查价格限制（允许适度偏离，避免盘后/波动误杀）
             if max_price > 0:
@@ -1794,7 +1890,9 @@ def execute_trade_plan(
                 )
                 if hasattr(broker, "account"):
                     om.account = broker.account
-                    om.execute_order(buy_order, current_price=current_price)
+                    om.execute_order(buy_order, current_price=current_price, prices=prices,
+                                     quote=None if allow_historical_quotes else realtime[0],
+                                     execution_context="replay" if allow_historical_plan else "paper")
                 else:
                     trade = broker.buy(
                         code=code,
@@ -1809,24 +1907,29 @@ def execute_trade_plan(
                         signal_score=order.get("score"),
                         signal_detail=order.get("signal_detail") or execution_reason,
                         dimensions=order.get("dimensions"),
+                        prices=prices, quote=None if allow_historical_quotes else realtime[0],
+                        execution_context="replay" if allow_historical_plan else "paper",
                     )
                     buy_order.status = "filled" if trade else "failed"
+                    if trade:
+                        buy_order.filled_shares = trade.get("shares", 0)
+                        buy_order.filled_price = trade.get("price", current_price)
                 if buy_order.status == "filled":
                     result.executed_orders.append({
                         "order_id": buy_order.order_id,
                         "code": code,
                         "name": buy_order.name,
                         "side": buy_order.side,
-                        "shares": buy_order.shares,
-                        "price": current_price,
+                        "shares": buy_order.filled_shares,
+                        "price": buy_order.filled_price,
                         "status": buy_order.status,
                         "reason": execution_reason,
                     })
                 _audit_order(
                     result, order, buy_order.status,
                     execution_reason if buy_order.status == "filled" else "买入未成交",
-                    price=current_price,
-                    shares=buy_order.shares,
+                    price=buy_order.filled_price if buy_order.status == "filled" else current_price,
+                    shares=buy_order.filled_shares if buy_order.status == "filled" else 0,
                     buy_amount=round(buy_amount, 2),
                     available_cash=round(available_cash, 2),
                 )
@@ -1841,13 +1944,17 @@ def execute_trade_plan(
                                 )
                         except Exception as e:
                             logger.warning(f"LLM决策关联成交失败 {code}: {e}")
-                    logger.info(f"买入 {code} {shares}股 @ {current_price} ({execution_reason})")
+                    logger.info(f"买入 {code} {buy_order.filled_shares}股 @ {buy_order.filled_price} ({execution_reason})")
                 else:
                     logger.info(f"买入未成交 {code} {shares}股 @ {current_price}")
             except Exception as e:
                 result.errors.append(f"{code} 下单失败: {e}")
                 _audit_order(result, order, "failed", f"下单异常: {e}")
 
+    if valuation_complete:
+        total_assets = broker.total_assets(prices)
+        dc.update(total_assets, date=plan_data["date"])
+        sr.update(total_assets, date=plan_data["date"])
     result.total_elapsed = time.time() - t0
 
     # === P0修复: 决策结果回填 ===
@@ -1902,6 +2009,28 @@ def _load_today_order_audit(date: str, db_path: str = None) -> list:
         return []
 
 def run_review() -> PipelineResult:
+    """同交易日全入口共享原子领取；部分失败须人工检查，避免重复LLM和教训。"""
+    from data.database import Database
+    date = _now_bj().strftime("%Y-%m-%d")
+    with Database() as db:
+        claim = db.claim_review_execution(date)
+    if not claim.get("claimed"):
+        result = PipelineResult(date=date)
+        completed = claim.get("status") == "completed"
+        result.steps.append(StepResult(name="复盘领取", success=completed, detail=f"今日复盘已领取: {claim.get('status')}，未重复执行"))
+        if not completed:
+            result.errors.append(f"今日复盘未完成，领取状态={claim.get('status')}，需核对")
+        return result
+    result = None
+    try:
+        result = _run_review_impl()
+        return result
+    finally:
+        with Database() as db:
+            db.complete_review_execution(date, "; ".join(result.errors) if result is not None else "复盘异常中断，需人工核对")
+
+
+def _run_review_impl() -> PipelineResult:
     """每日复盘（慢链路，LLM深度分析）"""
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
@@ -2120,6 +2249,7 @@ def run_review() -> PipelineResult:
                 logger.warning(f"AI复盘快照回写失败(非致命): {e}")
         except Exception as e:
             logger.warning(f"LLM复盘进化失败(非致命): {e}")
+            result.errors.append(f"LLM复盘进化失败: {e}")
     except Exception as e:
         result.errors.append(f"复盘失败: {e}")
 
@@ -2178,7 +2308,11 @@ def run_review() -> PipelineResult:
         logger.info(f"[收盘] 每日快照已写入: 资产={total_assets:,.0f} 持仓={len(broker.get_positions())}只")
     except Exception as e:
         logger.warning(f"[收盘] 每日快照写入失败(非致命): {e}")
+        result.errors.append(f"每日快照写入失败: {e}")
 
+    for step in result.steps:
+        if not step.success:
+            result.errors.append(f"{step.name}未完成: {step.error or step.detail}")
     result.total_elapsed = time.time() - t0
     return result
 
@@ -2313,6 +2447,7 @@ def run_scan(
     budget_seconds: int = FAST_SCAN_BUDGET_SECONDS,
     candidate_codes: Optional[List[str]] = None,
     candidate_items: Optional[List[dict]] = None,
+    *, persist_plan: bool = True,
 ) -> PipelineResult:
     """扫描信号（兼容旧接口，内部调fast_scan）"""
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
@@ -2322,6 +2457,7 @@ def run_scan(
         budget_seconds=budget_seconds,
         candidate_codes=candidate_codes,
         candidate_items=candidate_items,
+        persist_plan=persist_plan,
     )
     result.trade_plan = plan.to_dict()
     result.candidates = plan.raw_scores
@@ -2355,6 +2491,8 @@ def run_scan(
 
 def run_daily_pipeline() -> PipelineResult:
     """全链路"""
+    if not is_trading_day(_now_bj().strftime("%Y-%m-%d")) or get_market_status() != "盘中":
+        return PipelineResult(date=_now_bj().strftime("%Y-%m-%d"), errors=["全链路仅允许交易日盘中运行"])
     scan = run_scan()
     exec_result = execute_trades()
     scan.executed_orders = exec_result.executed_orders

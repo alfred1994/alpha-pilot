@@ -1,13 +1,10 @@
 import os
-import sys
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-# 确保根目录在 search path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from web.public_safety import is_control_api_enabled, is_production
 
@@ -42,7 +39,7 @@ else:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
-    allow_credentials=allow_credentials,
+    allow_credentials=allow_credentials and "*" not in cors_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -63,8 +60,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
                 "Content-Security-Policy",
                 "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'",
             )
-            if request.url.path.startswith("/api/") or request.url.path == "/" or request.url.path.endswith((".html", ".js", ".css")):
+            if request.url.scheme == "https":
+                response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+            if request.url.path.startswith("/api/") or request.url.path == "/" or request.url.path.endswith(".html"):
                 response.headers.setdefault("Cache-Control", "no-store")
+            else:
+                response.headers.setdefault("Cache-Control", "public, max-age=0, must-revalidate")
         return response
 
 
@@ -83,5 +84,4 @@ if not is_prod or is_control_api_enabled():
 
 # 挂载静态文件目录
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-os.makedirs(static_dir, exist_ok=True)
 app.mount("/", StaticFiles(directory=static_dir, html=True), name="static")

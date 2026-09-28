@@ -274,7 +274,7 @@ class QlibPredictor:
             (score: 0-100, confidence: 0-1)
         """
         # 获取历史数据
-        from data.history import get_daily
+        from data.history import get_daily, daily_history_usable
         from datetime import datetime, timedelta
 
         end = date or datetime.now().strftime("%Y-%m-%d")
@@ -289,6 +289,9 @@ class QlibPredictor:
 
         if df is None or len(df) < self.train_days + 30:
             logger.warning(f"数据不足 {code}: {len(df) if df is not None else 0} 行")
+            return 50.0, 0.0
+        if not daily_history_usable(df):
+            logger.warning("日线过期或覆盖不完整 %s", code)
             return 50.0, 0.0
 
         # 构建特征

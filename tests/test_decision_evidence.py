@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from fastapi import HTTPException
 from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,7 +41,7 @@ class DecisionEvidenceTest(unittest.TestCase):
             with patch.object(router, "_get_db", side_effect=lambda: Database(db_path=path)):
                 newest = router.get_decisions(limit=1, page=1)
                 previous = router.get_decisions(limit=1, page=2)
-                self.assertEqual(newest["total"], 3)
+                self.assertEqual(newest["total"], 2)
                 self.assertTrue(newest["has_more"])
                 self.assertEqual(newest["decisions"][0]["dimensions"]["ml"]["score"], 90)
                 self.assertEqual(previous["decisions"][0]["dimensions"]["ml"]["score"], 60)
@@ -52,8 +53,12 @@ class DecisionEvidenceTest(unittest.TestCase):
                 self.assertEqual(legacy["total"], 1)
                 self.assertEqual(legacy["decisions"][0]["dimensions"], {})
                 self.assertFalse(legacy["decisions"][0]["evidence_available"])
-                self.assertFalse(router.get_decisions(limit=10, page=0)["success"])
-                self.assertFalse(router.get_decisions(limit=10, start_date="invalid")["success"])
+                with self.assertRaises(HTTPException) as invalid_page:
+                    router.get_decisions(limit=10, page=0)
+                self.assertEqual(invalid_page.exception.status_code, 422)
+                with self.assertRaises(HTTPException) as invalid_date:
+                    router.get_decisions(limit=10, start_date="invalid")
+                self.assertEqual(invalid_date.exception.status_code, 422)
 
 
 if __name__ == "__main__":

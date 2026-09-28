@@ -3,6 +3,8 @@
 """
 import asyncio
 import logging
+import threading
+from collections import deque
 from typing import Callable, Dict, List
 from dataclasses import dataclass
 from datetime import datetime
@@ -30,6 +32,8 @@ class EventBus:
         self._queue = asyncio.Queue(maxsize=1000)
         self._running = False
         self._loop: asyncio.AbstractEventLoop = None  # dispatch循环所在线程的loop，跨线程发布用
+        self._pending = deque(maxlen=1000)
+        self._pending_lock = threading.Lock()
 
     def subscribe(self, event_type: str, handler: Callable):
         """订阅事件"""
@@ -40,10 +44,23 @@ class EventBus:
 
     async def publish(self, event: Event):
         """发布事件（异步）"""
+        if not self._running or self._loop is None:
+            self._remember(event)
+            return
+        if asyncio.get_running_loop() is not self._loop:
+            future = asyncio.run_coroutine_threadsafe(self.publish(event), self._loop)
+            await asyncio.wrap_future(future)
+            return
         try:
-            await self._queue.put(event)
+            self._queue.put_nowait(event)
         except asyncio.QueueFull:
-            logger.warning(f"事件队列已满，丢弃事件: {event.type}")
+            logger.debug(f"事件队列已满，丢弃事件: {event.type}")
+
+    def _remember(self, event):
+        with self._pending_lock:
+            if len(self._pending) == self._pending.maxlen:
+                logger.debug("启动前事件缓存已满，丢弃最旧事件")
+            self._pending.append(event)
 
     def publish_sync(self, event: Event):
         """同步/跨线程发布。
@@ -60,12 +77,8 @@ class EventBus:
                 return
             except RuntimeError:
                 pass  # loop刚关闭，走后面的兑底
-        try:
-            loop = asyncio.get_running_loop()
-            asyncio.create_task(self.publish(event))
-        except RuntimeError:
-            # 无事件循环时直接处理
-            asyncio.run(self.publish(event))
+        # 未启动时只缓存普通对象，不创建临时loop或跨loop操作Queue。
+        self._remember(event)
 
     async def _dispatch_loop(self):
         """事件分发循环"""
@@ -89,14 +102,39 @@ class EventBus:
     async def start(self):
         """启动事件循环"""
         self._loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue(maxsize=1000)
         self._running = True
+        with self._pending_lock:
+            while self._pending:
+                self._queue.put_nowait(self._pending.popleft())
         logger.info("事件总线启动")
-        await self._dispatch_loop()
+        try:
+            await self._dispatch_loop()
+        finally:
+            self._running = False
+            self._loop = None
 
     def stop(self):
         """停止事件循环"""
+        loop = self._loop
+        if loop is not None and loop.is_running():
+            try:
+                owner = asyncio.get_running_loop() is loop
+            except RuntimeError:
+                owner = False
+            if not owner:
+                loop.call_soon_threadsafe(self._stop_in_loop)
+                return
+        self._stop_in_loop()
+
+    def _stop_in_loop(self):
         self._running = False
-        self._loop = None
+        dropped = 0
+        while not self._queue.empty():
+            self._queue.get_nowait()
+            dropped += 1
+        if dropped:
+            logger.info("事件总线关闭，明确丢弃%d条未处理传感器事件", dropped)
         logger.info("事件总线停止")
 
 

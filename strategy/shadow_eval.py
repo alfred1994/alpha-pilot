@@ -19,6 +19,7 @@ from strategy.shadow_traders import (
     SHADOW_VARIANT_IDS,
     compute_variant_metrics,
     ensure_tables,
+    _load_outcome_map,
 )
 
 def ensure_eval_tables(db) -> None:
@@ -53,18 +54,23 @@ def _ensure_promotion_table(db) -> None:
 
 
 def evaluate_variants(db, min_days: int = DEFAULT_MIN_DAYS,
-                      min_buys: int = DEFAULT_MIN_BUYS) -> List[dict]:
+                      min_buys: int = DEFAULT_MIN_BUYS,
+                      ensure_schema: bool = False) -> List[dict]:
     """
     全变体排行榜：baseline 置首，其余按相对 baseline 的净收益差降序。
 
     mature 判定：交易日数与已回填买入样本数同时达标。
     """
-    # 空库上直接调用也安全：先确保影子表存在
-    ensure_tables(db)
-    baseline = compute_variant_metrics(db, "baseline")
+    if ensure_schema:
+        ensure_tables(db)
+    tables = {r[0] for r in db.conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    if "shadow_decisions" not in tables:
+        return []
+    outcome_map = _load_outcome_map(db) if "candidate_outcomes" in tables else {}
+    baseline = compute_variant_metrics(db, "baseline", outcome_map=outcome_map)
     rows = []
     for variant_id in SHADOW_VARIANT_IDS:
-        metrics = compute_variant_metrics(db, variant_id)
+        metrics = baseline if variant_id == "baseline" else compute_variant_metrics(db, variant_id, outcome_map=outcome_map)
         mature = (
             metrics["trading_days"] >= min_days
             and metrics["buys"] >= min_buys

@@ -64,7 +64,7 @@ def main():
         assert_true(os.path.exists(report["paths"]["markdown"]), "演练Markdown报告已保存")
 
         with Database(db_path=db_path) as db:
-            events = db.get_auto_events(limit=20)
+            events = db.get_auto_events(limit=None)
             auto_cycle_events = [
                 event for event in events
                 if event.get("event_type", "auto_cycle") == "auto_cycle"

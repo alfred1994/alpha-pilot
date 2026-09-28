@@ -5,12 +5,15 @@ import json
 import re
 from datetime import datetime, timedelta
 from web.public_safety import is_production, public_error_message, sanitize_public_text
+from web.api_errors import unavailable
+from fastapi import HTTPException
+from scheduler.market_calendar import _now_bj
 
 router = APIRouter()
 
 def _get_db():
     from data.database import Database
-    return Database()
+    return Database(readonly=True)
 
 
 def _account_total_assets_with_realtime(account):
@@ -20,11 +23,12 @@ def _account_total_assets_with_realtime(account):
         try:
             from data.realtime import get_realtime
             quotes = get_realtime(list(account.positions.keys()))
-            prices = {
-                quote.code: quote.price
-                for quote in quotes
-                if getattr(quote, "price", 0) > 0
-            }
+            from data.quote_validation import validate_quote
+            for quote in quotes:
+                code = str(getattr(quote, "code", "") or "")
+                checked = validate_quote(quote, expected_code=code)
+                if code in account.positions and checked.valid:
+                    prices[code] = checked.price
         except Exception:
             prices = {}
     return account.total_assets(prices or None)
@@ -135,6 +139,43 @@ def _resolve_trade_reason(cursor, code: str, action: str, reason: str, date_text
         return sanitize_public_text(f"LLM决策: {row[0]}")
     return sanitize_public_text(raw_reason or "-")
 
+
+def _trade_reason_map(cursor, rows):
+    keys = {(str(row[2]), str(row[4]), str(row[1] or "")[:10]) for row in rows
+            if not row[10] or str(row[10]).strip() == "TradePlan执行"}
+    if not keys:
+        return {}
+    dates = sorted({key[2] for key in keys if key[2]})
+    codes = sorted({key[0] for key in keys if key[0]})
+    if not dates or not codes:
+        return {}
+    sql = ("SELECT code, action, date, reasoning FROM llm_decisions "
+           f"WHERE code IN ({','.join('?' for _ in codes)}) "
+           f"AND date IN ({','.join('?' for _ in dates)}) "
+           "AND COALESCE(reasoning,'')<>'' ORDER BY created_at DESC,id DESC")
+    mapping = {}
+    for row in cursor.execute(sql, codes + dates):
+        key = (row[0], row[1], row[2])
+        if key in keys and key not in mapping and not _is_no_response_decision(row[3], 0, ""):
+            mapping[key] = sanitize_public_text("LLM决策: " + row[3])
+    return mapping
+
+
+def _name_map(cursor, rows):
+    codes = sorted({str(row["code"]) for row in rows})
+    if not codes:
+        return {}
+    placeholders = ",".join("?" for _ in codes)
+    names = {}
+    for row in cursor.execute(f"SELECT code,name FROM positions WHERE code IN ({placeholders})", codes):
+        if row[1] and row[1] != row[0]:
+            names[row[0]] = row[1]
+    for row in cursor.execute(
+            f"SELECT code,name FROM trades WHERE code IN ({placeholders}) ORDER BY created_at DESC,id DESC", codes):
+        if row[0] not in names and row[1] and row[1] != row[0]:
+            names[row[0]] = row[1]
+    return names
+
 @router.get("/trades")
 def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1)):
     """获取历史交易成交明细"""
@@ -148,6 +189,7 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                 (limit, offset)
             )
             rows = cursor.fetchall()
+            reasons = _trade_reason_map(cursor, rows)
             trades_list = []
             for r in rows:
                 date_str = r[1] or ""
@@ -167,7 +209,7 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                     "fee": r[7] or 0.0,
                     "pnl": _nullable_float(r[8]),
                     "pnl_pct": _nullable_float(r[9]),
-                    "reason": _resolve_trade_reason(cursor, r[2], r[4], r[10], date_str)
+                    "reason": reasons.get((str(r[2]), str(r[4]), str(r[1] or "")[:10]), sanitize_public_text(r[10] or "-"))
                 })
             
             cursor.execute("SELECT COUNT(*) FROM trades")
@@ -181,7 +223,7 @@ def get_trades(limit: int = Query(50, ge=1, le=200), page: int = Query(1, ge=1))
                 "trades": trades_list
             }
     except Exception as e:
-        return {"success": False, "error": public_error_message() if is_production() else str(e)}
+        return unavailable()
 
 @router.get("/decisions")
 def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = None,
@@ -189,11 +231,23 @@ def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = Non
                   end_date: Optional[str] = None):
     """分页查询时点判断。历史记录缺少评分快照时不拼接最新缓存。"""
     try:
-        if page < 1 or page > 100000:
-            return {"success": False, "error": "页码超出范围"}
+        if page < 1 or page > 1000:
+            raise HTTPException(422, "页码超出范围")
         for value in (start_date, end_date):
             if value:
-                datetime.strptime(value, "%Y-%m-%d")
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError as exc:
+                    raise HTTPException(422, "日期格式须为YYYY-MM-DD") from exc
+        if kind not in (None, "all", "signal", "observation"):
+            raise HTTPException(422, "未知的判断类型")
+        effective_end = end_date or _now_bj().strftime("%Y-%m-%d")
+        effective_start = start_date or (datetime.strptime(effective_end, "%Y-%m-%d") - timedelta(days=365)).strftime("%Y-%m-%d")
+        start_date, end_date = effective_start, effective_end
+        if start_date and end_date and (datetime.strptime(end_date, "%Y-%m-%d") - datetime.strptime(start_date, "%Y-%m-%d")).days > 366:
+            raise HTTPException(422, "日期范围不得超过367天")
+        if start_date and end_date and start_date > end_date:
+            raise HTTPException(422, "开始日期不得晚于结束日期")
         conditions = ["NOT (COALESCE(reasoning, '')='LLM无响应' AND "
                       "TRIM(COALESCE(llm_response, ''))='' AND COALESCE(confidence, 0)<=0)"]
         params = []
@@ -210,9 +264,10 @@ def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = Non
             cursor = db.conn.cursor()
             total = cursor.execute(f"SELECT COUNT(*) FROM llm_decisions WHERE {where}", params).fetchone()[0]
             rows = cursor.execute(
-                f"SELECT * FROM llm_decisions WHERE {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
+                f"SELECT id, code, date, created_at, scan_id, action, reasoning, confidence, outcome, outcome_pct, dimensions, llm_prompt FROM llm_decisions WHERE {where} ORDER BY date DESC, id DESC LIMIT ? OFFSET ?",
                 params + [limit, (page - 1) * limit],
             ).fetchall()
+            names = _name_map(cursor, rows)
             decisions = []
             for row in rows:
                 r = dict(row)
@@ -229,7 +284,7 @@ def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = Non
                                                if isinstance(item.get(field), (int, float))}
                 decisions.append({
                     "id": r["id"], "code": r["code"],
-                    "name": sanitize_public_text(_resolve_stock_name(cursor, r["code"], {}, r["llm_prompt"]), 40),
+                    "name": sanitize_public_text(_extract_name_from_prompt(r["llm_prompt"], r["code"]) or names.get(r["code"], r["code"]), 40),
                     "date": r["date"], "created_at": r["created_at"],
                     "scan_id": sanitize_public_text(r.get("scan_id"), 80),
                     "action": r["action"],
@@ -241,8 +296,10 @@ def get_decisions(limit: int = Query(10, ge=1, le=50), kind: Optional[str] = Non
                 })
             return {"success": True, "decisions": decisions, "total": total,
                     "page": page, "limit": limit, "has_more": page * limit < total}
+    except HTTPException:
+        raise
     except Exception as e:
-        return {"success": False, "error": public_error_message() if is_production() else str(e)}
+        return unavailable()
 
 @router.get("/lessons")
 def get_lessons(limit: int = Query(20, ge=1, le=100)):
@@ -269,7 +326,7 @@ def get_lessons(limit: int = Query(20, ge=1, le=100)):
                 })
             return {"success": True, "lessons": lessons_list}
     except Exception as e:
-        return {"success": False, "error": public_error_message() if is_production() else str(e)}
+        return unavailable()
 
 @router.get("/performance")
 def get_performance(days: int = Query(10, ge=2, le=90)):
@@ -290,19 +347,19 @@ def get_performance(days: int = Query(10, ge=2, le=90)):
                     date_str = f_name.replace("review_", "").replace(".json", "")
                     perf_data.append({
                         "date": date_str,
-                        "total_assets": data.get("total_assets", 1000000.0),
-                        "daily_pnl": data.get("daily_pnl", 0.0),
-                        "cumulative_pnl_pct": data.get("cumulative_pnl_pct", 0.0),
-                        "benchmark_pnl_pct": data.get("benchmark_pnl_pct", 0.0)
+                        "total_assets": _nullable_float(data.get("total_assets")),
+                        "daily_pnl": _nullable_float(data.get("daily_pnl")),
+                        "cumulative_pnl_pct": _nullable_float(data.get("cumulative_pnl_pct")),
+                        "benchmark_pnl_pct": _nullable_float(data.get("benchmark_pnl_pct"))
                     })
                 except Exception:
                     pass
         
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = _now_bj().strftime("%Y-%m-%d")
         if perf_data and perf_data[-1].get("date") != today:
             try:
                 from execution.paper_account import PaperAccount
-                account = PaperAccount()
+                account = PaperAccount(read_only=True)
                 total_assets = _account_total_assets_with_realtime(account)
                 initial_capital = account.initial_capital or 0
                 previous_assets = float(perf_data[-1].get("total_assets") or total_assets)
@@ -315,7 +372,7 @@ def get_performance(days: int = Query(10, ge=2, le=90)):
                     "total_assets": total_assets,
                     "daily_pnl": total_assets - previous_assets,
                     "cumulative_pnl_pct": cumulative_pnl_pct,
-                    "benchmark_pnl_pct": perf_data[-1].get("benchmark_pnl_pct", 0.0)
+                    "benchmark_pnl_pct": perf_data[-1].get("benchmark_pnl_pct")
                 })
                 perf_data = perf_data[-days:]
             except Exception:
@@ -323,16 +380,16 @@ def get_performance(days: int = Query(10, ge=2, le=90)):
 
         if not perf_data:
             from execution.paper_account import PaperAccount
-            account = PaperAccount()
+            account = PaperAccount(read_only=True)
             total_assets = _account_total_assets_with_realtime(account)
             perf_data.append({
                 "date": today,
                 "total_assets": total_assets,
-                "daily_pnl": 0.0,
-                "cumulative_pnl_pct": 0.0,
-                "benchmark_pnl_pct": 0.0
+                "daily_pnl": None,
+                "cumulative_pnl_pct": None,
+                "benchmark_pnl_pct": None
             })
             
         return {"success": True, "performance": _normalize_performance_daily_pnl(perf_data)}
     except Exception as e:
-        return {"success": False, "error": public_error_message() if is_production() else str(e)}
+        return unavailable()

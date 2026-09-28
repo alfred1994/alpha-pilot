@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta
 
 from config import DATA_DIR
@@ -102,12 +103,25 @@ def _prune_ops_tables(db_path: str, keep_days: int) -> dict:
     pruned = {}
     conn = sqlite3.connect(db_path, timeout=30)
     try:
-        c = conn.cursor()
-        c.execute("DELETE FROM auto_events WHERE created_at < ?", (cutoff,))
-        pruned["auto_events"] = c.rowcount
-        c.execute("DELETE FROM trade_plan_executions WHERE plan_date < ?", (date_cutoff,))
-        pruned["trade_plan_executions"] = c.rowcount
-        conn.commit()
+        # 每批单独提交，避免一个大 DELETE 长时间占用全库写锁。
+        for table, column, value, extra in (
+            ("auto_events", "created_at", cutoff, ""),
+            ("trade_plan_executions", "plan_date", date_cutoff,
+             " AND status='completed'"),
+        ):
+            total = 0
+            while True:
+                cursor = conn.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} WHERE {column} < ?{extra} LIMIT 500)",
+                    (value,),
+                )
+                count = cursor.rowcount
+                conn.commit()
+                total += count
+                if count < 500:
+                    break
+            pruned[table] = total
     finally:
         conn.close()
     return pruned
@@ -166,6 +180,15 @@ def run_db_maintenance(
 
     if backup:
         summary["backup"] = _backup(db_path, backup_dir)
+    # 领取后进程崩溃不会运行异常处理；把超过任务上限的悬挂项标记待人工核账。
+    with closing(sqlite3.connect(db_path, timeout=30)) as conn:
+        available = set(_table_names(conn))
+    if {"trade_plan_executions", "review_executions"} <= available:
+        from data.database import Database
+        with Database(db_path=db_path) as db:
+            summary["execution_reviews"] = db.mark_stale_executions_needs_review(
+                older_than_seconds=24 * 60 * 60,
+            )
     if prune:
         summary["pruned"] = _prune_ops_tables(db_path, keep_days)
     if vacuum:

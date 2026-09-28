@@ -224,7 +224,7 @@ class AdaptiveEngine:
         self._save_state()
 
         # 8. AB测试集成：如果有显著调整，创建AB测试
-        if adjustments and self.enable_ab_testing:
+        if adjustments and self.enable_ab_testing and apply_adjustments:
             new_params = self.get_adjusted_params()
             # 检查是否有显著变化（至少一个参数有实际调整）
             has_significant_change = any(

@@ -42,6 +42,8 @@ class OptimizationResult:
     improvement: float
     rounds: List[OptimizationRound]
     best_round: int
+    evaluation_scope: str = "in_sample_research"
+    validated_out_of_sample: bool = False
 
 
 class StrategyOptimizer:
@@ -93,7 +95,7 @@ class StrategyOptimizer:
         improvement_threshold: float = 0.01,  # 改进阈值1%
     ) -> OptimizationResult:
         """
-        运行优化循环
+        运行样本内研究优化；improvement 是收益率的百分点差，不是 OOS 证据。
 
         Args:
             stock_codes: 股票列表
@@ -105,6 +107,8 @@ class StrategyOptimizer:
             OptimizationResult 优化结果
         """
         initial_params = self.strategy.get_params()
+        self.history = []
+        logger.warning("优化结果为样本内研究结果；未经独立样本外验证，不能据此认定生产策略改善")
         initial_return = 0.0
         best_return = -999.0
         best_round = 0
@@ -345,6 +349,7 @@ class StrategyOptimizer:
             f"策略优化报告: {result.strategy_name}",
             "=" * 60,
             "",
+            "范围: 样本内研究；未经独立样本外验证，不代表生产策略改善。",
             f"初始收益率: {result.initial_return:+.2%}",
             f"最终收益率: {result.final_return:+.2%}",
             f"改进幅度: {result.improvement:+.2%}",

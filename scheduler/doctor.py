@@ -226,7 +226,10 @@ def run_auto_doctor(
                 control_file=control_file,
                 updated_by="auto_doctor",
             )
-            actions.append("自愈失败，已自动暂停盘中交易动作")
+            if (recovery_result or {}).get("lock_conflict"):
+                actions.append("锁冲突未执行自愈，critical仍未解除，已安全暂停盘中交易动作")
+            else:
+                actions.append("自愈失败，已自动暂停盘中交易动作")
             # 暂停后再复查一次，让报告展示新的控制状态。
             after_items = run_auto_watchdog(**watchdog_kwargs)
             after_critical = _critical_names(after_items)

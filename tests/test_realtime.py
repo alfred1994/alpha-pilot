@@ -147,7 +147,8 @@ async def test_paper_account_stop_sensor_is_readonly():
         account_path = os.path.join(directory, "paper.json")
         db_path = os.path.join(directory, "paper.db")
         account = PaperAccount(filepath=account_path, db_path=db_path)
-        assert account.buy("600519", "测试股票", 100.0, shares=1000)
+        assert account.buy("600519", "测试股票", 100.0, shares=1000,
+                           execution_context="replay")
         before_position = copy.deepcopy(account.positions["600519"])
         with Database(db_path=db_path) as db:
             before_trades = len(db.get_trades(code="600519", limit=20))

@@ -11,6 +11,7 @@
 """
 import logging
 import itertools
+import math
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass, field
@@ -163,14 +164,14 @@ def _load_close_series(
     从 data.history.get_daily 加载收盘价，返回 DatetimeIndex 的 Series。
     """
     try:
-        from data.history import get_daily
+        from data.history import get_daily, daily_history_usable
     except ImportError:
         logger.error("无法导入 data.history，确认项目路径正确")
         return None
 
     df = get_daily(code, start_date=start_date, end_date=end_date)
-    if df is None or df.empty:
-        logger.warning(f"获取 {code} 数据为空")
+    if not daily_history_usable(df):
+        logger.warning(f"获取 {code} 数据为空、过期或覆盖不完整")
         return None
 
     df = df.copy()
@@ -203,7 +204,7 @@ def run_single_backtest(
     take_profit: float = 0.10,
     initial_capital: float = 1_000_000,
     commission_rate: float = 0.0003,
-    stamp_tax_rate: float = 0.001,
+    stamp_tax_rate: float = 0.0005,
 ) -> Optional[SingleBacktestResult]:
     """
     单次快速回测 - MA 交叉 + RSI 过滤策略
@@ -225,7 +226,7 @@ def run_single_backtest(
         take_profit: 止盈比例 (正数, 如 0.10 = +10%)
         initial_capital: 初始资金
         commission_rate: 佣金费率 (A股万三 = 0.0003)
-        stamp_tax_rate: 印花税率 (A股千一 = 0.001, 卖出收取)
+        stamp_tax_rate: 印花税率 (A股万五 = 0.0005, 卖出收取)
 
     Returns:
         SingleBacktestResult 或 None
@@ -260,7 +261,10 @@ def run_single_backtest(
 
     # 手续费: 买入佣金 + 卖出佣金 + 卖出印花税
     # vectorbt 的 fees 是单次交易费用占交易额的比例
-    total_fee = commission_rate * 2 + stamp_tax_rate  # 买卖佣金 + 卖出印花税
+    entries = entries.shift(1, fill_value=False)
+    exits = exits.shift(1, fill_value=False)
+    fees = pd.Series(np.where(exits, commission_rate + stamp_tax_rate, commission_rate), index=close.index)
+    from config import PAPER_SLIPPAGE_RATE
 
     # ── 执行回测 ──
     pf = vbt.Portfolio.from_signals(
@@ -268,7 +272,8 @@ def run_single_backtest(
         entries=entries,
         exits=exits,
         init_cash=initial_capital,
-        fees=total_fee,
+        fees=fees,
+        slippage=PAPER_SLIPPAGE_RATE,
         freq="1D",
     )
 
@@ -326,7 +331,8 @@ def _evaluate_combo(
     start_date: str,
     end_date: str,
     initial_capital: float,
-    total_fee: float,
+    commission_rate: float,
+    stamp_tax_rate: float = 0.0005,
 ) -> Optional[SingleBacktestResult]:
     """在给定价格序列上评估一组参数（vectorbt 引擎）。失败返回 None。"""
     import vectorbt as vbt
@@ -342,13 +348,19 @@ def _evaluate_combo(
     entries, exits = _apply_stop_loss_take_profit(
         close, entries, exits, params["stop_loss"], params["take_profit"]
     )
+    # 收盘后产生的信号最早只能在下一交易日成交。
+    entries = entries.shift(1, fill_value=False)
+    exits = exits.shift(1, fill_value=False)
+    fees = pd.Series(np.where(exits, commission_rate + stamp_tax_rate, commission_rate), index=close.index)
+    from config import PAPER_SLIPPAGE_RATE
 
     pf = vbt.Portfolio.from_signals(
         close=close,
         entries=entries,
         exits=exits,
         init_cash=initial_capital,
-        fees=total_fee,
+        fees=fees,
+        slippage=PAPER_SLIPPAGE_RATE,
         freq="1D",
     )
 
@@ -385,6 +397,13 @@ def _evaluate_combo(
         total_trades=total_trades,
         final_value=float(pf.final_value()),
     )
+
+
+def _selection_key(result, sort_by: str) -> tuple:
+    """统一正/负回撤表示：最大化时优先选择回撤绝对值最小者。"""
+    value = float(getattr(result, sort_by))
+    metric = -abs(value) if sort_by == "max_drawdown" else value
+    return (metric if math.isfinite(metric) else -math.inf, result.total_return)
 
 
 def _iter_param_combos(param_grid: Dict[str, List]) -> List[Dict]:
@@ -424,10 +443,10 @@ def run_parameter_sweep(
     sort_by: str = "sharpe_ratio",
     initial_capital: float = 1_000_000,
     commission_rate: float = 0.0003,
-    stamp_tax_rate: float = 0.001,
+    stamp_tax_rate: float = 0.0005,
 ) -> SweepResult:
     """
-    参数网格搜索 - 遍历参数组合，返回 Top N 最优策略
+    样本内研究网格搜索；Top N 仅是本区间排序，未经样本外验证。
 
     Args:
         code: 股票代码
@@ -459,19 +478,19 @@ def run_parameter_sweep(
         return SweepResult(code=code, start_date=start_date, end_date=end_date, total_combinations=0)
 
     valid_combos = _iter_param_combos(param_grid)
-    total = len(itertools.product(*param_grid.values()))
+    total = math.prod(len(values) for values in param_grid.values())
 
     logger.info(f"参数扫描: {code} {start_date}~{end_date}，共 {len(valid_combos)}/{total} 个有效组合")
+    logger.warning("参数扫描是样本内研究；请用 run_walk_forward 独立评估 OOS，不能当作生产系统收益")
 
     # 手续费
-    total_fee = commission_rate * 2 + stamp_tax_rate
 
     results: List[SingleBacktestResult] = []
     for idx, params in enumerate(valid_combos):
         try:
             result = _evaluate_combo(
                 code, close, params, start_date, end_date,
-                initial_capital, total_fee,
+                initial_capital, commission_rate, stamp_tax_rate,
             )
             if result is not None:
                 results.append(result)
@@ -488,11 +507,7 @@ def run_parameter_sweep(
         return SweepResult(code=code, start_date=start_date, end_date=end_date, total_combinations=0)
 
     # 排序
-    reverse = sort_by != "max_drawdown"  # 回撤越小越好
-    if sort_by == "max_drawdown":
-        results.sort(key=lambda r: getattr(r, sort_by), reverse=False)
-    else:
-        results.sort(key=lambda r: getattr(r, sort_by), reverse=True)
+    results.sort(key=lambda r: _selection_key(r, sort_by), reverse=True)
 
     top_results = results[:top_n]
 
@@ -583,7 +598,7 @@ def run_walk_forward(
     sort_by: str = "sharpe_ratio",
     initial_capital: float = 1_000_000,
     commission_rate: float = 0.0003,
-    stamp_tax_rate: float = 0.001,
+    stamp_tax_rate: float = 0.0005,
 ) -> Optional[WalkForwardResult]:
     """
     Walk-Forward 滚动 train/validation 参数评估。
@@ -591,7 +606,7 @@ def run_walk_forward(
     与 run_parameter_sweep（全区间样本内扫描，天然过拟合）不同：
     每折只在训练窗内选最优参数，再在紧随其后的、从未参与选参的
     验证窗上评估同组参数。汇总口径以样本外(OOS)为准，只有 OOS
-    结论可以外推到实盘。
+    结论仅描述该 MA/RSI 研究策略，不能代表 LLM 自动交易系统。
 
     Returns:
         WalkForwardResult；数据不足或 vectorbt 未安装时返回 None。
@@ -617,7 +632,6 @@ def run_walk_forward(
         )
         return None
 
-    total_fee = commission_rate * 2 + stamp_tax_rate
     combos = _iter_param_combos(param_grid)
     logger.info(
         f"walk-forward: {code} {start_date}~{end_date} "
@@ -637,14 +651,14 @@ def run_walk_forward(
                     code, train_slice, params,
                     train_slice.index[0].strftime("%Y-%m-%d"),
                     train_slice.index[-1].strftime("%Y-%m-%d"),
-                    initial_capital, total_fee,
+                    initial_capital, commission_rate, stamp_tax_rate,
                 )
             except Exception as e:
                 logger.debug(f"折{fold_no} 组合 {params} 训练失败: {e}")
                 continue
             if res is None:
                 continue
-            key = (getattr(res, sort_by), res.total_return)
+            key = _selection_key(res, sort_by)
             if best_key is None or key > best_key:
                 best, best_key = res, key
 
@@ -668,7 +682,7 @@ def run_walk_forward(
                 },
                 valid_slice.index[0].strftime("%Y-%m-%d"),
                 valid_slice.index[-1].strftime("%Y-%m-%d"),
-                initial_capital, total_fee,
+                initial_capital, commission_rate, stamp_tax_rate,
             )
         except Exception as e:
             logger.warning(f"折{fold_no} 验证窗评估失败: {e}")

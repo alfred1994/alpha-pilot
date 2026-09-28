@@ -8,6 +8,7 @@ export class DecisionsTab {
         this.radarChart = null;
         this.filtersReady = false;
         this.modalReady = false;
+        this.modalTrigger = null;
     }
 
     text(value, fallback = '-') {
@@ -78,6 +79,16 @@ export class DecisionsTab {
         document.getElementById('decision-modal')?.addEventListener('click', event => {
             if (event.target.id === 'decision-modal') this.closeModal();
         });
+        document.getElementById('decision-modal')?.addEventListener('keydown', event => {
+            if (event.key === 'Escape') { event.preventDefault(); this.closeModal(); return; }
+            if (event.key !== 'Tab') return;
+            const focusable = [...event.currentTarget.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')]
+                .filter(node => !node.disabled && node.getClientRects().length);
+            if (!focusable.length) return;
+            const first = focusable[0], last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        });
         this.modalReady = true;
     }
 
@@ -127,6 +138,7 @@ export class DecisionsTab {
     }
 
     showDetail(item) {
+        this.modalTrigger = document.activeElement;
         const kind = item.decision_type || (item.action === 'HOLD' ? 'observation' : 'signal');
         this.setText('modal-decision-type', kind === 'signal' ? '交易信号' : '观察结论');
         this.setText('modal-title', this.stockLabel(item));
@@ -136,6 +148,7 @@ export class DecisionsTab {
         const modal = document.getElementById('decision-modal');
         modal?.classList.add('active');
         modal?.setAttribute('aria-hidden', 'false');
+        document.getElementById('modal-close-btn')?.focus();
         this.renderRadar(item.dimensions || {});
     }
 
@@ -143,6 +156,8 @@ export class DecisionsTab {
         const modal = document.getElementById('decision-modal');
         modal?.classList.remove('active');
         modal?.setAttribute('aria-hidden', 'true');
+        if (this.modalTrigger?.isConnected) this.modalTrigger.focus();
+        this.modalTrigger = null;
     }
 
     renderRadar(dimensions) {

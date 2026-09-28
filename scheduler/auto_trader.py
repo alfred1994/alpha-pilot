@@ -235,8 +235,16 @@ def _save_state(state: AutoTraderState, state_file: str = None):
     state_file = state_file or AUTO_STATE_FILE
     os.makedirs(os.path.dirname(state_file), exist_ok=True)
     state.updated_at = _now_bj().isoformat()
-    with open(state_file, "w", encoding="utf-8") as f:
-        json.dump(asdict(state), f, ensure_ascii=False, indent=2)
+    from scheduler.persistence import update_json
+    payload = asdict(state)
+    def merge(previous):
+        if previous.get("date") == payload["date"]:
+            for key in ("last_scan_at", "last_execute_at", "last_stop_check_at", "last_watch_at", "last_rescue_scan_at", "loop_count"):
+                payload[key] = max(payload.get(key, 0), previous.get(key, 0) or 0)
+            for key in ("last_prefetch_date", "last_regime_date", "last_review_date"):
+                payload[key] = max(payload.get(key, ""), previous.get(key, "") or "")
+        return payload
+    update_json(state_file, merge)
 
 
 def _start_active_stage(state: AutoTraderState, stage: str, *, now_ts: float = None):
@@ -302,6 +310,13 @@ def check_stops_once() -> dict:
     """
     from execution.broker import get_broker_adapter
     from scheduler.pipeline import _collect_position_prices, _default_realtime_func
+    from scheduler.control import get_auto_control_state
+    control = get_auto_control_state()
+    if control.get("paused"):
+        return {"checked": 0, "sold": 0, "trades": [], "error": "交易已暂停，止损执行跳过"}
+    today = _today()
+    if not is_trading_day(today) or get_market_status() != "盘中":
+        return {"checked": 0, "sold": 0, "trades": [], "error": "止损执行仅允许交易日盘中"}
 
     broker = get_broker_adapter()
     positions = broker.get_positions()
@@ -310,8 +325,10 @@ def check_stops_once() -> dict:
 
     # 自动止损和订单执行共享严格的行情校验：没有当前、匹配标的的有效价格
     # 就宁可不成交，也不能以陈旧快照平仓。
+    quotes = {}
     prices = _collect_position_prices(
         list(positions), _default_realtime_func(), allow_historical=False,
+        quotes=quotes,
     )
 
     if not prices:
@@ -321,7 +338,7 @@ def check_stops_once() -> dict:
     # 返回空上下文，PaperAccount 会安全降级为仅按转债价格止损。
     from strategy.cb_t0_strategy import get_cb_exit_market_context
     market_context = get_cb_exit_market_context(list(positions))
-    trades = broker.check_stop_conditions(prices, market_context=market_context)
+    trades = broker.check_stop_conditions(prices, market_context=market_context, quotes=quotes, trade_date=today)
     # 闭环止损命中可转债时同步登记日内冷却，防止后续扫描立刻反手接盘。
     try:
         from strategy.cb_t0_strategy import is_cb_code, mark_stopped_out
@@ -332,7 +349,11 @@ def check_stops_once() -> dict:
                 mark_stopped_out(code)
     except Exception as mark_err:
         logger.warning(f"可转债止损冷却登记失败(非致命): {mark_err}")
-    return {"checked": len(positions), "sold": len(trades), "trades": trades}
+    result = {"checked": len(positions), "sold": len(trades), "trades": trades}
+    missing = set(positions) - set(prices)
+    if missing:
+        result["error"] = "部分持仓缺少新鲜行情: " + ",".join(sorted(missing))
+    return result
 
 
 def _service(services: Optional[Dict[str, Callable]], name: str, default: Callable) -> Callable:
@@ -419,6 +440,7 @@ def _run_rescue_scan_default(watch_result: dict, on_execute: Callable[[], None] 
         budget_seconds=AUTO_RESCUE_SCAN_BUDGET_SECONDS,
         candidate_codes=eligible_codes,
         candidate_items=rescue_items,
+        persist_plan=False,
     )
     plan_data = getattr(scan_result, "trade_plan", {}) or {}
     filtered_plan = filter_trade_plan_for_rescue(plan_data, eligible_codes)
@@ -503,6 +525,11 @@ def run_auto_cycle(
     prefetch_func = _service(services, "prefetch", prefetch)
     detect_regime_func = _service(services, "detect_regime", detect_regime)
     check_stops_func = _service(services, "check_stops_once", check_stops_once)
+    def checked_stops():
+        outcome = check_stops_func()
+        if outcome.get("error"):
+            raise RuntimeError(f"止损巡检未完成: {outcome['error']}")
+        return outcome
     run_scan_func = _service(services, "run_scan", run_scan)
     execute_trades_func = _service(services, "execute_trades", execute_trades)
     run_review_func = _service(services, "run_review", run_review)
@@ -551,7 +578,13 @@ def run_auto_cycle(
             result = func(*args, **kwargs)
             if after_success:
                 after_success(result)
+            _record_auto_event(db_path, {"date": today, "event_type": "stage_result", "status": "completed",
+                                       "actions": [stage], "details": {"stage": stage}, "error": ""}) if record_event else None
             return result
+        except Exception as exc:
+            _record_auto_event(db_path, {"date": today, "event_type": "stage_result", "status": "failed",
+                                       "actions": [stage], "details": {"stage": stage}, "error": str(exc)}) if record_event else None
+            raise
         finally:
             _clear_active_stage(state)
             _checkpoint_state()
@@ -574,7 +607,6 @@ def run_auto_cycle(
             f"({pool.get('candidate_count', len(getattr(scan_result, 'candidates', []) or []))}只)"
         )
 
-    state.last_error = ""
     _checkpoint_state()
 
     try:
@@ -628,7 +660,7 @@ def run_auto_cycle(
             if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
                 stop_result = _run_stage(
                     "stop_check",
-                    check_stops_func,
+                    checked_stops,
                     after_success=lambda _: _mark_stage_value("last_stop_check_at", now_ts),
                 )
                 actions.append(
@@ -786,7 +818,7 @@ def run_auto_cycle(
                 review_result = _run_stage(
                     "review",
                     run_review_func,
-                    after_success=lambda _: _mark_stage_value("last_review_date", today),
+                    after_success=lambda review: _mark_stage_value("last_review_date", today) if not review.errors else None,
                 )
                 actions.append(
                     f"盘后复盘进化: 步骤{len(review_result.steps)}项 "

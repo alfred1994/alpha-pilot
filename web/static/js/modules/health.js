@@ -10,7 +10,7 @@ export class HealthTab {
         const data = this.app.globalData || {};
         this.renderCapabilities(data.capabilities || []);
         this.renderWarnings(data.risk_warnings || []);
-        this.renderEvents(data.recent_logs || []);
+        this.renderEvents(data.recent_logs || [], data.recent_logs_total);
     }
 
     renderCapabilities(capabilities) {
@@ -39,15 +39,19 @@ export class HealthTab {
         container.innerHTML = warnings.map(item => `<div class="fact-item"><span class="fact-badge failed">关注</span><div><strong>${this.escape(item)}</strong></div></div>`).join('');
     }
 
-    renderEvents(events) {
+    renderEvents(events, total) {
         const container = document.getElementById('health-event-list');
         if (!container) return;
+        const count = Number.isInteger(total) && total >= events.length ? total : events.length;
+        const countText = count > events.length
+            ? `显示最近 ${events.length} 条，共 ${count} 条；其余记录未在公开页展开。`
+            : `显示 ${events.length} 条运行记录。`;
         if (!events.length) {
-            container.innerHTML = '<div class="empty-state">暂无自动循环动作记录</div>';
+            container.innerHTML = `<div class="empty-state">暂无自动循环动作记录</div><p class="research-note">${countText}</p>`;
             return;
         }
-        container.innerHTML = events.map(item => `
-            <div class="timeline-item"><time>${this.escape(item.time || '-')}</time><p><strong>${this.escape(item.status || item.type || '')}</strong><br>${this.escape(item.action || '-')}</p></div>
+        container.innerHTML = `<p class="research-note">${countText}</p>` + events.map(item => `
+            <div class="timeline-item"><time>${this.escape(item.time || '-')}</time><p><strong>${this.escape(item.status || item.type || '')}</strong><br>${this.escape(item.action || '-')}${item.error ? `<br><span class="event-error">异常类别：${this.escape(item.error)}</span>` : ''}</p></div>
         `).join('');
     }
 }

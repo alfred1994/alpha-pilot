@@ -37,15 +37,21 @@ def main():
     db_path = temp_path("_quant.db")
     try:
         account = PaperAccount(filepath=account_path, db_path=db_path)
+        replay_buy = lambda *args, **kwargs: account.buy(
+            *args, execution_context="replay", **kwargs,
+        )
+        replay_sell = lambda *args, **kwargs: account.sell(
+            *args, execution_context="replay", **kwargs,
+        )
         initial_cash = account.cash
         invalid_prices = [0, -1, math.nan, math.inf]
         for price in invalid_prices:
-            assert_true(account.buy("600519", "贵州茅台", price, shares=100) is None, f"拒绝非法买入价格 {price!r}")
-        assert_true(account.buy("600519", "贵州茅台", 10, shares=-100) is None, "拒绝负数买入股数")
-        assert_true(account.buy("600519", "贵州茅台", 10, shares=50) is None, "拒绝非整手买入")
+            assert_true(replay_buy("600519", "贵州茅台", price, shares=100) is None, f"拒绝非法买入价格 {price!r}")
+        assert_true(replay_buy("600519", "贵州茅台", 10, shares=-100) is None, "拒绝负数买入股数")
+        assert_true(replay_buy("600519", "贵州茅台", 10, shares=50) is None, "拒绝非整手买入")
         assert_true(account.cash == initial_cash and not account.positions, "非法买入不改变账户状态")
 
-        buy = account.buy(
+        buy = replay_buy(
             "600519", "贵州茅台", 10, shares=100,
             trade_date="2026-08-03",
         )
@@ -53,13 +59,13 @@ def main():
         cash_after_buy = account.cash
         shares_after_buy = account.positions["600519"]["shares"]
 
-        assert_true(account.sell("600519", 10, shares=-100) is None, "拒绝负数卖出股数")
-        assert_true(account.sell("600519", 0, shares=100) is None, "拒绝零价格卖出")
-        assert_true(account.sell("600519", 10, shares=50) is None, "拒绝非整手部分卖出")
+        assert_true(replay_sell("600519", 10, shares=-100) is None, "拒绝负数卖出股数")
+        assert_true(replay_sell("600519", 0, shares=100) is None, "拒绝零价格卖出")
+        assert_true(replay_sell("600519", 10, shares=50) is None, "拒绝非整手部分卖出")
         assert_true(account.cash == cash_after_buy, "非法卖出不改变现金")
         assert_true(account.positions["600519"]["shares"] == shares_after_buy, "非法卖出不改变持仓")
 
-        same_day_sell = account.sell(
+        same_day_sell = replay_sell(
             "600519", 10, shares=100, trade_date="2026-08-03",
         )
         assert_true(same_day_sell is None, "普通A股买入当日受T+1限制不可卖出")
@@ -74,22 +80,22 @@ def main():
         assert_true(len(positions) == 1 and positions[0]["shares"] == 100, "持仓投影与账户快照同时提交")
         assert_true(len(trades) == 1 and trades[0]["action"] == "BUY", "成交记录与账户变更同时提交")
 
-        next_day_sell = account.sell(
+        next_day_sell = replay_sell(
             "600519", 10, shares=100, trade_date="2026-08-04",
         )
         assert_true(next_day_sell is not None, "普通A股下一交易日可以卖出")
 
-        unmarked_etf = account.buy(
+        unmarked_etf = replay_buy(
             "510300", "沪深300ETF", 4, shares=100,
             trade_date="2026-08-03",
         )
         assert_true(unmarked_etf is not None, "未标记ETF可以买入")
         assert_true(
-            account.sell("510300", 4, shares=100, trade_date="2026-08-03") is None,
+            replay_sell("510300", 4, shares=100, trade_date="2026-08-03") is None,
             "ETF不会仅凭代码自动获得T+0权限",
         )
 
-        t0_buy = account.buy(
+        t0_buy = replay_buy(
             "113000", "明确T+0品种", 100, shares=100,
             trade_date="2026-08-03", allow_t0=True,
         )
@@ -97,7 +103,8 @@ def main():
         reloaded = PaperAccount(filepath=account_path, db_path=db_path)
         assert_true(reloaded.positions["113000"]["allow_t0"] is True, "T+0属性持久化到SQLite账户状态")
         assert_true(
-            reloaded.sell("113000", 101, shares=100, trade_date="2026-08-03") is not None,
+            reloaded.sell("113000", 101, shares=100, trade_date="2026-08-03",
+                          execution_context="replay") is not None,
             "明确标记的T+0品种允许当日卖出",
         )
     finally:

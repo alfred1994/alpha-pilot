@@ -182,6 +182,23 @@ def _assess_daily_coverage(df: pd.DataFrame, start_date: str, end_date: str) -> 
     return frame
 
 
+def daily_history_usable(df: Optional[pd.DataFrame]) -> bool:
+    """消费者入场前检查共享日线契约；允许晚上市导致的起点缺口。"""
+    if df is None or df.empty:
+        return False
+    attrs = getattr(df, "attrs", {})
+    if attrs.get("stale_cache_days") or attrs.get("coverage_status") in {"stale", "invalid"}:
+        return False
+    if int(attrs.get("coverage_end_gap_days") or 0) > HISTORY_COVERAGE_GRACE_DAYS:
+        return False
+    if int(attrs.get("coverage_max_internal_gap_trading_days") or 0) > HISTORY_COVERAGE_MAX_GAP_TRADING_DAYS:
+        return False
+    if attrs.get("coverage_status") == "incomplete":
+        # 上市未满请求窗口可以继续研究，但窗口内稀疏/断档不能参与打分或回测。
+        return int(attrs.get("missing_start_days") or 0) > HISTORY_COVERAGE_GRACE_DAYS
+    return True
+
+
 def _coverage_status(df: Optional[pd.DataFrame]) -> str:
     return str(getattr(df, "attrs", {}).get("coverage_status") or "invalid")
 
@@ -259,6 +276,9 @@ def _query_trade_dates_rows(start_date: str, end_date: str) -> dict:
 
 
 def _baostock_worker(kind: str, args: tuple, result_queue):
+    if os.environ.get("ALPHAPILOT_OFFLINE_TEST") == "1":
+        result_queue.put({"ok": False, "error": "离线回归禁止调用 Baostock"})
+        return
     """Baostock子进程入口。"""
     try:
         if kind == "history":
@@ -278,40 +298,24 @@ def _baostock_worker(kind: str, args: tuple, result_queue):
 
 def _run_baostock(kind: str, args: tuple = (), timeout: int = BAOSTOCK_TIMEOUT) -> Optional[dict]:
     """用子进程执行Baostock调用，超时后终止子进程。"""
-    if os.name == "nt":
-        try:
-            if kind == "history":
-                return _query_history_rows(*args)
-            if kind == "stock_basic":
-                return _query_stock_basic_rows()
-            if kind == "all_stock":
-                return _query_all_stock_rows(*args)
-            if kind == "trade_dates":
-                return _query_trade_dates_rows(*args)
-        except Exception as e:
-            logger.warning(f"Baostock调用失败({kind}): {e}")
-            return None
-
-    ctx = mp.get_context("fork")
+    ctx = mp.get_context("spawn" if os.name == "nt" else "fork")
     result_queue = ctx.Queue(maxsize=1)
     proc = ctx.Process(target=_baostock_worker, args=(kind, args, result_queue))
     proc.daemon = True
     proc.start()
-    proc.join(float(timeout))
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(3)
-        if proc.is_alive():
-            proc.kill()
-            proc.join(1)
-        logger.warning(f"Baostock调用超时({timeout}s)，已终止: {kind}")
-        return None
-
     try:
-        payload = result_queue.get_nowait()
+        payload = result_queue.get(timeout=float(timeout))
     except queue.Empty:
-        logger.warning(f"Baostock调用无返回({kind}), exitcode={proc.exitcode}")
+        logger.warning(f"Baostock调用超时或无返回({timeout}s): {kind}")
         return None
+    finally:
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(3)
+            if proc.is_alive():
+                proc.kill()
+                proc.join(1)
+        result_queue.close()
     if not payload.get("ok"):
         logger.warning(f"Baostock调用失败({kind}): {payload.get('error')}")
         return None

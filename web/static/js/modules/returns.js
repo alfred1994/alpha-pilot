@@ -7,7 +7,7 @@ export class ReturnsTab {
         this.app = app;
         this.requestId = 0;
         this.charts = [];
-        document.getElementById('returns-apply').addEventListener('click', () => this.load());
+        document.getElementById('returns-apply')?.addEventListener('click', () => this.load());
         document.querySelectorAll('[data-return-period]').forEach(button => button.addEventListener('click', () => {
             this.period(button.dataset.returnPeriod);
             this.load();
@@ -18,14 +18,19 @@ export class ReturnsTab {
 
     period(period) {
         // Shanghai calendar date, independent of the browser's timezone.
-        const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
-        const end = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-        if (period === 'week') now.setDate(now.getDate() - (now.getDay() + 6) % 7);
-        else if (period === 'year') now.setMonth(0, 1);
-        else now.setDate(1);
-        const start = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-        document.getElementById('returns-start').value = start;
-        document.getElementById('returns-end').value = end;
+        const parts = Object.fromEntries(new Intl.DateTimeFormat('en', {
+            timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit',
+        }).formatToParts(new Date()).filter(part => part.type !== 'literal').map(part => [part.type, part.value]));
+        const end = `${parts.year}-${parts.month}-${parts.day}`;
+        const now = new Date(`${end}T00:00:00Z`);
+        if (period === 'week') now.setUTCDate(now.getUTCDate() - (now.getUTCDay() + 6) % 7);
+        else if (period === 'year') now.setUTCMonth(0, 1);
+        else now.setUTCDate(1);
+        const start = now.toISOString().slice(0, 10);
+        const startInput = document.getElementById('returns-start');
+        const endInput = document.getElementById('returns-end');
+        if (startInput) startInput.value = start;
+        if (endInput) endInput.value = end;
     }
 
     text(id, value) { this.app.setText(id, value); }
@@ -34,7 +39,7 @@ export class ReturnsTab {
         const id = ++this.requestId;
         const query = new URLSearchParams();
         for (const field of ['start', 'end']) {
-            const value = document.getElementById(`returns-${field}`).value;
+            const value = document.getElementById(`returns-${field}`)?.value;
             if (value) query.set(`${field}_date`, value);
         }
         this.clear('正在读取所选区间，旧结果已清除');
@@ -55,7 +60,7 @@ export class ReturnsTab {
         for (const key of ['assets', 'change', 'rate', 'benchmark', 'relative', 'drawdown']) this.text(`returns-${key}`, '不可用');
         this.text('returns-status', message);
         this.text('returns-note', '未加载有效结果');
-        document.getElementById('returns-rows').replaceChildren();
+        document.getElementById('returns-rows')?.replaceChildren();
         this.charts.forEach(chart => chart.clear());
         this.text('returns-chart-state', message);
     }

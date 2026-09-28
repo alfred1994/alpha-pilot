@@ -98,7 +98,8 @@ def test_automatic_sell_rejects_stale_quote():
         broker = PaperBrokerAdapter(account_file=paths[0], db_path=paths[1])
         previous_day = (_now_bj().date() - timedelta(days=1)).isoformat()
         assert_true(
-            broker.buy("600519", "行情校验测试", 10.0, 1000, trade_date=previous_day),
+            broker.buy("600519", "行情校验测试", 10.0, 1000,
+                       trade_date=previous_day, execution_context="replay"),
             "构造可卖持仓",
         )
 
@@ -131,7 +132,8 @@ def test_historical_cb_replay_does_not_request_realtime_context():
     try:
         broker = PaperBrokerAdapter(account_file=paths[0], db_path=paths[1])
         assert_true(
-            broker.buy("113000", "历史转债", 100.0, 100, allow_t0=True, trade_unit=10, trade_date="2000-01-01"),
+            broker.buy("113000", "历史转债", 100.0, 100, allow_t0=True,
+                       trade_unit=10, trade_date="2000-01-01", execution_context="replay"),
             "构造历史可转债持仓",
         )
 

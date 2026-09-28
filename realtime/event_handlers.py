@@ -82,7 +82,8 @@ class MarketEventHandler:
             # 触发扫描
             from scheduler.pipeline import run_scan
             try:
-                asyncio.create_task(asyncio.to_thread(run_scan))
+                from scheduler.auto_trader import run_locked_action
+                await asyncio.to_thread(run_locked_action, run_scan)
             except Exception as e:
                 logger.error(f"触发扫描失败: {e}")
 

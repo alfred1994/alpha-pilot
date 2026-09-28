@@ -15,6 +15,7 @@ def format_backtest_report(result: BacktestResult) -> str:
     lines = []
     lines.append("=" * 60)
     lines.append("📈 回测报告")
+    lines.append("研究回测：按所选策略/信号模式评估，不等同于生产 LLM 交易系统。")
     lines.append("=" * 60)
 
     # 基本信息

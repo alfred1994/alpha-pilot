@@ -74,8 +74,9 @@ def _fallback_calendar_with_holidays(year: int) -> set:
     else:
         logger.warning(
             f"交易日历降级: Baostock不可用且{year}不在节假日表，"
-            f"回退'周一至五全是交易日'(会把法定节假日误判为交易日)"
+            "无可信休市表，暂停交易日判断"
         )
+        return set()
     return dates
 
 
@@ -181,7 +182,7 @@ def next_trading_day(date: str = None, n: int = 1) -> str:
             if count >= n:
                 return d.strftime("%Y%m%d")
         d += timedelta(days=1)
-    return d.strftime("%Y%m%d")
+    raise RuntimeError(f"未来30天没有可信交易日历: {date}")
 
 
 def prev_trading_day(date: str = None, n: int = 1) -> str:
@@ -207,7 +208,7 @@ def prev_trading_day(date: str = None, n: int = 1) -> str:
             if count >= n:
                 return d.strftime("%Y%m%d")
         d -= timedelta(days=1)
-    return d.strftime("%Y%m%d")
+    raise RuntimeError(f"过去30天没有可信交易日历: {date}")
 
 
 def get_market_status() -> str:

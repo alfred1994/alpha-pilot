@@ -2,6 +2,7 @@ import os
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from scheduler.control import get_auto_control_state, save_auto_control_state
 from datetime import datetime
+from web.api_errors import unavailable
 
 router = APIRouter()
 
@@ -68,7 +69,7 @@ def pause_trading(reason: str = Body(..., embed=True)):
 
         return {"success": True, "message": "已暂停日内自动交易动作", "state": state}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return unavailable()
 
 
 @router.post("/control/resume", dependencies=[Depends(verify_control_token)])
@@ -85,5 +86,5 @@ def resume_trading():
 
         return {"success": True, "message": "已恢复日内自动交易动作", "state": state}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        return unavailable()
 

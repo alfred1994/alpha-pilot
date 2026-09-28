@@ -94,7 +94,6 @@ def ichimoku_signal(
     kijun = (high.rolling(kijun_period).max() + low.rolling(kijun_period).min()) / 2
     senkou_a = ((tenkan + kijun) / 2).shift(displacement)
     senkou_b = ((high.rolling(senkou_b_period).max() + low.rolling(senkou_b_period).min()) / 2).shift(displacement)
-    chikou = close.shift(-displacement)
 
     # 当前值
     cur_close = close.iloc[-1]
@@ -254,10 +253,8 @@ def volume_profile_signal(
     val_price = bin_centers[va_indices[0]]
     vah_price = bin_centers[va_indices[-1]]
 
-    # HVN / LVN: 识别密集/稀疏区域
-    threshold_high = np.percentile(vol_hist[vol_hist > 0], 75)
+    # LVN: 识别稀疏成交区域，仅供详情解释。
     threshold_low = np.percentile(vol_hist[vol_hist > 0], 25)
-    hvn_prices = bin_centers[vol_hist >= threshold_high]
     lvn_prices = bin_centers[vol_hist <= threshold_low]
 
     # --- 评分逻辑 ---
@@ -292,12 +289,12 @@ def volume_profile_signal(
         score = 55 - int(ratio * 10)
         signals.append(f"POC-VAH之间, 偏阻力")
 
-    # LVN 加成: 价格在 LVN 附近 → 可能快速穿越
+    # LVN 详情: 价格在 LVN 附近 → 可能快速穿越
     if len(lvn_prices) > 0:
         min_lvn_dist = min(abs(cur_price - lp) / lp * 100 for lp in lvn_prices)
         if min_lvn_dist < 1.5:
             signals.append(f"靠近LVN(低量区), 可能快速穿越")
-            # LVN 本身不改变方向，但增加置信度
+            # LVN 不改变分数或置信度；仅补充上下文。
 
     signals.append(f"POC={poc_price:.2f} VAH={vah_price:.2f} VAL={val_price:.2f}")
 

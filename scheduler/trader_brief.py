@@ -161,7 +161,7 @@ def _text_sentiment_summary() -> Dict:
 
 def build_daily_facts(date: str = None, db_path: str = None,
                       now: datetime = None, market_status: str = None,
-                      trading_day: bool = None) -> Dict:
+                      trading_day: bool = None, readonly: bool = False) -> Dict:
     """聚合指定日期的完整决策漏斗，供 AI 复盘和产品展示共同使用。"""
     now = now or _now_bj()
     date = date or now.strftime("%Y-%m-%d")
@@ -177,7 +177,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
     current_directive = None
     pending_directive = None
     counterfactual = {}
-    with Database(db_path=db_path) as db:
+    with Database(db_path=db_path, readonly=readonly) as db:
         # 日终事实必须覆盖当天全部事件；固定取最近500条会让早盘扫描
         # 被后续Doctor/心跳事件挤出窗口，进而污染AI复盘和次日策略。
         events = db.get_auto_events(date=date, limit=None)

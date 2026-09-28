@@ -5,7 +5,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException
 from scheduler.market_calendar import _now_bj
 from web.public_safety import public_error_message
-from web.routers.research import _number, _object, _open_db, _table
+from web.read_store import number as _number, object_value as _object, open_db as _open_db, table as _table
+from web.api_errors import unavailable
 
 router = APIRouter()
 
@@ -98,4 +99,4 @@ def account_returns(start_date: Optional[date] = None, end_date: Optional[date] 
                 "points": rows,
                 "note": "账户数值为未调整出入金的资产变化，不是已核实投资收益；资金流未知，不展示净入金、年化或夏普。区间从首个有效快照收盘到最后快照收盘，首日无日盈亏。逐行变化是相邻已存快照之差，缺日不补造；基准按相同日期日线归一化，缺失不延续、不填零。仅日终历史，不含实时账户估值。"}
     except Exception:
-        return {"success": False, "error": public_error_message()}
+        return unavailable()

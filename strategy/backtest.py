@@ -36,6 +36,8 @@ class Trade:
     exit_reason: str = ""  # "止损" | "止盈" | "持有到期" | "信号消失"
     holding_days: int = 0
     pnl_pct: float = 0.0
+    shares: int = 0
+    fees: float = 0.0
     signal_score: float = 0.0
     reasons: List[str] = field(default_factory=list)
 
@@ -69,8 +71,8 @@ class BacktestResult:
             f"平均盈利: {self.avg_win_pct:+.2f}%\n"
             f"平均亏损: {self.avg_loss_pct:+.2f}%\n"
             f"盈亏比: {self.profit_loss_ratio:.2f}\n"
-            f"总收益: {self.total_return_pct:+.2f}%\n"
-            f"最大回撤: {self.max_drawdown_pct:.2f}%\n"
+            f"平均每笔净收益: {self.total_return_pct:+.2f}%\n"
+            f"逐笔复利序列回撤(非组合净值): {self.max_drawdown_pct:.2f}%\n"
             f"平均持仓: {self.avg_holding_days:.1f}天\n"
             f"{'='*60}"
         )
@@ -133,16 +135,26 @@ def backtest_strategy(
     stop_loss: float = -0.05,    # 止损线 -5%
     take_profit: float = 0.15,   # 止盈线 +15%
     min_score: float = 40,       # 最低信号分数
+    trade_notional: float = 200_000,
 ) -> BacktestResult:
     """
     回测指定策略
 
     逻辑:
     1. 每个交易日，对股票池中每只股票计算信号
-    2. 满足条件则买入（信号日收盘价）
+    2. 满足条件则在下一交易日开盘买入（包含滑点和交易费用）
     3. 持有期间按止损/止盈/到期规则卖出
     """
     import baostock as bs
+    from config import COMMISSION_RATE, STAMP_TAX_RATE, PAPER_SLIPPAGE_RATE, MIN_TRADE_UNIT
+
+    def close_trade(trade, price):
+        trade.exit_price = price * (1 - PAPER_SLIPPAGE_RATE)
+        proceeds = trade.exit_price * trade.shares
+        exit_fee = max(5.0, proceeds * COMMISSION_RATE) + proceeds * STAMP_TAX_RATE
+        cost = trade.entry_price * trade.shares + trade.fees
+        trade.pnl_pct = ((proceeds - exit_fee) / cost - 1) * 100
+        trade.fees += exit_fee
 
     # 为每只股票获取完整数据
     stock_data = {}
@@ -195,9 +207,8 @@ def backtest_strategy(
 
             if exit_reason:
                 trade.exit_date = date
-                trade.exit_price = cur_close
                 trade.exit_reason = exit_reason
-                trade.pnl_pct = pnl * 100
+                close_trade(trade, cur_close)
                 trades.append(trade)
                 to_close.append(code)
 
@@ -217,10 +228,10 @@ def backtest_strategy(
             if len(idx) == 0:
                 continue
             cur_idx = idx[0]
-            if cur_idx < 30:
+            if cur_idx < 31 or cur_idx == len(df) - 1:
                 continue  # 数据不够
 
-            sub_df = df.iloc[:cur_idx + 1].copy()
+            sub_df = df.iloc[:cur_idx].copy()
 
             try:
                 signal = signal_func(sub_df, code, name)
@@ -228,11 +239,17 @@ def backtest_strategy(
                 continue
 
             if signal and signal.score >= min_score:
-                entry_price = float(sub_df['close'].iloc[-1])
+                entry_price = float(df['open'].iloc[cur_idx]) * (1 + PAPER_SLIPPAGE_RATE)
+                if not np.isfinite(entry_price) or entry_price <= 0:
+                    continue
+                shares = int(trade_notional / entry_price / MIN_TRADE_UNIT) * MIN_TRADE_UNIT
+                if shares <= 0:
+                    continue
                 trade = Trade(
                     code=code, name=name, style=style_name,
                     entry_date=date, entry_price=entry_price,
                     signal_score=signal.score, reasons=signal.reasons,
+                    shares=shares, fees=max(5.0, entry_price * shares * COMMISSION_RATE),
                 )
                 open_positions[code] = trade
 
@@ -242,9 +259,8 @@ def backtest_strategy(
         if df is not None and len(df) > 0:
             last_close = float(df['close'].iloc[-1])
             trade.exit_date = df['date'].iloc[-1]
-            trade.exit_price = last_close
             trade.exit_reason = "回测结束"
-            trade.pnl_pct = (last_close - trade.entry_price) / trade.entry_price * 100
+            close_trade(trade, last_close)
             trades.append(trade)
 
     # === 统计 ===
@@ -269,14 +285,13 @@ def backtest_strategy(
     result.profit_loss_ratio = abs(result.avg_win_pct / result.avg_loss_pct) if result.avg_loss_pct != 0 else 0
     result.avg_holding_days = np.mean([t.holding_days for t in trades])
 
-    # 总收益（简化: 每笔等仓位）
+    # 兼容字段：平均每笔净收益，不是账户总收益。
     result.total_return_pct = np.mean([t.pnl_pct for t in trades])
 
-    # 最大回撤（按交易序列计算）
-    cumulative = np.cumsum([t.pnl_pct for t in trades])
+    # 假设逐笔复投的合成序列；并发仓位未构建组合净值，报告明确标注。
+    cumulative = np.r_[1.0, np.cumprod([1 + t.pnl_pct / 100 for t in sorted(trades, key=lambda t: t.exit_date)])]
     peak = np.maximum.accumulate(cumulative)
-    drawdown = cumulative - peak
-    result.max_drawdown_pct = abs(drawdown.min()) if len(drawdown) > 0 else 0
+    result.max_drawdown_pct = float(abs((cumulative / peak - 1).min()) * 100)
 
     return result
 

@@ -3,6 +3,7 @@
 import os
 import sys
 import tempfile
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -173,7 +174,7 @@ def test_positions_api_is_read_only_for_realtime_valuation():
             })
 
         class FakeAccount:
-            def __init__(self):
+            def __init__(self, read_only=False):
                 self.db_path = db_path
                 self.initial_capital = 1_000_000
                 self.cash = 1_109_559.7338
@@ -198,7 +199,8 @@ def test_positions_api_is_read_only_for_realtime_valuation():
         original_realtime = realtime_module.get_realtime
         paper_account_module.PaperAccount = FakeAccount
         realtime_module.get_realtime = lambda codes: [
-            type("Quote", (), {"code": "601058", "price": 12.28, "name": "赛轮轮胎"})()
+            type("Quote", (), {"code": "601058", "price": 12.28, "name": "赛轮轮胎",
+                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})()
         ]
         try:
             result = status_router.get_detailed_positions()

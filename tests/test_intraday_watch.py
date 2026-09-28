@@ -227,7 +227,7 @@ def test_rescue_scan_whitelist_and_llm_hold_no_buy():
         def total_assets(self):
             return 1000000
 
-    def fake_score(candidates, sentiment_scores, timeout=30):
+    def fake_score(candidates, sentiment_scores, timeout=30, *, errors=None):
         rows = []
         for c in candidates:
             rows.append({

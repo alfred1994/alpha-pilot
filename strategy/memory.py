@@ -301,14 +301,14 @@ class TradeMemory:
         return result
 
     def _expire_short_memory(self) -> int:
-        """失效过期短期记忆。"""
+        """失效所有带到期时间的记忆，避免中期观察永久存活。"""
         db = self._get_db()
         now = datetime.now().isoformat()
         c = db.conn.cursor()
         c.execute("""
             UPDATE memory_items
             SET active = 0, updated_at = ?
-            WHERE layer = 'short' AND active = 1
+            WHERE active = 1
               AND expires_at IS NOT NULL AND expires_at < ?
         """, (now, now))
         db.conn.commit()
@@ -367,8 +367,13 @@ class TradeMemory:
         return count
 
     def _consolidate_decision_patterns(self, since: str, target_date: str) -> Tuple[int, int]:
-        """从已验证LLM决策聚合中期模式，并将稳定模式提升为长期记忆。"""
+        """聚合滚动窗口内的观察；重复观察不等于独立的长期验证。"""
         db = self._get_db()
+        # 旧版本仅凭 3 笔交易自动晋级。保留记录供审计，停止将其用于提示词。
+        db.conn.execute("UPDATE memory_items SET active=0 WHERE source='decision_pattern' AND layer='long'")
+        db.conn.commit()
+        evidence_days = max(1, (datetime.strptime(target_date, "%Y-%m-%d") - datetime.strptime(since, "%Y-%m-%d")).days)
+        expires_at = (datetime.strptime(target_date, "%Y-%m-%d") + timedelta(days=evidence_days)).isoformat()
         decisions = db.get_llm_decisions(start_date=since, end_date=target_date, limit=500)
         groups: Dict[Tuple[str, str], List[dict]] = {}
         for decision in decisions:
@@ -390,10 +395,10 @@ class TradeMemory:
             avg_pct = sum(float(r.get("outcome_pct") or 0) for r in rows) / total
             if win_rate >= 0.6:
                 category = "entry"
-                content = f"近{total}次{code} {action}决策胜率{win_rate:.0%}，平均结果{avg_pct:+.1f}%，同类信号可提高关注。"
+                content = f"待验证观察: 近{total}次{code} {action}决策胜率{win_rate:.0%}，平均结果{avg_pct:+.1f}%，不构成长期规律。"
             elif win_rate <= 0.4:
                 category = "risk"
-                content = f"近{total}次{code} {action}决策胜率仅{win_rate:.0%}，平均结果{avg_pct:+.1f}%，同类信号需降权或等待确认。"
+                content = f"待验证观察: 近{total}次{code} {action}决策胜率{win_rate:.0%}，平均结果{avg_pct:+.1f}%，不构成长期规律。"
             else:
                 continue
 
@@ -404,21 +409,19 @@ class TradeMemory:
                 "avg_outcome_pct": round(avg_pct, 2),
                 "codes": [code],
             }
-            score = 50 + min(40, abs(win_rate - 0.5) * 80 + total * 3)
+            # Wilson 下界衡量多数结果的证据强度，小样本全胜/全败不会得到满分。
+            majority = max(win_rate, 1 - win_rate)
+            z2 = 1.96 ** 2
+            lower = (majority + z2 / (2 * total) - 1.96 * (majority * (1 - majority) / total + z2 / (4 * total ** 2)) ** 0.5) / (1 + z2 / total)
+            score = 50 + 40 * max(0, (lower - 0.5) * 2)
             if self.save_memory_item(
                 layer="medium", scope="stock", key=code, category=category,
                 content=content, evidence=evidence, score=score,
                 source="decision_pattern",
+                expires_at=expires_at,
             ) > 0:
                 medium_count += 1
 
-            if total >= 3 and (win_rate >= 0.67 or win_rate <= 0.33):
-                if self.save_memory_item(
-                    layer="long", scope="stock", key=code, category=category,
-                    content="长期验证: " + content, evidence=evidence,
-                    score=min(100, score + 10), source="decision_pattern",
-                ) > 0:
-                    long_count += 1
         return medium_count, long_count
 
     def _consolidate_important_lessons(self, since: str) -> int:
@@ -785,7 +788,7 @@ class TradeMemory:
                 # 【Phase1-Task2】优先通过trade_id精确匹配
                 if trade_id:
                     # 通过trade_id直接获取对应的买入交易
-                    c.execute("SELECT price FROM trades WHERE id = ?", (trade_id,))
+                    c.execute("SELECT price, created_at, id FROM trades WHERE id = ? AND code = ? AND action = 'BUY'", (trade_id, code))
                     buy_row = c.fetchone()
                     if not buy_row or not buy_row["price"]:
                         continue
@@ -800,12 +803,21 @@ class TradeMemory:
                     """, (code, trade_id))
                     sell_row = c.fetchone()
                 else:
-                    # 回退到旧逻辑：按code匹配最近的买卖（兼容历史数据）
+                    # 历史记录只允许关联决策之后、同一天且下次买入决策之前的首次买入。
+                    # 找不到明确时序时保持 pending，不能借用上一轮已结束交易。
                     c.execute("""
-                        SELECT price, reason FROM trades
+                        SELECT id, price, created_at FROM trades
                         WHERE code = ? AND action = 'BUY'
-                        ORDER BY created_at DESC LIMIT 1
-                    """, (code,))
+                          AND julianday(created_at) >= julianday(?)
+                          AND date(created_at) = date(?)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM llm_decisions d
+                              WHERE d.code = trades.code AND d.action = 'BUY' AND d.id != ?
+                                AND julianday(d.created_at) > julianday(?)
+                                AND julianday(d.created_at) <= julianday(trades.created_at)
+                          )
+                        ORDER BY created_at ASC, id ASC LIMIT 1
+                    """, (code, row["created_at"], row["created_at"], decision_id, row["created_at"]))
                     buy_row = c.fetchone()
                     if not buy_row or not buy_row["price"]:
                         continue
@@ -814,8 +826,14 @@ class TradeMemory:
                     c.execute("""
                         SELECT price, reason FROM trades
                         WHERE code = ? AND action = 'SELL'
-                        ORDER BY created_at DESC LIMIT 1
-                    """, (code,))
+                          AND julianday(created_at) > julianday(?)
+                          AND NOT EXISTS (
+                              SELECT 1 FROM trades b WHERE b.code = trades.code AND b.action = 'BUY'
+                                AND julianday(b.created_at) > julianday(?)
+                                AND julianday(b.created_at) < julianday(trades.created_at)
+                          )
+                        ORDER BY created_at ASC, id ASC LIMIT 1
+                    """, (code, buy_row["created_at"], buy_row["created_at"]))
                     sell_row = c.fetchone()
 
                 if not sell_row:

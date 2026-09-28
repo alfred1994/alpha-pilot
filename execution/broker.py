@@ -47,14 +47,17 @@ class BrokerAdapter(ABC):
             reason: str = "TradePlan执行", atr: float = None,
             trade_date: str = None, allow_t0: bool = False,
             trade_unit: int = 100, signal_score: float = None,
-            signal_detail: str = "", market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
+            signal_detail: str = "", market_regime: str = "", dimensions: dict = None,
+            prices: Dict[str, float] = None, quote=None,
+            execution_context: str = "paper") -> Optional[dict]:
         """买入"""
 
     @abstractmethod
     def sell(self, code: str, price: float, shares: int = None,
              reason: str = "TradePlan执行", trade_date: str = None,
              signal_score: float = None, signal_detail: str = "",
-             market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
+             market_regime: str = "", dimensions: dict = None, quote=None,
+             execution_context: str = "paper") -> Optional[dict]:
         """卖出"""
 
     @abstractmethod
@@ -67,7 +70,9 @@ class BrokerAdapter(ABC):
     def check_stop_conditions(self, prices: Dict[str, float],
                               atr_map: Dict[str, float] = None,
                               trade_date: str = None,
-                              market_context: Dict[str, dict] = None) -> List[dict]:
+                              market_context: Dict[str, dict] = None,
+                              quotes: Dict[str, object] = None,
+                              execution_context: str = "paper") -> List[dict]:
         """检查并执行止损止盈"""
 
 
@@ -103,7 +108,9 @@ class PaperBrokerAdapter(BrokerAdapter):
             reason: str = "TradePlan执行", atr: float = None,
             trade_date: str = None, allow_t0: bool = False,
             trade_unit: int = 100, signal_score: float = None,
-            signal_detail: str = "", market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
+            signal_detail: str = "", market_regime: str = "", dimensions: dict = None,
+            prices: Dict[str, float] = None, quote=None,
+            execution_context: str = "paper") -> Optional[dict]:
         return self.account.buy(
             code=code,
             name=name,
@@ -118,12 +125,16 @@ class PaperBrokerAdapter(BrokerAdapter):
             signal_detail=signal_detail,
             market_regime=market_regime,
             dimensions=dimensions,
+            prices=prices,
+            quote=quote,
+            execution_context=execution_context,
         )
 
     def sell(self, code: str, price: float, shares: int = None,
              reason: str = "TradePlan执行", trade_date: str = None,
              signal_score: float = None, signal_detail: str = "",
-             market_regime: str = "", dimensions: dict = None) -> Optional[dict]:
+             market_regime: str = "", dimensions: dict = None, quote=None,
+             execution_context: str = "paper") -> Optional[dict]:
         return self.account.sell(
             code=code, price=price, shares=shares, reason=reason,
             trade_date=trade_date,
@@ -131,15 +142,20 @@ class PaperBrokerAdapter(BrokerAdapter):
             signal_detail=signal_detail,
             market_regime=market_regime,
             dimensions=dimensions,
+            quote=quote,
+            execution_context=execution_context,
         )
 
     def check_stop_conditions(self, prices: Dict[str, float],
                               atr_map: Dict[str, float] = None,
                               trade_date: str = None,
-                              market_context: Dict[str, dict] = None) -> List[dict]:
+                              market_context: Dict[str, dict] = None,
+                              quotes: Dict[str, object] = None,
+                              execution_context: str = "paper") -> List[dict]:
         return self.account.check_stop_conditions(
             prices, atr_map=atr_map, trade_date=trade_date,
-            market_context=market_context,
+            market_context=market_context, quotes=quotes,
+            execution_context=execution_context,
         )
 
     def evaluate_stop_conditions(self, prices: Dict[str, float],

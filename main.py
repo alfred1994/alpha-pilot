@@ -133,7 +133,8 @@ def cmd_scan():
     from scheduler.pipeline import run_scan, format_pipeline_report, format_trade_plan_report
 
     print("快速扫描...")
-    result = run_scan()
+    from scheduler.auto_trader import run_locked_action
+    result = run_locked_action(run_scan)
     print(format_pipeline_report(result))
 
     # 输出TradePlan报告
@@ -157,7 +158,8 @@ def cmd_execute():
     from scheduler.pipeline import execute_trades, format_pipeline_report
 
     print("执行交易...")
-    result = execute_trades()
+    from scheduler.auto_trader import run_locked_action
+    result = run_locked_action(execute_trades)
     print(format_pipeline_report(result))
     return result
 
@@ -167,7 +169,8 @@ def cmd_review():
     from scheduler.pipeline import run_review, format_pipeline_report
 
     print("每日复盘...")
-    result = run_review()
+    from scheduler.auto_trader import run_locked_action
+    result = run_locked_action(run_review)
     review_text = getattr(result, "review_text", "")
     if review_text:
         print(review_text)
@@ -210,7 +213,8 @@ def cmd_full():
     from scheduler.pipeline import run_daily_pipeline, format_pipeline_report
 
     print("全链路管道启动...")
-    result = run_daily_pipeline()
+    from scheduler.auto_trader import run_locked_action
+    result = run_locked_action(run_daily_pipeline)
     print(format_pipeline_report(result))
     return result
 
@@ -622,80 +626,13 @@ def cmd_paper_observe(args):
 
 
 def cmd_stop_check():
-    """盘中止损巡检"""
-    import time as _time
-    _t0 = _time.time()
-    try:
-        from execution.paper_account import PaperAccount
-
-        account = PaperAccount()
-        positions = account.positions
-        print(f"[{_time.time()-_t0:.1f}s] 加载账户: 现金={account.cash:.0f} 持仓={len(positions)}只", flush=True)
-
-        # 系统级风控检查
-        from risk.system_risk import SystemRiskController
-        sr = SystemRiskController()
-        total_assets = account.total_assets()
-        sr.update(total_assets)
-        health = sr.check_system_health()
-        if not health["healthy"]:
-            print(f"[{_time.time()-_t0:.1f}s] ⚠ 系统风控告警:", flush=True)
-            for issue in health["issues"]:
-                print(f"  ⚠ {issue}", flush=True)
-        if health["system_halted"]:
-            print(f"[{_time.time()-_t0:.1f}s] 系统已停机，跳过止损检查", flush=True)
-            return
-
-        if not positions:
-            print("无持仓，跳过止损检查")
-            return
-
-        # 获取实时价格
-        prices = {}
-        for code in positions:
-            try:
-                from data.realtime import get_realtime
-                _tc = _time.time()
-                quote = get_realtime([code])
-                print(f"[{_time.time()-_t0:.1f}s] {code} 行情耗时 {_time.time()-_tc:.1f}s", flush=True)
-                if quote and quote[0].price > 0:
-                    prices[code] = quote[0].price
-            except Exception as e:
-                print(f"[{_time.time()-_t0:.1f}s] {code} 行情失败: {e}", flush=True)
-
-        if not prices:
-            print("无法获取价格，跳过")
-            return
-
-        # 检查止损
-        print(f"[{_time.time()-_t0:.1f}s] 开始止损检查...", flush=True)
-        stop_signals = account.check_stop_conditions(prices)
-
-        if stop_signals:
-            for signal in stop_signals:
-                code = signal.get("code", "")
-                action = signal.get("action", "")
-                if action in ("stop_loss", "take_profit", "trailing_stop"):
-                    shares = positions.get(code, {}).get("shares", 0)
-                    price = prices.get(code, 0)
-                    if shares > 0 and price > 0:
-                        account.sell(code, price, shares,
-                                     reason=signal.get("reason", action))
-                        print(f"止损卖出: {code} {shares}股 @ {price} ({action})")
-        else:
-            print(f"持仓 {len(positions)} 只，全部正常")
-
-        # 打印持仓状态
-        for code, pos in positions.items():
-            price = prices.get(code, 0)
-            buy_price = pos.get("buy_price", 0)
-            if price > 0 and buy_price > 0:
-                pnl = (price - buy_price) / buy_price
-                print(f"  {pos.get('name', code)}({code}): {price:.2f} ({pnl:+.2%})")
-
-    except Exception as e:
-        print(f"止损巡检异常: {e}")
-        logging.getLogger().error(f"止损巡检异常: {e}", exc_info=True)
+    """与自动循环共用严格报价校验和止损执行。"""
+    from scheduler.auto_trader import check_stops_once, run_locked_action
+    result = run_locked_action(check_stops_once)
+    print(f"止损巡检: 持仓{result.get('checked', 0)}只 卖出{result.get('sold', 0)}笔")
+    if result.get('error'):
+        print(result['error'])
+    return {**result, 'errors': [result['error']] if result.get('error') else []}
 
 
 def cmd_account():
@@ -1055,8 +992,7 @@ def main():
     elif args.optimize:
         result = cmd_optimize(args)
     elif args.stop_check:
-        cmd_stop_check()
-        return
+        result = cmd_stop_check()
     elif args.auto or args.auto_once:
         result = cmd_auto(args)
     elif args.auto_rehearse:

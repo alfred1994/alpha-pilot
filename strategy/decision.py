@@ -54,6 +54,20 @@ class DimensionScore:
     detail: str = ""
 
 
+def _technical_dimension(df) -> DimensionScore:
+    """不可用的技术子信号保留说明，但不参与分数和置信度均值。"""
+    if df is None or len(df) <= 30:
+        return DimensionScore("technical", 50, 0.0, "无技术数据")
+    from signals.technical import all_technical_signals
+    signals = all_technical_signals(df)
+    available = [s for s in signals if math.isfinite(s.confidence) and s.confidence > 0 and math.isfinite(s.score)]
+    details = " | ".join(f"{s.name}={s.score}" if s in available else f"{s.name}=不可用({s.detail})" for s in signals)
+    if not available:
+        return DimensionScore("technical", 50, 0.0, details or "无技术数据")
+    return DimensionScore("technical", sum(s.score for s in available) / len(available),
+                          sum(s.confidence for s in available) / len(available), details)
+
+
 def get_effective_signal_weights(
     dimensions: Dict[str, DimensionScore],
     weights: Dict[str, float] = None,
@@ -140,19 +154,7 @@ def compute_dimension_scores(
     dims = {}
 
     # 1. 技术面 (使用已有的高级技术信号)
-    if df is not None and len(df) > 30:
-        from signals.technical import all_technical_signals
-        tech_signals = all_technical_signals(df)
-        if tech_signals:
-            avg_score = sum(s.score for s in tech_signals) / len(tech_signals)
-            avg_conf = sum(s.confidence for s in tech_signals) / len(tech_signals)
-            details = [f"{s.name}={s.score}" for s in tech_signals]
-            dims["technical"] = DimensionScore(
-                name="technical", score=avg_score,
-                confidence=avg_conf, detail=" | ".join(details),
-            )
-    if "technical" not in dims:
-        dims["technical"] = DimensionScore("technical", 50, 0.0, "无技术数据")
+    dims["technical"] = _technical_dimension(df)
 
     # 2. 资金面 (主力资金 + 融资融券)
     try:
@@ -456,26 +458,14 @@ def make_decision_with_cache(
     dims = {}
 
     # 1. 技术面(需要个股日线数据)
-    if df is not None and len(df) > 30:
-        from signals.technical import all_technical_signals
-        tech_signals = all_technical_signals(df)
-        if tech_signals:
-            avg_score = sum(s.score for s in tech_signals) / len(tech_signals)
-            avg_conf = sum(s.confidence for s in tech_signals) / len(tech_signals)
-            details = [f"{s.name}={s.score}" for s in tech_signals]
-            dims["technical"] = DimensionScore(
-                name="technical", score=avg_score,
-                confidence=avg_conf, detail=" | ".join(details),
-            )
-    if "technical" not in dims:
-        dims["technical"] = DimensionScore("technical", 50, 0.0, "无技术数据")
+    dims["technical"] = _technical_dimension(df)
 
     # 2. 资金面(复用缓存逻辑)
     try:
-        cap_score = _compute_capital_score(code)
+        cap_score, cap_conf, cap_detail = _compute_capital_score(code)
         dims["capital"] = DimensionScore(
-            name="capital", score=cap_score, confidence=0.5,
-            detail=f"资金面分数={cap_score}",
+            name="capital", score=cap_score, confidence=cap_conf,
+            detail=cap_detail,
         )
     except Exception as e:
         dims["capital"] = DimensionScore("capital", 50, 0.0, f"资金数据异常: {e}")

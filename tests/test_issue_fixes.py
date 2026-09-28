@@ -70,12 +70,15 @@ def test_issue1_cb_isolation():
         db_file = os.path.join(d, "quant.db")
         acc = PaperAccount(filepath=acc_file, db_path=db_file)
         # 买入转债 (10张一手, allow_t0=True)
-        acc.buy("113000", "测试转债", price=100.0, shares=100, allow_t0=True, trade_unit=10)
+        acc.buy("113000", "测试转债", price=100.0, shares=100,
+                allow_t0=True, trade_unit=10, execution_context="replay")
         # 现价 96.5 (-3.5%)：噪声带内不触发（CB_STOP_LOSS=-6%）
         assert acc.check_stop_conditions({"113000": 96.5}) == []
         ok("PaperAccount -3.5% 在噪声带内不止损")
         # 现价 93.0 (-7%)：触发可转债专用止损
-        triggered = acc.check_stop_conditions({"113000": 93.0})
+        triggered = acc.check_stop_conditions(
+            {"113000": 93.0}, execution_context="replay",
+        )
         assert len(triggered) == 1
         assert "可转债止损" in triggered[0]["reason"]
         assert "113000" not in acc.positions

@@ -28,7 +28,7 @@ def _new_account(directory, name):
     )
     trade = account.buy(
         "113000", "测试转债", price=100.0, shares=100,
-        allow_t0=True, trade_unit=10,
+        allow_t0=True, trade_unit=10, execution_context="replay",
     )
     assert trade
     return account
@@ -183,6 +183,7 @@ def test_pure_evaluation_does_not_sell_but_execution_uses_full_context():
         trades = account.check_stop_conditions(
             {"113000": 99.0},
             market_context={"113000": {"stock_change_pct": 0.0, "premium_rate": 2.0}},
+            execution_context="replay",
         )
         assert len(trades) == 1 and "炸板" in trades[0]["reason"]
         assert "113000" not in account.positions
@@ -191,7 +192,9 @@ def test_pure_evaluation_does_not_sell_but_execution_uses_full_context():
         # 无正股上下文时按价格止损，阈值 CB_STOP_LOSS=-6%
         assert price_only_account.check_stop_conditions({"113000": 96.5}) == [], \
             "-3.5% 在噪声带内，不触发价格止损"
-        trades = price_only_account.check_stop_conditions({"113000": 93.0})
+        trades = price_only_account.check_stop_conditions(
+            {"113000": 93.0}, execution_context="replay",
+        )
         assert len(trades) == 1 and "止损" in trades[0]["reason"]
 
 
@@ -203,11 +206,14 @@ def test_scheduled_stop_uses_context_but_falls_back_to_price_stop():
             return [SimpleNamespace(
                 code=codes[0], price=price,
                 timestamp=_now_bj().strftime("%Y-%m-%d %H:%M:%S"),
+                up_limit=130.0, down_limit=70.0,
             )]
 
         with patch("execution.broker.get_broker_adapter", return_value=broker), \
                 patch("scheduler.pipeline._default_realtime_func", return_value=quote), \
-                patch("strategy.cb_t0_strategy.get_cb_exit_market_context", return_value=context):
+                patch("strategy.cb_t0_strategy.get_cb_exit_market_context", return_value=context), \
+                patch("scheduler.auto_trader.is_trading_day", return_value=True), \
+                patch("scheduler.auto_trader.get_market_status", return_value="盘中"):
             return check_stops_once()
 
     # Preserve stop-out behavior inside the test without leaking today's cooldown

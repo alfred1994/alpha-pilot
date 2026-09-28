@@ -2,7 +2,7 @@
 多信号融合模块 - 5维融合
 ====================================================================
 将5个维度的信号加权融合，输出最终交易建议:
-  技术面 30% + 资金面 25% + 舆情面 20% + 情绪面 15% + 基本面 10%
+  权重读取 config.SIGNAL_WEIGHTS；此研究入口不代表生产 LLM 下单路径。
 
 使用方法:
     from signals.composite import composite_signal, batch_composite, format_signal_report

@@ -225,6 +225,7 @@ def run_auto_watchdog(
     browser_process_probe=None,
     max_browser_instances: int = 2,
     max_browser_age_sec: int = 2 * 60 * 60,
+    readonly: bool = False,
 ) -> List[WatchdogItem]:
     """
     执行自动盯盘运行态检查
@@ -383,7 +384,7 @@ def run_auto_watchdog(
             items.append(_make_item("最近循环错误", True, "无", "ok"))
 
     try:
-        with Database(db_path=db_path) as db:
+        with Database(db_path=db_path, readonly=readonly) as db:
             events = db.get_auto_events(date=today, limit=100)
     except Exception as e:
         events = []

@@ -25,10 +25,12 @@ class Candidate:
     score: float = 0.0         # 综合候选分 0-100
     limit_up_days: int = 0     # 连板天数
     lhb_net_buy: float = 0.0   # 龙虎榜净买额（万）
-    north_flow: float = 0.0    # 北向净买入（万）
+    north_flow: float = 0.0    # 兼容旧字段：北向季度持仓市值（亿元），不是资金流
     change_pct: float = 0.0    # 涨跌幅
     amount: float = 0.0        # 成交额（万）
     industry: str = ""         # 所属行业
+    source_bonus: float = 0.0  # 已计入 score 的多源奖励，嵌套合并时先扣除
+    source_base_score: float = None  # 合并前未截断的基础分，避免 100 分封顶丢失来源贡献
 
     def __repr__(self):
         change_str = f" {self.change_pct:+.2f}%" if self.change_pct != 0 else ""
@@ -438,7 +440,7 @@ def _get_north_flow_candidates() -> Dict[str, Candidate]:
                 free_ratio = float(item.get("FREE_SHARES_RATIO", 0) or 0)
 
                 c = Candidate(
-                    code=code, name=name, source=["北向"],
+                    code=code, name=name, source=["北向季度持仓"],
                     north_flow=hold_cap / 1e8,  # 亿
                 )
                 # 持股市值和占流通比加分
@@ -517,26 +519,34 @@ def _merge_candidates(
     for code in all_codes:
         sources = []
         total_score = 0.0
+        seen_candidates = set()
 
         for pool in all_pools:
             if code in pool:
                 c = pool[code]
+                if id(c) in seen_candidates:
+                    continue
+                seen_candidates.add(id(c))
                 sources.extend(c.source)
-                total_score += c.score
+                total_score += c.source_base_score if c.source_base_score is not None else c.score - c.source_bonus
 
         # 多源叠加奖励: 2源+10, 3源+20, 4源+30, 5源+40
-        unique_sources = list(set(sources))
+        unique_sources = sorted(set(sources))
         bonus = max(0, (len(unique_sources) - 1) * 10)
+        base_score = total_score
         total_score += bonus
 
         # 取任一来源的完整对象, 填充合并信息
         base = None
         for pool in all_pools:
             if code in pool:
-                base = pool[code]
+                from dataclasses import replace
+                base = replace(pool[code])
                 break
         base.source = unique_sources
         base.score = min(100, total_score)
+        base.source_bonus = bonus
+        base.source_base_score = base_score
         merged.append(base)
 
     merged.sort(key=lambda x: x.score, reverse=True)
@@ -738,7 +748,7 @@ def pick_stocks_by_strategy(
     logger.info(f"活跃股: {len(active_stocks)}只")
 
     # 2. 扫描策略信号
-    from data.history import get_daily
+    from data.history import get_daily, daily_history_usable
     from datetime import datetime, timedelta
 
     start = (datetime.now() - timedelta(days=kline_days)).strftime("%Y%m%d")
@@ -753,7 +763,7 @@ def pick_stocks_by_strategy(
 
         try:
             df = get_daily(code, start_date=start)
-            if df is None or len(df) < 60:
+            if not daily_history_usable(df) or len(df) < 60:
                 continue
 
             for strategy in strategies:

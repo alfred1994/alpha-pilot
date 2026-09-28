@@ -2,7 +2,7 @@
 """交易日历降级链路回归测试。
 
 Baostock 不可用时：表内年份用本地节假日表剔除工作日休市，
-表外年份退回"周一至五全是交易日"。Baostock 可用时行为不变。
+表外年份没有可信日历，停止交易日判断。Baostock 可用时行为不变。
 """
 import os
 import sys
@@ -45,16 +45,22 @@ def test_holiday_table_fallback():
                     "元旦前上一交易日为2024/12/31")
 
 
-def test_unknown_year_falls_back_to_weekdays():
-    print("测试2: 表外年份 → 工作日兜底")
+def test_unknown_year_fails_closed():
+    print("测试2: 表外年份 → 禁止误判交易日")
     _reset_cache()
     with mock.patch.object(
         history_module, "query_baostock_trade_dates",
         side_effect=RuntimeError("baostock down"),
     ):
-        # 2031 不在节假日表：工作日视为交易日（劳动节会被误判，属诚实降级）
-        assert_true(mc.is_trading_day("20310501"), "表外年份工作日视为交易日")
+        assert_true(not mc.is_trading_day("20310501"), "表外年份劳动节不得视为交易日")
         assert_true(not mc.is_trading_day("20310503"), "表外年份周末仍非交易日")
+        for direction in (mc.next_trading_day, mc.prev_trading_day):
+            try:
+                direction("20310501")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("未知日历方向查询必须有限退出")
 
 
 def test_baostock_path_unaffected():
@@ -79,7 +85,7 @@ def test_baostock_path_unaffected():
 def main():
     try:
         test_holiday_table_fallback()
-        test_unknown_year_falls_back_to_weekdays()
+        test_unknown_year_fails_closed()
         test_baostock_path_unaffected()
     finally:
         _reset_cache()

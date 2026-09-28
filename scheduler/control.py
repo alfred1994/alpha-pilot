@@ -41,7 +41,8 @@ def get_auto_control_state(control_file: str = None) -> Dict:
         state.update(data if isinstance(data, dict) else {})
         return state
     except Exception:
-        return _default_state()
+        return {**_default_state(), "paused": True,
+                "reason": "控制状态不可读，暂停交易等待检查", "updated_by": "state_error"}
 
 
 def save_auto_control_state(state: Dict, control_file: str = None) -> Dict:
@@ -51,9 +52,8 @@ def save_auto_control_state(state: Dict, control_file: str = None) -> Dict:
     payload = _default_state()
     payload.update(state or {})
     payload["updated_at"] = _now_bj().isoformat()
-    with open(control_file, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-    return payload
+    from scheduler.persistence import update_json
+    return update_json(control_file, lambda previous: {**previous, **payload})
 
 
 def pause_auto_trader(reason: str = "", control_file: str = None,

@@ -3,6 +3,7 @@
 资金、风控参数、5维打分权重、文件路径
 """
 import os
+import math
 
 # ══════════════════════════════════════════════════════════════════
 # 路径配置
@@ -19,6 +20,9 @@ MAX_POSITIONS = 5                # 最大持仓数
 MAX_SINGLE_PCT = 0.20            # 单只股票持仓上限 20%
 COMMISSION_RATE = 0.0003         # 佣金费率 万三
 STAMP_TAX_RATE = 0.0005          # 印花税 万五（卖出）
+PAPER_SLIPPAGE_RATE = float(os.environ.get("PAPER_SLIPPAGE_RATE", "0.0005"))
+if not math.isfinite(PAPER_SLIPPAGE_RATE) or not 0 <= PAPER_SLIPPAGE_RATE < 1:
+    raise ValueError("PAPER_SLIPPAGE_RATE 必须是 [0, 1) 内的有限数值")
 MIN_TRADE_UNIT = 100             # A股最小交易单位 100股
 
 # ══════════════════════════════════════════════════════════════════

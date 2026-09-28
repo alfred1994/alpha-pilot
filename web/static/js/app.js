@@ -11,6 +11,10 @@ class App {
         this.currentTab = 'dashboard';
         this.globalData = null;
         this.timer = null;
+        this.refreshInFlight = false;
+        this.refreshSequence = 0;
+        this.statusUnavailable = false;
+        this.refreshController = null;
         this.tabs = {
             dashboard: new DashboardTab(this),
             research: new ResearchTab(this),
@@ -19,38 +23,73 @@ class App {
             evolution: new EvolutionTab(this),
             health: new HealthTab(this),
         };
-        this.init();
+        this.init().catch(error => { console.error('Dashboard initialization failed:', error); this.renderUnavailable(); });
     }
 
     async init() {
         document.querySelectorAll('.nav-btn').forEach(button => button.addEventListener('click', () => this.switchTab(button.dataset.tab)));
+        window.addEventListener('hashchange', () => this.switchTab(location.hash.slice(1) || 'dashboard', false));
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) this.refreshController?.abort();
+            else this.refresh();
+        });
+        window.addEventListener('pagehide', () => {
+            window.clearInterval(this.timer);
+            this.refreshController?.abort();
+        });
+        this.switchTab(location.hash.slice(1) || 'dashboard', false);
         await this.refresh();
-        this.timer = window.setInterval(() => this.refresh(), 15000);
+        this.timer = window.setInterval(() => { if (!document.hidden) this.refresh(); }, 15000);
         if (window.lucide) window.lucide.createIcons();
     }
 
-    switchTab(name) {
+    switchTab(name, updateHash = true) {
         if (!this.tabs[name]) return;
         document.querySelectorAll('.nav-btn').forEach(button => button.classList.toggle('active', button.dataset.tab === name));
         document.querySelectorAll('.tab-content').forEach(section => section.classList.toggle('active', section.id === `tab-${name}`));
         this.currentTab = name;
-        this.tabs[name].load();
-        if (name === 'dashboard') this.tabs.research.loadMarket();
+        if (updateHash) history.replaceState(null, '', `#${name}`);
+        this.loadCurrentTab();
+        if (name === 'dashboard') this.tabs.research.loadMarket().catch(error => console.error('Market evidence failed:', error));
+    }
+
+    async loadCurrentTab() {
+        try { await this.tabs[this.currentTab].load(); }
+        catch (error) { console.error('Tab loading failed:', error); this.showDataNotice('当前页签读取失败，请刷新重试。'); }
+    }
+
+    showDataNotice(message) {
+        const notice = document.getElementById('data-notice');
+        if (notice) { notice.hidden = !message; notice.textContent = message || ''; }
     }
 
     async refresh() {
+        if (this.refreshInFlight) return;
+        this.refreshInFlight = true;
+        const requestId = ++this.refreshSequence;
+        const controller = new AbortController();
+        this.refreshController = controller;
+        const timeoutId = window.setTimeout(() => controller.abort(), 12000);
         try {
-            const response = await fetch(`${this.apiBase}/public/status`);
+            const response = await fetch(`${this.apiBase}/public/status`, { signal: controller.signal });
             if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            this.globalData = await response.json();
+            const next = await response.json();
+            if (requestId !== this.refreshSequence) return;
+            this.globalData = next;
+            this.statusUnavailable = false;
+            this.showDataNotice('');
             this.renderHeader(this.globalData);
-            await this.tabs[this.currentTab].load();
+            this.loadCurrentTab();
         } catch (error) {
             console.error('Failed to load global status:', error);
+            this.statusUnavailable = true;
             this.renderUnavailable();
-            if (['research', 'returns'].includes(this.currentTab)) await this.tabs[this.currentTab].load();
+            if (['research', 'returns'].includes(this.currentTab)) this.loadCurrentTab();
         } finally {
-            if (this.currentTab === 'dashboard') await this.tabs.research.loadMarket();
+            window.clearTimeout(timeoutId);
+            if (this.refreshController === controller) this.refreshController = null;
+            this.refreshInFlight = false;
+            if (this.currentTab === 'dashboard') this.tabs.research.loadMarket().catch(error => console.error('Market evidence failed:', error));
         }
     }
 
@@ -66,8 +105,13 @@ class App {
         const regimeText = this.regimeLabel(regimeInfo?.regime);
         const regimeDate = regimeInfo?.date ? String(regimeInfo.date).slice(5) : '';
         this.setText('header-regime', regimeText + (regimeDate ? ` · ${regimeDate}` : '') + (regimeInfo?.fresh === false ? ' · 已过期' : ''));
-        this.setText('header-assets', data.account?.available === false ? '净值不可用' : `净值 ￥${Number(data.account?.total_assets || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`);
-        this.setText('footer-update-time', `最后更新 ${this.formatTime(data.timestamp)}`);
+        const assets = data.account?.total_assets;
+        this.setText('header-assets', data.account?.available === false || !Number.isFinite(Number(assets)) || assets == null
+            ? '净值不可用' : `净值 ￥${Number(assets).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`);
+        const fetchedAt = data.fetched_at || data.timestamp;
+        this.setText('footer-update-time', `快照抓取 ${this.formatTime(fetchedAt)} · 底层数据 ${this.formatTime(data.data_as_of)}`);
+        const snapshotAt = data.snapshot_at || fetchedAt;
+        if (snapshotAt && Date.now() - new Date(snapshotAt).getTime() > 60000) this.showDataNotice('当前状态快照已过期，数据可能不是最新。');
 
         const alert = document.getElementById('autopilot-alert-bar');
         const warnings = data.risk_warnings || [];
@@ -76,13 +120,18 @@ class App {
     }
 
     renderUnavailable() {
-        this.setText('header-assets', '净值不可用');
-        this.setText('header-regime', '市场环境未知');
+        this.showDataNotice(this.globalData ? '公开状态接口暂不可达；当前页仍显示上次成功读取的数据，数据已标记陈旧。' : '公开状态接口暂不可达，当前没有可用快照。');
+        if (!this.globalData) {
+            this.setText('header-assets', '净值不可用');
+            this.setText('header-regime', '市场环境未知');
+        }
         const dot = document.getElementById('status-pulse');
-        if (dot) dot.className = 'state-dot danger';
-        this.setText('header-trader-state', '状态暂不可用');
-        this.setText('trader-headline', '暂时无法读取 AI 交易员状态');
-        this.setText('trader-explanation', '公开状态接口没有返回有效数据，请稍后刷新。');
+        if (dot) dot.className = 'state-dot unavailable';
+        this.setText('header-trader-state', '接口暂不可达 · 数据陈旧');
+        if (!this.globalData) {
+            this.setText('trader-headline', '暂时无法读取 AI 交易员状态');
+            this.setText('trader-explanation', '公开状态接口没有返回有效数据，请稍后刷新。');
+        }
     }
 
     regimeLabel(regime) {
@@ -90,6 +139,7 @@ class App {
     }
 
     formatTime(value) {
+        if (!value) return '未知';
         const date = new Date(value);
         return Number.isNaN(date.getTime()) ? '-' : date.toLocaleString('zh-CN', { hour12: false });
     }

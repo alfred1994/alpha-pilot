@@ -31,7 +31,7 @@ def _dims(**scores):
     base = {"technical": 50, "capital": 50, "sentiment": 50,
             "emotion": 50, "fundamental": 50, "ml": 50}
     base.update(scores)
-    return {k: {"score": float(v)} for k, v in base.items()}
+    return {k: {"score": float(v), "confidence": 0.7} for k, v in base.items()}
 
 
 def _entry(code, composite, dims, price=10.0):
@@ -216,15 +216,17 @@ def test_expire_stale_ab_tests():
 
 
 def test_empty_db_readonly():
-    """空库上只读路径（排行榜接口）必须自建表且不抛错。"""
+    """空库排行榜保持只读；写入晋级流程负责建表。"""
     with tempfile.TemporaryDirectory() as temp_dir:
         db_path = os.path.join(temp_dir, "empty.db")
         with Database(db_path=db_path) as db:
             leaderboard = evaluate_variants(db)
-            assert_true(len(leaderboard) == 6, "空库排行榜仍返回六个变体")
-            assert_true(all(r["mature"] is False for r in leaderboard), "空库全部未成熟")
+            assert_true(leaderboard == [], "空库排行榜返回空列表")
+            assert_true(db.conn.execute("SELECT 1 FROM sqlite_master WHERE name='shadow_decisions'").fetchone() is None,
+                        "空库排行榜不建表")
             result = promote_candidates(db, min_days=20, min_buys=10)
             assert_true(result["candidates"] == [], "空库无晋级候选")
+            assert_true(len(evaluate_variants(db)) == 6, "写入初始化后排行榜有六个变体")
 
 
 def main():

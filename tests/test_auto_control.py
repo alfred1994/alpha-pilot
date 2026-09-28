@@ -40,6 +40,8 @@ def main():
         state_file = tempfile.NamedTemporaryFile(suffix="_auto_state.json", delete=False)
         state_path = state_file.name
         state_file.close()
+        with open(state_path, "w", encoding="utf-8") as initialized:
+            initialized.write("{}")
         temp_paths.append(state_path)
 
         db_file = tempfile.NamedTemporaryFile(suffix="_quant.db", delete=False)

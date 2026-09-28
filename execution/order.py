@@ -191,7 +191,9 @@ class OrderManager:
 
     # ── 执行订单 ──────────────────────────────────────────────────
 
-    def execute_order(self, order: Order, current_price: float = None) -> bool:
+    def execute_order(self, order: Order, current_price: float = None,
+                      prices: Dict[str, float] = None, quote=None,
+                      execution_context: str = "paper") -> bool:
         """
         执行订单
 
@@ -224,6 +226,9 @@ class OrderManager:
                     signal_detail=order.signal_detail,
                     market_regime=order.market_regime,
                     dimensions=order.dimensions,
+                    prices=prices,
+                    quote=quote,
+                    execution_context=execution_context,
                 )
             else:
                 trade = self.account.sell(
@@ -232,11 +237,13 @@ class OrderManager:
                     shares=order.shares,
                     reason=order.reason,
                     trade_date=order.trade_date or None,
+                    quote=quote,
+                    execution_context=execution_context,
                 )
 
             if trade:
                 order.status = OrderStatus.FILLED.value
-                order.filled_price = price
+                order.filled_price = trade["price"]
                 order.filled_shares = trade["shares"]
                 order.filled_amount = trade["amount"]
                 order.commission = trade.get("commission", 0)

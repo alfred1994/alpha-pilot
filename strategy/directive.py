@@ -239,10 +239,11 @@ def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
     return directive
 
 
-def get_effective_trade_policy(date: str, regime: str, db_path: str = None) -> Optional[Dict]:
+def get_effective_trade_policy(date: str, regime: str, db_path: str = None,
+                               readonly: bool = True) -> Optional[Dict]:
     """返回当天生效的 AI 策略参数；不存在时由调用方走兼容默认策略。"""
     from data.database import Database
-    with Database(db_path=db_path) as db:
+    with Database(db_path=db_path, readonly=readonly) as db:
         directive = db.get_effective_strategy_directive(date)
     if not directive:
         return None

@@ -8,6 +8,9 @@ import logging
 from datetime import datetime
 from typing import Dict, List, Optional
 from dataclasses import dataclass, field
+from functools import wraps
+from scheduler.persistence import atomic_json_write, json_file_lock
+from scheduler.market_calendar import _now_bj
 
 from config import (
     DAILY_LOSS_LIMIT,
@@ -21,6 +24,15 @@ logger = logging.getLogger("risk.system_risk")
 
 # 系统风控状态持久化文件
 SYSTEM_RISK_FILE = os.path.join(DATA_DIR, "system_risk.json")
+
+
+def _locked_mutation(func):
+    @wraps(func)
+    def wrapped(self, *args, **kwargs):
+        with json_file_lock(self.state_file):
+            self._load_state()
+            return func(self, *args, **kwargs)
+    return wrapped
 
 
 @dataclass
@@ -75,10 +87,13 @@ class SystemRiskController:
 
     def _load_state(self):
         """加载持久化的风控状态"""
+        self.state = SystemRiskState()
         if os.path.exists(self.state_file):
             try:
                 with open(self.state_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("状态根节点必须是对象")
                 self.state.daily_records = data.get("daily_records", [])
                 self.state.forbid_new_buy = data.get("forbid_new_buy", False)
                 self.state.forbid_new_buy_reason = data.get("forbid_new_buy_reason", "")
@@ -94,8 +109,9 @@ class SystemRiskController:
                     f"降仓={self.state.reduce_position} "
                     f"系统停机={self.state.system_halted}"
                 )
-            except (json.JSONDecodeError, KeyError) as e:
+            except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                 logger.error(f"系统风控状态文件损坏: {e}")
+                raise RuntimeError("系统风控状态损坏，禁止继续交易") from e
 
     def _save_state(self):
         """持久化风控状态"""
@@ -112,9 +128,9 @@ class SystemRiskController:
             "halt_time": self.state.halt_time,
             "updated_at": datetime.now().isoformat(),
         }
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        atomic_json_write(self.state_file, data)
 
+    @_locked_mutation
     def update(self, total_assets: float, date: str = None) -> dict:
         """
         每日更新：传入当日总资产，计算盈亏并更新风控状态
@@ -136,9 +152,22 @@ class SystemRiskController:
             }
         """
         if date is None:
-            date = datetime.now().strftime("%Y-%m-%d")
+            date = _now_bj().strftime("%Y-%m-%d")
 
         records = self.state.daily_records
+        # 早期并发写入产生的同日重复项只保留最后估值；日盈亏以前一交易日结算为基线。
+        deduped = {}
+        for record in records:
+            if isinstance(record, dict) and record.get("date"):
+                deduped[record["date"]] = record
+        records[:] = [deduped[day] for day in sorted(deduped)]
+        previous = 0.0
+        for record in records:
+            assets = float(record.get("total_assets") or 0)
+            record["daily_pnl"] = (assets - previous) / previous if previous > 0 else 0.0
+            previous = assets
+        if records and date < records[-1]["date"]:
+            raise ValueError("不能用历史日期覆盖较新的风控记录")
         same_day = bool(records) and records[-1].get("date") == date
 
         if same_day:
@@ -224,7 +253,8 @@ class SystemRiskController:
             }
         """
         if today is None:
-            today = datetime.now().strftime("%Y-%m-%d")
+            today = _now_bj().strftime("%Y-%m-%d")
+        self._load_state()
 
         # 系统停机 → 禁止一切
         if self.state.system_halted:
@@ -233,22 +263,13 @@ class SystemRiskController:
                 "reason": f"系统已停机: {self.state.halt_reason}",
             }
 
-        # 检查单日亏损熔断（次日生效）
+        # 单日亏损禁买只在该风控记录日期有效；查询不得改写持久化状态。
         if self.state.forbid_new_buy:
-            # 如果今天是新一天，清除昨日的禁止标记（已生效过）
-            if self.state.daily_records:
-                last_date = self.state.daily_records[-1]["date"]
-                if today > last_date:
-                    # 进入新的一天，禁止标记已生效，现在清除
-                    self.state.forbid_new_buy = False
-                    self.state.forbid_new_buy_reason = ""
-                    self._save_state()
-                else:
-                    return {
-                        "allowed": False,
-                        "reason": self.state.forbid_new_buy_reason,
-                    }
-            else:
+            last_date = max(
+                (record.get("date", "") for record in self.state.daily_records),
+                default="",
+            )
+            if not last_date or today <= last_date:
                 return {
                     "allowed": False,
                     "reason": self.state.forbid_new_buy_reason,
@@ -324,6 +345,7 @@ class SystemRiskController:
             "position_scale": self.get_position_scale(),
         }
 
+    @_locked_mutation
     def trigger_system_halt(self, reason: str):
         """
         紧急停机：立即停止自动交易
@@ -337,6 +359,7 @@ class SystemRiskController:
         self._save_state()
         logger.critical(f"!!! 系统紧急停机 !!! 原因: {reason}")
 
+    @_locked_mutation
     def resume_system(self):
         """恢复系统运行（手动解除停机）"""
         self.state.system_halted = False
@@ -347,9 +370,10 @@ class SystemRiskController:
 
     def reset(self):
         """重置所有风控状态"""
-        self.state = SystemRiskState()
-        if os.path.exists(self.state_file):
-            os.remove(self.state_file)
+        with json_file_lock(self.state_file):
+            self.state = SystemRiskState()
+            if os.path.exists(self.state_file):
+                os.remove(self.state_file)
         logger.info("系统风控状态已重置")
 
     def format_status(self) -> str:

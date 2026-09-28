@@ -22,7 +22,11 @@ export class EvolutionTab {
         this.lessons = [];
         this.category = 'all';
         this.filtersReady = false;
-        this.shadowLoaded = false;
+        this.shadowLoadedAt = 0;
+        this.shadowRequest = null;
+        this.lessonsFailed = false;
+        this.lessonsLoadedAt = 0;
+        this.lessonsRequest = null;
     }
 
     text(value, fallback = '-') {
@@ -35,18 +39,28 @@ export class EvolutionTab {
     }
 
     async load() {
-        try {
-            const response = await fetch(`${this.app.apiBase}/lessons?limit=60`);
-            const data = await response.json();
-            this.lessons = data.success ? (data.lessons || []) : [];
-        } catch (error) {
-            console.error('Failed to load lessons:', error);
-            this.lessons = [];
-        }
+        await this.loadLessons();
         this.renderStrategies();
         this.renderLessons();
         this.initFilters();
-        this.loadShadow();
+        await this.loadShadow();
+    }
+
+    async loadLessons() {
+        if (this.lessonsRequest) return this.lessonsRequest;
+        if (Date.now() - this.lessonsLoadedAt < 60 * 1000) return;
+        this.lessonsRequest = (async () => { try {
+            const response = await fetch(`${this.app.apiBase}/lessons?limit=60`);
+            const data = await response.json();
+            if (!response.ok || !data.success) throw new Error('unavailable');
+            this.lessons = data.lessons || [];
+            this.lessonsFailed = false;
+            this.lessonsLoadedAt = Date.now();
+        } catch (error) {
+            console.error('Failed to load lessons:', error);
+            this.lessonsFailed = true;
+        } finally { this.lessonsRequest = null; } })();
+        return this.lessonsRequest;
     }
 
     known(value) {
@@ -57,23 +71,24 @@ export class EvolutionTab {
         return this.known(value) ? `${(value * 100).toFixed(digits)}%` : '未记录';
     }
 
-    // 影子绩效一天最多更新一次（T+5 回填后），只在首次进入本页时拉取，
-    // 不跟随 15 秒轮询重复请求。
+    // 影子结果有 5 分钟有效期；同一请求复用，失效后明确显示旧数据时间。
     async loadShadow() {
-        if (this.shadowLoaded) return;
+        if (this.shadowRequest) return this.shadowRequest;
+        if (Date.now() - this.shadowLoadedAt < 5 * 60 * 1000) return;
         const container = document.getElementById('shadow-board');
         if (!container) return;
-        try {
+        this.shadowRequest = (async () => { try {
             const response = await fetch(`${this.app.apiBase}/shadow/leaderboard`);
             const data = await response.json();
-            if (!data.success) throw new Error('unavailable');
-            this.shadowLoaded = true;
+            if (!response.ok || !data.success) throw new Error('unavailable');
+            this.shadowLoadedAt = Date.now();
             this.renderShadow(data);
         } catch (error) {
             console.error('Failed to load shadow leaderboard:', error);
-            container.innerHTML = '<div class="empty-state">影子指标读取失败，下一次进入本页时重试</div>';
-            this.setText('shadow-status', '读取失败');
-        }
+            if (!this.shadowLoadedAt) container.innerHTML = '<div class="empty-state">影子指标读取失败，可稍后重试</div>';
+            this.setText('shadow-status', this.shadowLoadedAt ? `读取失败 · 旧数据 ${new Date(this.shadowLoadedAt).toLocaleTimeString('zh-CN')}` : '读取失败');
+        } finally { this.shadowRequest = null; } })();
+        return this.shadowRequest;
     }
 
     renderShadow(data) {
@@ -85,7 +100,7 @@ export class EvolutionTab {
             this.setText('shadow-status', '暂无数据');
             return;
         }
-        this.setText('shadow-status', `${rows.length} 个变体并行对比`);
+        this.setText('shadow-status', `${rows.length} 个变体 · 更新 ${new Date(this.shadowLoadedAt).toLocaleTimeString('zh-CN')}`);
         const maxAbs = Math.max(
             ...rows.map(row => Math.abs(row.metrics?.avg_net_5d || 0)),
             0.0001,
@@ -159,7 +174,7 @@ export class EvolutionTab {
             container.innerHTML = item ? `
                 <div><dt>每轮买入上限</dt><dd>${this.escape(params.top_k ?? '-')} 笔</dd></div>
                 <div><dt>候选最低分</dt><dd>${this.escape(params.min_score ?? '-')}</dd></div>
-                <div><dt>单票仓位上限</dt><dd>${params.max_weight !== undefined ? `${(Number(params.max_weight) * 100).toFixed(0)}%` : '-'}</dd></div>
+                <div><dt>单票仓位上限</dt><dd>${this.known(params.max_weight) ? `${(params.max_weight * 100).toFixed(0)}%` : '-'}</dd></div>
             ` : '';
         }
         if (prefix === 'current') this.setText('strategy-current-hypothesis', item?.hypothesis || '-');
@@ -173,7 +188,7 @@ export class EvolutionTab {
             container.innerHTML = '<div class="empty-state">当前与下一策略没有参数变化</div>';
             return;
         }
-        const format = (key, value) => key === 'max_weight' && value !== null && value !== undefined
+        const format = (key, value) => key === 'max_weight' && this.known(value)
             ? `${(Number(value) * 100).toFixed(0)}%` : this.text(value);
         container.innerHTML = changes.map(item => `
             <div class="strategy-diff"><span>${this.escape(item.label)}</span><span>${this.escape(format(item.key, item.before))}</span><b>→ ${this.escape(format(item.key, item.after))}</b></div>
@@ -197,6 +212,10 @@ export class EvolutionTab {
     renderLessons() {
         const container = document.getElementById('lessons-list');
         if (!container) return;
+        if (this.lessonsFailed) {
+            container.innerHTML = '<div class="empty-state">复盘教训读取失败，请稍后刷新；不能据此认定暂无教训</div>';
+            return;
+        }
         const rows = this.category === 'all' ? this.lessons : this.lessons.filter(item => item.category === this.category);
         if (!rows.length) {
             container.innerHTML = '<div class="empty-state">当前筛选下没有复盘教训</div>';

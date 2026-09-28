@@ -92,20 +92,26 @@ def main():
             assert_true(report["expired"] >= 1, "过期短期记忆会失效")
             assert_true(report["short"] >= 2, "当天教训和自动事件沉淀为短期记忆")
             assert_true(report["medium"] >= 1, "已验证决策沉淀为中期模式")
-            assert_true(report["long"] >= 2, "高重要度教训和稳定亏损模式沉淀为长期记忆")
+            assert_true(report["long"] >= 1, "高重要度教训可沉淀为长期记忆")
 
             context = memory.recall(stock_code="600519", regime="sideways")
             assert_true("【短期记忆】" in context, "召回包含短期记忆")
             assert_true("【中期记忆】" in context, "召回包含中期记忆")
             assert_true("【长期记忆】" in context, "召回包含长期记忆")
-            assert_true("胜率仅0%" in context, "亏损模式进入记忆上下文")
+            assert_true("待验证观察: 近" in context and "胜率0%" in context,
+                        "小样本亏损模式仅作待验证观察")
             assert_true("放量长上影" in context, "复盘教训进入记忆上下文")
 
         with Database(db_path=tmp_db_path) as db:
             expired = db.get_memory_items(active=False, limit=10)
             stats = db.get_memory_stats()
             assert_true(any(item["content"] == "已过期短期记忆" for item in expired), "可查询已失效记忆")
-            assert_true(stats["layers"].get("long", 0) >= 2, "长期记忆统计正确")
+            patterns = db.conn.execute(
+                "SELECT layer, expires_at FROM memory_items WHERE source='decision_pattern' AND active=1"
+            ).fetchall()
+            assert_true(patterns and all(row['layer'] == 'medium' and row['expires_at'] for row in patterns),
+                        "决策模式不直接晋级长期记忆且有到期时间")
+            assert_true(stats["layers"].get("long", 0) >= 1, "长期高重要度教训统计正确")
 
         print("分层记忆沉淀测试通过")
 

@@ -4,18 +4,21 @@ A股量化数据层 - 统一数据接口
 """
 import time
 import logging
+import threading
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(name)s] %(message)s')
 logger = logging.getLogger("data")
 
 # 数据源调度器 - 自动限流
 _last_call_time = {}
+_rate_limit_lock = threading.Lock()
 
 def rate_limit(source: str, min_interval: float = 2.0):
     """AKShare等有隐式限流的数据源，强制间隔"""
-    now = time.time()
-    last = _last_call_time.get(source, 0)
-    wait = min_interval - (now - last)
-    if wait > 0:
-        time.sleep(wait)
-    _last_call_time[source] = time.time()
+    with _rate_limit_lock:
+        now = time.monotonic()
+        last = _last_call_time.get(source, 0)
+        wait = min_interval - (now - last)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_time[source] = time.monotonic()

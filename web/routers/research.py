@@ -29,45 +29,8 @@ MARKET_FIELDS = {
 }
 
 
-@contextmanager
-def _open_db():
-    from data.database import DB_PATH
-    path = Path(DB_PATH).resolve()
-    if not path.is_file():
-        yield None
-        return
-    # Bypass Database.__enter__: dashboard reads must not initialize or migrate DBs.
-    conn = sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=3)
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA query_only=ON")
-        yield conn
-    finally:
-        conn.close()
-
-
-def _number(value):
-    if isinstance(value, bool):
-        return None
-    try:
-        number = float(value)
-        return number if math.isfinite(number) else None
-    except (ValueError, TypeError):
-        return None
-
-
-def _object(value):
-    try:
-        parsed = json.loads(value or "{}")
-        return parsed if isinstance(parsed, dict) else {}
-    except (TypeError, ValueError):
-        return {}
-
-
-def _table(conn, name):
-    return conn is not None and conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
-    ).fetchone() is not None
+from web.read_store import open_db as _open_db, number as _number, object_value as _object, table as _table
+from web.api_errors import unavailable
 
 
 @router.get("/research/market")
@@ -101,7 +64,7 @@ def market_evidence():
             "note": "已落库的市场识别证据，非实时全市场行情；日期新不保证各数据源新鲜。未记录题材热度和全市场涨跌分布。",
         }}
     except Exception:
-        return {"success": False, "error": public_error_message()}
+        return unavailable()
 
 
 def _public_candidate(row):
@@ -183,4 +146,4 @@ def candidate_evidence(start_date: Optional[date] = None, end_date: Optional[dat
                 "page": page, "has_more": page * limit < summary["observations"],
                 "note": "仅含已保存有效价格的扫描样本，不是全市场覆盖。按扫描观察等权统计，重复股票并非独立样本；没有题材/行业来源快照。T+N为后续N根已落库日线的扣费多头观察收益，非成交收益或SELL策略收益，未作基准调整。空值表示未成熟或缺少回填。"}
     except Exception:
-        return {"success": False, "error": public_error_message()}
+        return unavailable()

@@ -9,7 +9,7 @@ from datetime import datetime
 from realtime.event_bus import get_event_bus, Event
 from realtime.quote_monitor import get_quote_monitor
 from realtime.event_handlers import StopLossHandler, MarketEventHandler
-from scheduler.market_calendar import get_market_status
+from scheduler.market_calendar import get_market_status, _now_bj
 
 logger = logging.getLogger("realtime.trader")
 
@@ -44,11 +44,12 @@ class EventDrivenTrader:
     async def _schedule_tasks(self):
         """低频定时任务（复盘、市场环境识别）"""
         from scheduler.pipeline import run_review
+        from scheduler.auto_trader import run_locked_action
 
         last_review_date = None
         while self._running:
             market = get_market_status()
-            now = datetime.now()
+            now = _now_bj()
 
             # 收盘后复盘: get_market_status() 返回中文状态("盘后"/"休市"等)，
             # 15:05 之后触发，每个交易日最多一次。
@@ -60,7 +61,7 @@ class EventDrivenTrader:
                 last_review_date = now.strftime("%Y-%m-%d")
                 try:
                     logger.info("触发收盘复盘")
-                    await asyncio.to_thread(run_review)
+                    await asyncio.to_thread(run_locked_action, run_review)
                 except Exception as e:
                     logger.error(f"复盘失败: {e}")
 

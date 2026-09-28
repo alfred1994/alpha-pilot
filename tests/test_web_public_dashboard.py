@@ -90,7 +90,7 @@ def _load_prod_client():
     # sys.modules entry can create a second module while the package retains
     # the original router reference.
     from unittest.mock import patch
-    status_patch = patch.object(server.status, "build_agent_status_snapshot", _sample_status)
+    status_patch = patch.object(server.status, "build_agent_status_snapshot", lambda **kwargs: _sample_status())
     status_patch.start()
     old_env["_status_patch"] = status_patch
     return TestClient(server.app), old_env
