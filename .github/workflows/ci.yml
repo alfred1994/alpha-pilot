@@ -52,14 +52,22 @@ jobs:
           # 因此这里重试：连续 3 次全红才算真回归，单次失败重跑确认。
           for attempt in 1 2 3; do
             echo "::group::regression suite attempt ${attempt}/3"
-            if python scripts/run_tests.py; then
+            # pipefail 已开，管道整体仍以 python 的退出码为准。
+            if python scripts/run_tests.py 2>&1 | tee suite.log; then
               echo "::endgroup::"
               echo "regression suite passed on attempt ${attempt}"
               exit 0
             fi
             echo "::endgroup::"
+            # 把失败用例逐个打成注解挂到检查结果上：CI 日志需要 admin 权限才能
+            # 下载，但注解在 Checks API 里公开可读，定位失败不必依赖日志权限。
+            grep -E '^(FAIL|TIMEOUT) ' suite.log 2>/dev/null | while read -r line; do
+              script=$(echo "$line" | awk '{print $2}')
+              echo "::error file=tests/${script}::${line}"
+            done || true
             echo "::warning::regression suite failed on attempt ${attempt}/3"
             if [ "$attempt" -lt 3 ]; then sleep 20; fi
           done
           echo "::error::regression suite failed 3 consecutive attempts - deploy will be blocked"
           exit 1
+
