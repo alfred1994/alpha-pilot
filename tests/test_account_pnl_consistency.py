@@ -8,6 +8,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from data.database import Database
+from data.quote_validation import BEIJING_TZ
 from execution.paper_account import PaperAccount
 import execution.paper_account as paper_account_module
 import data.realtime as realtime_module
@@ -17,6 +18,10 @@ from web.routers import status as status_router
 
 # 禁网护栏: run_review 内的沪深300基准取数走真实数据源，离线回归统一 mock
 daily_review_module._fetch_hs300_daily_pct = lambda date=None: 0.001
+
+# 报价时间戳必须用北京时间。validate_quote 把裸时间戳按 BEIJING_TZ 解析并与
+# 北京时间比较新鲜度，用 datetime.now()(本机时区) 在 UTC runner 上会被判成
+# 8 小时前的陈旧行情——该断言此前只在 UTC+8 的机器上成立。
 
 
 def assert_true(condition, message):
@@ -200,7 +205,7 @@ def test_positions_api_is_read_only_for_realtime_valuation():
         paper_account_module.PaperAccount = FakeAccount
         realtime_module.get_realtime = lambda codes: [
             type("Quote", (), {"code": "601058", "price": 12.28, "name": "赛轮轮胎",
-                                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")})()
+                                "timestamp": datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S")})()
         ]
         try:
             result = status_router.get_detailed_positions()

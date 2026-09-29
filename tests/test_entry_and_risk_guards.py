@@ -31,6 +31,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import config
+from data.quote_validation import BEIJING_TZ
 from risk.drawdown import DrawdownController
 from risk.system_risk import SystemRiskController
 from strategy.signal_stability import SignalStabilityTracker, technical_gate_score
@@ -111,7 +112,7 @@ def test_execute_trade_plan_does_not_touch_production_risk_state():
         def quote(codes):
             return [SimpleNamespace(
                 code=codes[0], price=100.0, close_prev=99.0,
-                timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                timestamp=datetime.now(BEIJING_TZ).strftime("%Y-%m-%d %H:%M:%S"),
             )]
 
         plan = {
