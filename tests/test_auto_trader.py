@@ -284,6 +284,71 @@ def test_notification_filter():
     )
 
 
+def test_paused_cycle_still_refreshes_stop_heartbeat():
+    """暂停期间仍要刷新止损巡检心跳，否则 watchdog 会自锁。
+
+    2026-09-30 生产实况：单线程循环里 rescue_scan 阻塞约 6 分钟，止损巡检
+    超期被判定 critical，doctor 随即暂停交易；而暂停分支原先整段跳过盘中
+    逻辑，连 last_stop_check_at 都不再更新——补救措施关掉了唯一能证明
+    问题已解除的心跳，critical 遂无法自愈，系统在暂停/恢复间反复抖动。
+
+    止损的"实际执行"仍受 paused 保护（checked_stops 内部自行短路），这里
+    只要求心跳不中断。
+    """
+    state_path = os.path.join(
+        tempfile.gettempdir(),
+        f"alpha-pilot-auto-paused-{os.getpid()}.json",
+    )
+    control_path = os.path.join(
+        tempfile.gettempdir(),
+        f"alpha-pilot-auto-paused-control-{os.getpid()}.json",
+    )
+    with open(control_path, "w", encoding="utf-8") as file:
+        json.dump({"paused": True, "reason": "测试"}, file)
+
+    stop_calls = []
+
+    def fake_check_stops_once():
+        stop_calls.append("called")
+        return {"checked": 0, "sold": 0}
+
+    def unexpected_scan():
+        raise AssertionError("暂停期间不应执行扫描")
+
+    try:
+        result = run_auto_cycle(
+            state=AutoTraderState(date="2026-06-09", last_stop_check_at=0.0),
+            status_override="盘中",
+            trading_day_override=True,
+            today_override="2026-06-09",
+            now_override=datetime(2026, 6, 9, 10, 0),
+            now_ts_override=2000,
+            services={
+                "check_stops_once": fake_check_stops_once,
+                "run_watch_cycle": lambda **kw: {
+                    "actions": [], "details": {"top_watch": []}, "watchlist": {"items": {}},
+                    "missed_opportunity": False, "rescue_requested": False, "eligible_codes": [],
+                },
+                "run_scan": unexpected_scan,
+            },
+            persist_state=True,
+            record_event=False,
+            state_file=state_path,
+            control_file=control_path,
+            notify=False,
+        )
+        with open(state_path, "r", encoding="utf-8") as file:
+            persisted = json.load(file)
+    finally:
+        for path in (state_path, control_path):
+            if os.path.exists(path):
+                os.remove(path)
+
+    assert_true(stop_calls == ["called"], "暂停期间止损巡检仍被调度")
+    assert_true(persisted["last_stop_check_at"] == 2000, "暂停期间止损巡检心跳照常推进")
+    assert_true(not persisted.get("active_stage"), "巡检结束后不留悬挂阶段标记")
+
+
 def main():
     print("自动盯盘交易员测试")
     print("=" * 60)
@@ -292,6 +357,7 @@ def main():
     test_after_market_cycle()
     test_state_checkpoint_after_stop_check()
     test_failed_stage_clears_active_state()
+    test_paused_cycle_still_refreshes_stop_heartbeat()
     test_notification_filter()
     print("=" * 60)
     print("全部通过")

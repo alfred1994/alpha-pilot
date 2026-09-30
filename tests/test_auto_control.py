@@ -90,7 +90,13 @@ def main():
             control_file=control_path,
             notify=False,
         )
-        assert_true(calls == [], "暂停时不会调用止损/扫描/执行")
+        # 暂停期间扫描与执行必须停摆，但止损巡检仍要被调度：它的实际执行由
+        # checked_stops 内部按 paused 自行短路（不会真的卖出），这里要保留的只是
+        # last_stop_check_at 心跳。2026-09-30 生产实况：整段跳过曾让心跳停更，
+        # 于是"巡检超期 -> doctor 暂停 -> 心跳更旧"形成自锁，系统在暂停/恢复间
+        # 反复抖动，只能等下一轮巡检自然恢复。
+        assert_true(calls == ["check_stops_once"], "暂停时只调度止损巡检心跳，不调用扫描/执行")
+        assert_true(state.last_stop_check_at == 1000, "暂停期间止损巡检心跳照常推进")
         assert_true(any("自动盯盘已暂停" in action for action in result["actions"]), "暂停动作写入自动循环报告")
 
         watchdog_items = run_auto_watchdog(

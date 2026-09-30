@@ -654,7 +654,19 @@ def run_auto_cycle(
 
         elif status == "盘中" and paused:
             actions.append(f"自动盯盘已暂停: {control_state.get('reason', '')}")
-            actions.append("盘中交易动作跳过: 止损巡检/扫描/模拟执行")
+            actions.append("盘中交易动作跳过: 扫描/模拟执行")
+            # 暂停期间仍要刷新止损巡检心跳。此前这里整段跳过，导致
+            # last_stop_check_at 停更：巡检偶尔迟到触发 watchdog critical ->
+            # doctor 暂停 -> 暂停又让心跳停更 -> critical 永远不解除。
+            # 2026-09-30 实测 11:10~11:12 正是这个自锁，暂停了 2 分钟。
+            # 止损检查本身在 checked_stops 内部按 paused 自行短路（见其开头的
+            # "交易已暂停，止损执行跳过"），所以这里只恢复心跳，不会真的卖出。
+            if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
+                _run_stage(
+                    "stop_check",
+                    checked_stops,
+                    after_success=lambda _: _mark_stage_value("last_stop_check_at", now_ts),
+                )
 
         elif status == "盘中":
             if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
