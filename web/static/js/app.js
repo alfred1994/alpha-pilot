@@ -1,8 +1,9 @@
-import { ReturnsTab } from './modules/returns.js?v=2026091703';
+import { registerChartTheme } from './chart-theme.js?v=2026100901';
+import { ReturnsTab } from './modules/returns.js?v=2026100901';
 import { ResearchTab } from './modules/research.js?v=2026091702';
-import { DashboardTab } from './modules/dashboard.js?v=2026092301';
-import { DecisionsTab } from './modules/decisions.js?v=2026091701';
-import { EvolutionTab } from './modules/evolution.js?v=2026092301';
+import { DashboardTab } from './modules/dashboard.js?v=2026100901';
+import { DecisionsTab } from './modules/decisions.js?v=2026100901';
+import { EvolutionTab } from './modules/evolution.js?v=2026100901';
 import { HealthTab } from './modules/health.js?v=2026080201';
 
 class App {
@@ -27,7 +28,15 @@ class App {
     }
 
     async init() {
-        document.querySelectorAll('.nav-btn').forEach(button => button.addEventListener('click', () => this.switchTab(button.dataset.tab)));
+        registerChartTheme();
+        document.querySelectorAll('.nav-btn').forEach(button => {
+            const label = button.textContent.trim();
+            button.setAttribute('aria-label', label);
+            button.title = label;
+            button.addEventListener('click', () => this.switchTab(button.dataset.tab));
+        });
+        document.querySelectorAll('[data-navigate]').forEach(button => button.addEventListener('click', () => this.switchTab(button.dataset.navigate)));
+        document.getElementById('refresh-dashboard')?.addEventListener('click', () => this.refresh());
         window.addEventListener('hashchange', () => this.switchTab(location.hash.slice(1) || 'dashboard', false));
         document.addEventListener('visibilitychange', () => {
             if (document.hidden) this.refreshController?.abort();
@@ -45,7 +54,12 @@ class App {
 
     switchTab(name, updateHash = true) {
         if (!this.tabs[name]) return;
-        document.querySelectorAll('.nav-btn').forEach(button => button.classList.toggle('active', button.dataset.tab === name));
+        document.querySelectorAll('.nav-btn').forEach(button => {
+            button.classList.toggle('active', button.dataset.tab === name);
+            if (button.dataset.tab === name) button.setAttribute('aria-current', 'page');
+            else button.removeAttribute('aria-current');
+        });
+        this.setText('workspace-section', document.querySelector(`.nav-btn[data-tab="${name}"]`)?.textContent.trim() || '账户总览');
         document.querySelectorAll('.tab-content').forEach(section => section.classList.toggle('active', section.id === `tab-${name}`));
         this.currentTab = name;
         if (updateHash) history.replaceState(null, '', `#${name}`);
@@ -66,6 +80,8 @@ class App {
     async refresh() {
         if (this.refreshInFlight) return;
         this.refreshInFlight = true;
+        const refreshButton = document.getElementById('refresh-dashboard');
+        if (refreshButton) { refreshButton.disabled = true; refreshButton.setAttribute('aria-busy', 'true'); }
         const requestId = ++this.refreshSequence;
         const controller = new AbortController();
         this.refreshController = controller;
@@ -89,6 +105,7 @@ class App {
             window.clearTimeout(timeoutId);
             if (this.refreshController === controller) this.refreshController = null;
             this.refreshInFlight = false;
+            if (refreshButton) { refreshButton.disabled = false; refreshButton.setAttribute('aria-busy', 'false'); }
             if (this.currentTab === 'dashboard') this.tabs.research.loadMarket().catch(error => console.error('Market evidence failed:', error));
         }
     }
@@ -105,13 +122,19 @@ class App {
         const regimeText = this.regimeLabel(regimeInfo?.regime);
         const regimeDate = regimeInfo?.date ? String(regimeInfo.date).slice(5) : '';
         this.setText('header-regime', regimeText + (regimeDate ? ` · ${regimeDate}` : '') + (regimeInfo?.fresh === false ? ' · 已过期' : ''));
+        this.setText('overview-regime', regimeText + (regimeInfo?.fresh === false ? ' · 已过期' : ''));
+        const overviewDay = brief.date || String(data.data_as_of || data.timestamp || '').slice(0, 10);
+        const overviewDate = new Date(`${overviewDay}T12:00:00+08:00`);
+        this.setText('overview-date', Number.isNaN(overviewDate.getTime()) ? '交易日期待确认' : overviewDate.toLocaleDateString('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }));
         const assets = data.account?.total_assets;
         this.setText('header-assets', data.account?.available === false || !Number.isFinite(Number(assets)) || assets == null
             ? '净值不可用' : `净值 ￥${Number(assets).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`);
         const fetchedAt = data.fetched_at || data.timestamp;
+        this.setText('workspace-sync', `快照 ${this.formatTime(fetchedAt).split(' ').pop()}`);
         this.setText('footer-update-time', `快照抓取 ${this.formatTime(fetchedAt)} · 底层数据 ${this.formatTime(data.data_as_of)}`);
         const snapshotAt = data.snapshot_at || fetchedAt;
         if (snapshotAt && Date.now() - new Date(snapshotAt).getTime() > 60000) this.showDataNotice('当前状态快照已过期，数据可能不是最新。');
+        if (snapshotAt && Date.now() - new Date(snapshotAt).getTime() > 60000) this.setText('workspace-sync', '快照已过期');
 
         const alert = document.getElementById('autopilot-alert-bar');
         const warnings = data.risk_warnings || [];
@@ -120,6 +143,7 @@ class App {
     }
 
     renderUnavailable() {
+        this.setText('workspace-sync', '同步失败 · 数据陈旧');
         this.showDataNotice(this.globalData ? '公开状态接口暂不可达；当前页仍显示上次成功读取的数据，数据已标记陈旧。' : '公开状态接口暂不可达，当前没有可用快照。');
         if (!this.globalData) {
             this.setText('header-assets', '净值不可用');

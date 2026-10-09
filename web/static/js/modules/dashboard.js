@@ -1,3 +1,4 @@
+import { chartColors } from '../chart-theme.js?v=2026100901';
 // 漏斗是通过人数；拒绝筛选另设明确入口，避免把通过人数映射到拒绝原因。
 const FUNNEL_STAGES = [
     { key: 'candidates', label: '候选观察' },
@@ -9,7 +10,7 @@ const FUNNEL_STAGES = [
     { key: 'filled', label: '模拟成交' },
 ];
 
-const FUNNEL_COLORS = ['#c66b3d', '#c08e3a', '#9a8b4f', '#7a8f6f', '#6b8a6e', '#55715b', '#3f5d4e'];
+const FUNNEL_COLORS = ['#c0dfa1', '#b2d095', '#a5c6a4', '#99bca8', '#92b7b2', '#89adbd', '#8c9faf'];
 
 export class DashboardTab {
     constructor(app) {
@@ -107,6 +108,7 @@ export class DashboardTab {
         this.renderAudit(data.daily_trader || {});
         this.renderStrategyHandoff(data);
         this.renderAccount(data, positions, performance, tradesData?.total ?? trades.length);
+        this.renderAllocation(data.account, positionsData ? positions : null);
         this.renderPositions(positions);
         this.renderTrades(trades);
         this.renderPerformance(performance);
@@ -122,6 +124,7 @@ export class DashboardTab {
         }
         if (!performanceData || !performance.length) this.setText('daily-pnl', '数据不可用');
         if (!performanceData && this.chart) {
+            this.setText('performance-status', '净值读取失败，请稍后刷新');
             this.chart.clear();
             this.chart.setOption({ title: { text: '业绩读取失败', left: 'center' } });
         }
@@ -141,6 +144,8 @@ export class DashboardTab {
         this.setText('trader-state', labels[brief.state] || '状态读取中');
         const stateEl = document.getElementById('trader-state');
         if (stateEl) stateEl.className = `state-pill ${this.escape(brief.state || '')}`;
+        const briefDot = document.querySelector('.brief-live-dot');
+        if (briefDot) briefDot.classList.toggle('needs-attention', ['paused', 'attention'].includes(brief.state));
         this.setText('trader-date', brief.date || '-');
         this.setText('trader-market-status', brief.market_status || '-');
         this.setText('trader-headline', brief.headline || '每日交易员简报暂不可用');
@@ -191,28 +196,18 @@ export class DashboardTab {
             dom.innerHTML = '<div class="empty-state">图表组件不可用，数值见下方说明</div>';
             return;
         }
-        if (!this.funnelChart) this.funnelChart = window.echarts.init(dom);
+        const empty = data.every(item => item.value === 0 || item.value === null);
+        dom.classList.toggle('is-empty', empty);
+        if (empty) { this.funnelChart?.clear(); return; }
+        if (!this.funnelChart) this.funnelChart = window.echarts.init(dom, 'alphapilot');
         this.funnelChart.off('click');
         const knownStages = data.filter(item => item.value !== null);
-        if (data.every(item => item.value === 0 || item.value === null)) {
-            this.funnelChart.clear();
-            this.funnelChart.setOption({
-                title: {
-                    text: isClosedDay ? '休市日不执行扫描和交易' : data.every(item => item.value === null) ? '阶段数量未知' : '今日尚无决策旅程事实',
-                    left: 'center', top: 'middle',
-                    textStyle: { color: '#4b5548', fontSize: 14, fontWeight: 400 },
-                },
-                series: [],
-            }, true);
-            setTimeout(() => this.funnelChart?.resize(), 50);
-            return;
-        }
         this.funnelChart.setOption({
             backgroundColor: 'transparent',
             tooltip: {
                 trigger: 'item',
-                backgroundColor: '#344234', borderWidth: 0,
-                textStyle: { color: '#e8dcc7', fontSize: 12 },
+                backgroundColor: chartColors.surface, borderWidth: 0,
+                textStyle: { color: chartColors.ink, fontSize: 12 },
                 formatter: params => {
                     const stage = knownStages[params.dataIndex];
                     return `${stage?.label || params.name}：${stage?.value === undefined ? '未知' : `${stage.value} 次`}`;
@@ -318,6 +313,26 @@ export class DashboardTab {
         this.setText('position-count', `${positions.length} 只`);
         this.setText('position-value', `持仓市值 ${this.money(positionValue)}`);
         this.setText('trade-count', `历史成交 ${totalTrades} 笔`);
+        const daily = document.getElementById('daily-pnl');
+        if (daily) daily.className = this.pnlClass(latest.daily_pnl);
+    }
+
+    renderAllocation(account, positions) {
+        const available = account?.available !== false && this.isKnownNumber(account?.cash)
+            && this.isKnownNumber(account?.total_assets) && Number(account.total_assets) > 0 && positions !== null;
+        const cash = available ? Number(account.cash) : null;
+        const invested = available ? Number(account.total_assets) - cash : null;
+        const ratio = available ? Math.min(100, Math.max(0, invested / Number(account.total_assets) * 100)) : null;
+        this.setText('allocation-ratio', ratio === null ? '—' : `${ratio.toFixed(1)}%`);
+        this.setText('allocation-cash', this.money(cash));
+        this.setText('allocation-invested', this.money(invested));
+        const ring = document.getElementById('allocation-ring');
+        if (ring) {
+            ring.style.setProperty('--invested', `${ratio || 0}%`);
+            ring.setAttribute('aria-label', available ? `资金使用率 ${ratio.toFixed(1)}%，现金 ${this.money(cash)}，持仓 ${this.money(invested)}` : '资金分布不可用');
+        }
+        const fill = document.getElementById('cash-track-fill');
+        if (fill) fill.style.width = available ? `${Math.min(100, Math.max(0, cash / Number(account.total_assets) * 100))}%` : '0%';
     }
 
     // 风险线：优先展示移动止损（更贴近当前行情），否则展示建仓时止损线。
@@ -390,8 +405,15 @@ export class DashboardTab {
     renderPerformance(performance) {
         const dom = document.getElementById('perf-chart');
         if (!dom || !window.echarts) return;
-        if (!this.chart) this.chart = window.echarts.init(dom);
+        if (!this.chart) this.chart = window.echarts.init(dom, 'alphapilot');
         const values = performance.map(item => this.isKnownNumber(item.total_assets) ? Number(item.total_assets) : null);
+        const known = values.filter(value => value !== null);
+        this.setText('performance-status', known.length === 1 ? '已记录 1 个净值快照，更多交易日后展示完整走势。' : known.length ? `已记录 ${known.length} 个净值快照` : '暂无净值快照，等待账户数据。');
+        if (!known.length) {
+            this.chart.clear();
+            this.chart.setOption({ title: { text: '等待首个净值快照', left: 'center', top: 'middle' } });
+            return;
+        }
         const firstAssets = values.find(v => v > 0) || 0;
         const hasBenchmark = performance.some(item => this.isKnownNumber(item.benchmark_pnl_pct));
         const benchmarkValues = hasBenchmark && firstAssets > 0
@@ -403,10 +425,11 @@ export class DashboardTab {
                 name: '账户净值',
                 type: 'line',
                 data: values,
-                smooth: true,
-                symbol: 'none',
-                lineStyle: { color: '#c66b3d', width: 3 },
-                areaStyle: { color: 'rgba(198,107,61,.12)' },
+                smooth: false,
+                symbol: 'circle', symbolSize: known.length === 1 ? 9 : 5, showSymbol: known.length < 8,
+                itemStyle: { color: chartColors.accent, borderColor: '#19201b', borderWidth: 2 },
+                lineStyle: { color: chartColors.accent, width: 2 },
+                areaStyle: { color: { type: 'linear', x: 0, y: 0, x2: 0, y2: 1, colorStops: [{ offset: 0, color: '#c0dfa122' }, { offset: 1, color: '#c0dfa100' }] } },
             },
         ];
         if (benchmarkValues.length) {
@@ -414,22 +437,25 @@ export class DashboardTab {
                 name: '沪深300基准',
                 type: 'line',
                 data: benchmarkValues,
-                smooth: true,
+                smooth: false,
                 symbol: 'none',
-                lineStyle: { color: '#7a8f6f', width: 2, type: 'dashed' },
+                lineStyle: { color: chartColors.benchmark, width: 1.5, type: 'dashed' },
             });
         }
         this.chart.setOption({
             backgroundColor: 'transparent',
             legend: hasBenchmark
-                ? { data: ['账户净值', '沪深300基准'], textStyle: { color: '#4b5548', fontSize: 12 }, top: 0, right: 0 }
+                ? { data: ['账户净值', '沪深300基准'], textStyle: { color: chartColors.text, fontSize: 10 }, top: 0, right: 0 }
                 : undefined,
-            tooltip: { trigger: 'axis', backgroundColor: '#344234', borderWidth: 0, textStyle: { color: '#e8dcc7' } },
-            grid: { left: 10, right: 16, top: hasBenchmark ? 36 : 28, bottom: 18, containLabel: true },
-            xAxis: { type: 'category', data: performance.map(item => item.date?.slice(5)), axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, axisLabel: { color: '#4b5548', fontSize: 12 } },
-            yAxis: { type: 'value', scale: true, axisLabel: { color: '#4b5548', fontSize: 12, formatter: value => `${(value / 10000).toFixed(0)}万` }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.1)' } } },
+            tooltip: { trigger: 'axis', backgroundColor: chartColors.surface, borderWidth: 0, textStyle: { color: chartColors.ink }, valueFormatter: value => this.money(value, 2) },
+            grid: { left: 0, right: 16, top: hasBenchmark ? 36 : 22, bottom: 16, containLabel: true },
+            xAxis: { type: 'category', data: performance.map(item => item.date?.slice(5)), axisLine: { lineStyle: { color: chartColors.line } }, axisLabel: { color: chartColors.text, fontSize: 10 } },
+            yAxis: { type: 'value', scale: true, splitNumber: 3,
+                min: known.length === 1 ? known[0] * .99 : undefined,
+                max: known.length === 1 ? known[0] * 1.01 : undefined,
+                axisLabel: { color: chartColors.text, fontSize: 10, formatter: value => `${Number((value / 10000).toFixed(2))}万` }, splitLine: { lineStyle: { color: chartColors.line, type: 'dashed' } } },
             series,
-        });
+        }, true);
         setTimeout(() => this.chart?.resize(), 50);
     }
 

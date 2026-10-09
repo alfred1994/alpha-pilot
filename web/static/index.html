@@ -13,8 +13,10 @@
     <link rel="icon" href="data:,">
     <script src="vendor/lucide.min.js?v=2026080201" defer></script>
     <script src="vendor/echarts.min.js?v=2026080201" defer></script>
-    <link rel="stylesheet" href="css/styles.css?v=2026092401">
-    <link rel="stylesheet" href="css/research.css?v=2026091702">
+    <meta name="theme-color" content="#101512">
+    <link rel="stylesheet" href="css/styles.css?v=2026100901">
+    <link rel="stylesheet" href="css/research.css?v=2026100901">
+    <link rel="stylesheet" href="css/console.css?v=2026100901">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -22,15 +24,16 @@
     <div class="app-shell">
         <header class="topbar">
             <a class="brand" href="#" aria-label="AlphaPilot 首页">
-                <span class="brand-mark">AP</span>
+                <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M5 24 14 7h4l9 17M10 19h12M17 7l-4 17" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
                 <span>
                     <strong>AlphaPilot</strong>
-                    <small>个人 AI 交易员</small>
+                    <small>个人量化研究台</small>
                 </span>
             </a>
             <nav class="main-nav" aria-label="主导航">
-                <button class="nav-btn active" data-tab="dashboard"><i data-lucide="sunrise"></i><span>今日</span></button>
-                <button class="nav-btn" data-tab="returns"><i data-lucide="chart-no-axes-combined"></i><span>收益表现</span></button>
+                <span class="nav-label">工作空间</span>
+                <button class="nav-btn active" data-tab="dashboard"><i data-lucide="layout-dashboard"></i><span>账户总览</span></button>
+                <button class="nav-btn" data-tab="returns"><i data-lucide="trending-up"></i><span>收益表现</span></button>
                 <button class="nav-btn" data-tab="research"><i data-lucide="scan-search"></i><span>候选验证</span></button>
                 <button class="nav-btn" data-tab="decisions"><i data-lucide="route"></i><span>决策流水</span></button>
                 <button class="nav-btn" data-tab="evolution"><i data-lucide="brain"></i><span>策略与复盘</span></button>
@@ -43,9 +46,14 @@
                     <small><span id="header-regime">市场环境 -</span> · <span id="header-assets">净值 -</span></small>
                 </div>
             </div>
+            <div class="sidebar-note"><i data-lucide="shield-check"></i><div><strong>模拟盘 · 只读看板</strong><p>记录每一次判断，验证每一个假设。</p></div></div>
         </header>
 
         <main class="page-wrap" id="main-content">
+            <div class="workspace-bar">
+                <div class="workspace-location"><span class="workspace-dot"></span><span>A 股模拟盘</span><span class="workspace-divider">/</span><strong id="workspace-section">账户总览</strong></div>
+                <div class="workspace-tools"><span id="workspace-sync">正在同步</span><button class="icon-button" id="refresh-dashboard" aria-label="刷新看板" title="刷新看板"><i data-lucide="refresh-cw"></i></button><span class="read-only-badge"><i data-lucide="eye"></i>只读</span></div>
+            </div>
             <p class="data-notice" id="data-notice" role="status" hidden></p>
             <div class="alert-banner" id="autopilot-alert-bar" hidden>
                 <i data-lucide="alert-triangle"></i>
@@ -53,47 +61,55 @@
             </div>
 
             <section class="tab-content active" id="tab-dashboard">
-                <article class="trader-brief" id="trader-brief-card">
+                <div class="overview-heading"><div><p class="overview-date" id="overview-date">正在读取交易日</p><h1>账户总览<span class="heading-dot">.</span></h1><p>资金表现、市场变化与智能体的下一步。</p></div><div class="market-badge"><i data-lucide="candlestick-chart"></i><span id="overview-regime">市场环境待识别</span></div></div>
+
+                <section class="metric-grid account-summary" aria-label="模拟账户摘要">
+                    <article class="metric-card balance-card"><div class="metric-label"><span>账户净值 <small>CNY</small></span><i data-lucide="wallet"></i></div><strong id="total-assets">-</strong><small id="total-pnl">-</small><div class="balance-caption">模拟账户 · 人民币</div></article>
+                    <article class="metric-card"><div class="metric-label"><span>今日盈亏</span><i data-lucide="trending-up"></i></div><strong id="daily-pnl">-</strong><small>按最近账户快照</small></article>
+                    <article class="metric-card"><div class="metric-label"><span>可用资金</span><i data-lucide="banknote"></i></div><strong id="available-cash">-</strong><small id="cash-ratio">-</small><div class="cash-track" aria-hidden="true"><span id="cash-track-fill"></span></div></article>
+                    <article class="metric-card"><div class="metric-label"><span>当前持仓</span><i data-lucide="layers-2"></i></div><strong id="position-count">-</strong><small id="position-value">-</small></article>
+                </section>
+
+                <div class="overview-grid">
+                    <article class="card performance-card">
+                        <div class="section-heading compact"><div><span class="eyebrow">资产轨迹</span><h2>账户净值</h2></div><button class="text-button" data-navigate="returns">收益详情<i data-lucide="arrow-up-right"></i></button></div>
+                        <div class="chart-meta"><span class="chart-legend"><i></i>账户净值 <span>人民币</span></span><span class="period-label">最近 30 日</span></div>
+                        <p class="chart-status" id="performance-status" role="status">正在读取净值快照</p>
+                        <div class="chart-container" id="perf-chart"></div>
+                        <div class="chart-foot"><span id="trade-count">-</span><span>按实际账户快照展示</span></div>
+                    </article>
+                    <article class="trader-brief" id="trader-brief-card">
+                    <div class="brief-title"><span class="eyebrow"><i data-lucide="sparkles"></i>交易员简报</span><span class="brief-live-dot" aria-hidden="true"></span></div>
                     <div class="brief-copy">
                         <div class="brief-meta">
                             <span class="state-pill" id="trader-state">读取中</span>
                             <span id="trader-date">-</span>
                             <span id="trader-market-status">-</span>
                         </div>
-                        <h1 id="trader-headline">正在读取 AI 交易员状态</h1>
+                        <h2 id="trader-headline">正在读取 AI 交易员状态</h2>
                         <p id="trader-explanation">系统正在汇总今日扫描、判断、计划和执行事实。</p>
                     </div>
                     <div class="next-action">
-                        <span>下一动作</span>
+                        <span><i data-lucide="corner-down-right"></i>下一动作</span>
                         <strong id="trader-next-action">-</strong>
                         <small id="trader-last-loop">最后循环 -</small>
                     </div>
                 </article>
-
-                <section class="metric-grid account-summary" aria-label="模拟账户摘要">
-                    <article class="metric-card"><span>账户净值</span><strong id="total-assets">-</strong><small id="total-pnl">-</small></article>
-                    <article class="metric-card"><span>今日盈亏</span><strong id="daily-pnl">-</strong><small>按最近账户快照</small></article>
-                    <article class="metric-card"><span>可用资金</span><strong id="available-cash">-</strong><small id="cash-ratio">-</small></article>
-                    <article class="metric-card"><span>当前持仓</span><strong id="position-count">-</strong><small id="position-value">-</small></article>
-                </section>
-
-                <div class="two-column account-area">
-                    <article class="card">
-                        <div class="section-heading compact"><div><span class="eyebrow">账户结果</span><h2>净值变化</h2></div><span id="trade-count">-</span></div>
-                        <div class="chart-container" id="perf-chart"></div>
-                    </article>
-                    <article class="card">
-                        <div class="section-heading compact"><div><span class="eyebrow">风险暴露</span><h2>当前持仓</h2></div></div>
-                        <div class="positions-list" id="positions-list"><div class="empty-state">暂无持仓</div></div>
-                    </article>
                 </div>
 
-                <article class="card" aria-label="市场温度与证据">
-                    <div class="section-heading compact"><div><span class="eyebrow">市场事实，不是买卖指令</span><h2>市场温度与证据</h2></div><button id="open-research">查看候选过程与结果 →</button></div>
+                <div class="overview-grid market-area">
+                <article class="card market-card" aria-label="市场温度与证据">
+                    <div class="section-heading compact"><div><span class="eyebrow">市场观察</span><h2>市场温度与证据</h2></div><button class="text-button" id="open-research">候选验证<i data-lucide="arrow-up-right"></i></button></div>
                     <p id="market-evidence-status" role="status">正在读取市场快照</p>
                     <div class="research-metrics" id="market-evidence-metrics"></div>
                     <p class="research-note" id="market-evidence-note">仅使用已落库证据，不生成额外温度分。</p>
                 </article>
+                <article class="card allocation-card">
+                    <div class="section-heading compact"><div><span class="eyebrow">风险暴露</span><h2>资金分布</h2></div><i class="section-icon" data-lucide="pie-chart"></i></div>
+                    <div class="allocation-overview"><div class="allocation-ring" id="allocation-ring" role="img" aria-label="正在读取资金分布"><div><strong id="allocation-ratio">—</strong><span>资金使用率</span></div></div><div class="allocation-legend"><div><i></i><span>可用资金</span><strong id="allocation-cash">—</strong></div><div><i></i><span>持仓市值</span><strong id="allocation-invested">—</strong></div></div></div>
+                    <div class="positions-list" id="positions-list"><div class="empty-state">正在读取持仓</div></div>
+                </article>
+                </div>
 
                 <section class="capability-rail" id="capability-rail" aria-label="交易能力状态">
                     <div class="empty-state">正在读取能力状态</div>
@@ -102,11 +118,11 @@
                 <article class="card journey-card">
                     <div class="section-heading">
                         <div><span class="eyebrow">今日事实</span><h2>决策旅程</h2></div>
-                        <p>每一层都是不同事实；观察结论不等于交易信号。下方列出可读的阶段数值与筛选入口。</p>
+                        <p>从发现候选到模拟成交；观察结论不等于交易信号。</p>
                     </div>
                     <div class="journey-funnel" id="journey-funnel" role="img" aria-label="今日决策漏斗：候选、打分、LLM 判断、观察、信号、计划与成交数量"></div>
                     <ul class="journey-values" id="journey-values" aria-label="今日决策阶段数值"></ul>
-                    <div class="journey-links"><button type="button" id="journey-all-candidates">查看今日全部候选</button><button type="button" id="journey-rejected-candidates">查看今日被拒绝的候选</button></div>
+                    <div class="journey-links"><button type="button" id="journey-all-candidates">查看全部候选<i data-lucide="arrow-right"></i></button><button type="button" id="journey-rejected-candidates">查看被拒绝的候选<i data-lucide="arrow-right"></i></button></div>
                     <div class="journey-foot" id="journey-foot">今日尚无决策旅程事实。</div>
                 </article>
 
@@ -225,7 +241,7 @@
                     <p class="research-note">同一候选池与同一份打分，仅策略参数不同；T+5 净收益为反事实回填，不是实盘业绩。晋级需人工确认，不会自动切换正式策略。</p>
                     <div class="shadow-board" id="shadow-board"><div class="empty-state">正在读取影子策略指标</div></div>
                 </article>
-                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">可复用记忆</span><h2>复盘教训</h2></div></div><div class="filter-bar lessons-filter"><button class="filter-btn active" data-category="all">全部</button><button class="filter-btn" data-category="entry">入场</button><button class="filter-btn" data-category="execution">执行</button><button class="filter-btn" data-category="risk">风控</button><button class="filter-btn" data-category="general">综合</button></div><div class="lesson-list" id="lessons-list"><div class="empty-state">正在读取复盘记忆</div></div></article>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">可复用记忆</span><h2>复盘教训</h2></div></div><div class="filter-bar lessons-filter"><button class="filter-btn active" data-category="all">全部</button><button class="filter-btn" data-category="entry">入场</button><button class="filter-btn" data-category="execution">执行</button><button class="filter-btn" data-category="risk">风控</button><button class="filter-btn" data-category="general">综合</button></div><div class="lesson-list" id="lessons-list"><div class="empty-state">正在读取复盘记忆</div></div><div class="lessons-pagination"><span id="lessons-count" role="status"></span><button id="lessons-more" hidden>显示更多教训<i data-lucide="chevron-down"></i></button></div></article>
             </section>
 
             <section class="tab-content" id="tab-health">
@@ -252,6 +268,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026092301" type="module"></script>
+    <script src="js/app.js?v=2026100901" type="module"></script>
 </body>
 </html>

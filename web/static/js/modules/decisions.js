@@ -163,7 +163,7 @@ export class DecisionsTab {
     renderRadar(dimensions) {
         const dom = document.getElementById('radar-chart');
         if (!dom || !window.echarts) return;
-        if (!this.radarChart) this.radarChart = window.echarts.init(dom);
+        if (!this.radarChart) this.radarChart = window.echarts.init(dom, 'alphapilot');
         const keys = ['technical', 'capital', 'sentiment', 'emotion', 'fundamental', 'ml'];
         const labels = ['技术面', '资金面', '舆情面', '情绪面', '基本面', '机器学习'];
         const available = keys.map((key, index) => ({ key, label: labels[index] })).filter(item => dimensions[item.key]);
@@ -175,7 +175,7 @@ export class DecisionsTab {
                     text: '该决策未包含多维评分数据',
                     left: 'center',
                     top: 'middle',
-                    textStyle: { color: '#6f725e', fontSize: 12, fontWeight: 400 },
+                    textStyle: { color: '#a0aea2', fontSize: 12, fontWeight: 400 },
                 },
                 series: [],
             });
@@ -185,8 +185,8 @@ export class DecisionsTab {
         const rows = available;
         this.radarChart.setOption({
             title: { text: '' },
-            radar: { indicator: rows.map(item => ({ name: item.label, max: 100 })), splitArea: { areaStyle: { color: ['rgba(139,157,131,.04)', 'rgba(139,157,131,.12)'] } }, axisLine: { lineStyle: { color: 'rgba(52,66,52,.18)' } }, splitLine: { lineStyle: { color: 'rgba(52,66,52,.14)' } }, name: { color: '#6f725e', fontSize: 9 } },
-            series: [{ type: 'radar', data: [{ value: rows.map(item => Number(dimensions[item.key]?.score || 0)), areaStyle: { color: 'rgba(198,107,61,.2)' }, lineStyle: { color: '#c66b3d', width: 2 }, itemStyle: { color: '#c66b3d' } }] }],
+            radar: { indicator: rows.map(item => ({ name: item.label, max: 100 })), splitArea: { areaStyle: { color: ['#c0dfa104', '#c0dfa109'] } }, axisLine: { lineStyle: { color: '#354237' } }, splitLine: { lineStyle: { color: '#354237' } }, name: { color: '#a0aea2', fontSize: 10 } },
+            series: [{ type: 'radar', data: [{ value: rows.map(item => Number(dimensions[item.key]?.score || 0)), areaStyle: { color: '#c0dfa125' }, lineStyle: { color: '#c0dfa1', width: 2 }, itemStyle: { color: '#c0dfa1' } }] }],
         });
         setTimeout(() => this.radarChart?.resize(), 50);
     }

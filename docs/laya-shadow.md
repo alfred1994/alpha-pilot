@@ -167,3 +167,23 @@ GitHub/PyPI 最新版本为 [v0.4.1](https://github.com/NandhaKishorM/laya/relea
    CPU延迟、主模型调用节省与模拟盘净收益；先验证再考虑接替当前服务。
 
 与主交易员、独立复盘角色的整体分工见 [机会发现与动态风格](opportunity-driven-trading.md)。
+
+## 当前服务器的训练可行性（2026-10-09核查）
+
+运行环境为4核ARM Neoverse-N1、约24GB内存，无CUDA GPU；核查时可用内存约16GB。
+0.4.1官方`laya.train.TrainConfig`支持`freeze_encoder=True`，官方单设备训练入口也支持CPU。
+本机缓存multilingual权重的参数分布为encoder约306.94M、其他部分约14.97M，共321.91M。
+因此冻结encoder后约4.7%的参数参与训练，但encoder的前向计算仍要消耗CPU。
+
+- 首选在此机进行数据整理、独立验证集评估、温度校准，以及冻结encoder的小批量决策头试训。
+- 先用100-300条核验样本测实际吞吐、内存峰值和校准效果，再估计正式训练耗时；小样本只作
+  运行与学习信号验证，不宣称形成金融预测能力。
+- 建议独立进程/环境，非交易时段运行，初始限制2核、8-10GB内存，micro_batch=1、较短输入，
+  按吞吐增加梯度累积；不得影响报价、止损、Auto和公开看板。资源值是试验预算，不是已验证峰值。
+- 全量微调虽有CPU入口，但4核生产机不适合承担长期训练；需要更新encoder时优先在独立GPU上
+  训练，通过留出测试后只将导出的权重部署回此机推理。
+- 权重、提示、标签与校准集均按版本管理；先在独立端口比较，不覆盖当前常驻服务。
+
+此次仅检查硬件、参数与官方训练代码，未启动训练、下载新权重或改变运行服务。
+参考：[官方训练配置](https://github.com/NandhaKishorM/laya/blob/v0.4.1/laya/train.py)、
+[官方CPU/MPS入口](https://github.com/NandhaKishorM/laya/blob/v0.4.1/notebooks/laya_finetune_typed_decisions_mps.py)。

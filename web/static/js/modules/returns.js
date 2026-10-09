@@ -62,10 +62,12 @@ export class ReturnsTab {
         this.text('returns-note', '未加载有效结果');
         document.getElementById('returns-rows')?.replaceChildren();
         this.charts.forEach(chart => chart.clear());
+        ['returns-chart', 'returns-daily-chart'].forEach(id => document.getElementById(id)?.classList.add('is-empty'));
         this.text('returns-chart-state', message);
     }
 
     render(data) {
+        ['returns-chart', 'returns-daily-chart'].forEach(id => document.getElementById(id)?.classList.remove('is-empty'));
         const s = data.summary;
         this.text('returns-status', `实际快照区间 ${data.effective_start} 至 ${data.effective_end} · ${data.snapshots} 个有效快照 · ${data.invalid_snapshots} 个无效快照 · ${data.benchmark_points} 个同期基准点${data.reset_suspected ? ' · 初始资金变化，疑似账户重置，停止比较账户收益' : ''}`);
         this.text('returns-note', data.note);
@@ -87,7 +89,7 @@ export class ReturnsTab {
             body.append(row);
         }
         if (!window.echarts) { this.text('returns-chart-state', '图表组件不可用，数值请查看下方明细'); return; }
-        if (!this.charts.length) this.charts = ['returns-chart', 'returns-daily-chart'].map(id => window.echarts.init(document.getElementById(id)));
+        if (!this.charts.length) this.charts = ['returns-chart', 'returns-daily-chart'].map(id => window.echarts.init(document.getElementById(id), 'alphapilot'));
         this.text('returns-chart-state', '按实际快照日期展示；折线缺值断开，首日不画盈亏柱。资产变化未作资金流调整。');
         const dates = data.points.map(point => point.date);
         const common = {
@@ -105,7 +107,7 @@ export class ReturnsTab {
         }, true);
         this.charts[1].setOption({ ...common,
             yAxis: { type: 'value', name: '元' },
-            series: [{ name: '较前一快照资产变化', type: 'bar', data: data.points.map(p => ({ value: p.change_since_previous, itemStyle: { color: p.change_since_previous > 0 ? '#c66b3d' : '#7a8f6f' } })) }],
+            series: [{ name: '较前一快照资产变化', type: 'bar', barMaxWidth: 24, data: data.points.map(p => ({ value: p.change_since_previous, itemStyle: { color: p.change_since_previous > 0 ? '#f29083' : '#8ac5ad', borderRadius: [3,3,0,0] } })) }],
         }, true);
         this.charts.forEach(chart => chart.resize());
     }

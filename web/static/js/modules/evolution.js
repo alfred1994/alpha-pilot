@@ -27,6 +27,11 @@ export class EvolutionTab {
         this.lessonsFailed = false;
         this.lessonsLoadedAt = 0;
         this.lessonsRequest = null;
+        this.visibleLessons = 6;
+        document.getElementById('lessons-more')?.addEventListener('click', () => {
+            this.visibleLessons += 6;
+            this.renderLessons();
+        });
     }
 
     text(value, fallback = '-') {
@@ -204,6 +209,7 @@ export class EvolutionTab {
             if (!button) return;
             container.querySelectorAll('.filter-btn').forEach(item => item.classList.toggle('active', item === button));
             this.category = button.dataset.category || 'all';
+            this.visibleLessons = 6;
             this.renderLessons();
         });
         this.filtersReady = true;
@@ -212,6 +218,9 @@ export class EvolutionTab {
     renderLessons() {
         const container = document.getElementById('lessons-list');
         if (!container) return;
+        const more = document.getElementById('lessons-more');
+        if (more) more.hidden = true;
+        this.setText('lessons-count', '');
         if (this.lessonsFailed) {
             container.innerHTML = '<div class="empty-state">复盘教训读取失败，请稍后刷新；不能据此认定暂无教训</div>';
             return;
@@ -222,7 +231,10 @@ export class EvolutionTab {
             return;
         }
         const categoryLabels = { entry: '入场', execution: '执行', risk: '风控', general: '综合', buy: '买入', sell: '卖出', regime: '市场环境', position: '仓位' };
-        container.innerHTML = rows.map(item => `
+        const visible = rows.slice(0, this.visibleLessons);
+        if (more) more.hidden = visible.length >= rows.length;
+        this.setText('lessons-count', `已显示 ${visible.length} / ${rows.length} 条 · 本次最多读取最近 60 条`);
+        container.innerHTML = visible.map(item => `
             <article class="lesson-item">
                 <div class="lesson-head"><span>${this.escape(categoryLabels[item.category] || item.category)}</span><span>${this.escape(item.date)}</span></div>
                 <p>${this.escape(item.content)}</p>
