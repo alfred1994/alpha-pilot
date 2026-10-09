@@ -135,6 +135,15 @@ def _active_stage_exemption(state: dict, now: datetime, *, action: str = None,
     return False, f"{detail}，已超预算"
 
 
+def _intraday_lag(timestamp: float, now: datetime) -> float:
+    """履约时效只扣除当日午休，不能把上午记录错误地当成下午停滞。"""
+    now_ts = now.timestamp()
+    lunch_start = now.replace(hour=11, minute=30, second=0, microsecond=0).timestamp()
+    lunch_end = now.replace(hour=13, minute=0, second=0, microsecond=0).timestamp()
+    lunch_overlap = max(0, min(now_ts, lunch_end) - max(timestamp, lunch_start))
+    return max(0, now_ts - timestamp - lunch_overlap)
+
+
 def _after_review_time(now: datetime) -> bool:
     """判断是否到达盘后复盘窗口"""
     hh, mm = _parse_time_hhmm(AUTO_REVIEW_AFTER)
@@ -451,9 +460,9 @@ def run_auto_watchdog(
             last_scan_at = float(state.get("last_scan_at") or 0)
             last_execute_at = float(state.get("last_execute_at") or 0)
             last_stop_at = float(state.get("last_stop_check_at") or 0)
-            scan_lag = now_ts - last_scan_at if last_scan_at else None
-            execute_lag = now_ts - last_execute_at if last_execute_at else None
-            stop_lag = now_ts - last_stop_at if last_stop_at else None
+            scan_lag = _intraday_lag(last_scan_at, now) if last_scan_at else None
+            execute_lag = _intraday_lag(last_execute_at, now) if last_execute_at else None
+            stop_lag = _intraday_lag(last_stop_at, now) if last_stop_at else None
             scan_stage_ok, scan_stage_detail = _active_stage_exemption(state, now, action="scan")
             execute_stage_ok, execute_stage_detail = _active_stage_exemption(state, now, action="execute")
             stop_stage_ok, stop_stage_detail = _active_stage_exemption(state, now, action="stop")
@@ -461,8 +470,29 @@ def run_auto_watchdog(
             scan_stage_matches = AUTO_STAGE_ACTIONS.get(active_stage) == "scan"
             execute_stage_matches = AUTO_STAGE_ACTIONS.get(active_stage) == "execute"
             stop_stage_matches = AUTO_STAGE_ACTIONS.get(active_stage) == "stop"
+            # 首次执行依赖首轮扫描完成；只在本日尚无扫描/执行记录且首轮
+            # scan 仍在自身预算内时等待，不能豁免已有执行记录的真实停滞。
+            first_scan_pending = (
+                state.get("date") == today and active_stage == "scan" and scan_stage_ok
+                and last_scan_at == 0 and last_execute_at == 0
+            )
+            # Doctor 刚恢复交易时，旧执行时间来自暂停期；仅等待恢复后下一轮
+            # 立即启动的首次扫描。完成一轮扫描或超过阶段预算后恢复严格检查。
+            resumed_at = _parse_iso(control_state.get("updated_at", ""))
+            resume_ts = resumed_at.timestamp() if resumed_at else 0
+            resume_scan_pending = (
+                state.get("date") == today and active_stage == "scan" and scan_stage_ok
+                and control_state.get("updated_by") == "auto_doctor"
+                and 0 < resume_ts <= now_ts
+                and 0 <= float(state["stage_started_at"]) - resume_ts <= AUTO_LOOP_INTERVAL + 30
+                and last_scan_at < resume_ts and last_execute_at < resume_ts
+            )
+            execute_wait_detail = (
+                f"等待首轮扫描完成后执行；{scan_stage_detail}" if first_scan_pending else
+                f"等待恢复后首次扫描完成后执行；{scan_stage_detail}" if resume_scan_pending else ""
+            )
             scan_ok = scan_stage_ok or (scan_lag is not None and scan_lag <= max_scan_lag_sec)
-            execute_ok = execute_stage_ok or (execute_lag is not None and execute_lag <= max_scan_lag_sec)
+            execute_ok = bool(execute_wait_detail) or execute_stage_ok or (execute_lag is not None and execute_lag <= max_scan_lag_sec)
             stop_ok = stop_stage_ok or (stop_lag is not None and stop_lag <= max_stop_lag_sec)
             items.append(_make_item(
                 "盘中扫描",
@@ -477,9 +507,11 @@ def run_auto_watchdog(
             items.append(_make_item(
                 "盘中模拟执行",
                 execute_ok,
-                execute_stage_detail if execute_stage_matches and execute_stage_detail else (
-                    f"距上次执行{execute_lag:.0f}秒，阈值{max_scan_lag_sec}秒"
-                    if execute_lag is not None else "尚无执行记录"
+                execute_wait_detail or (
+                    execute_stage_detail if execute_stage_matches and execute_stage_detail else (
+                        f"距上次执行{execute_lag:.0f}秒，阈值{max_scan_lag_sec}秒"
+                        if execute_lag is not None else "尚无执行记录"
+                    )
                 ),
                 "critical" if not execute_ok else "ok",
                 "扫描后应执行模拟交易计划。",

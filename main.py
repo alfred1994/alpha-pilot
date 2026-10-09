@@ -629,6 +629,9 @@ def cmd_stop_check():
     """与自动循环共用严格报价校验和止损执行。"""
     from scheduler.auto_trader import check_stops_once, run_locked_action
     result = run_locked_action(check_stops_once)
+    if result.get("skipped"):
+        print(result.get("skip_reason", "止损巡检已跳过"))
+        return result
     print(f"止损巡检: 持仓{result.get('checked', 0)}只 卖出{result.get('sold', 0)}笔")
     if result.get('error'):
         print(result['error'])

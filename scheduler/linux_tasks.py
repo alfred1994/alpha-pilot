@@ -264,7 +264,7 @@ if [ "$watchdog_exit" -eq 0 ]; then
   exit 0
 fi
 
-if ! printf '%s\\n' "$watchdog_output" | grep -Eq '自动盘锁|自动循环新鲜度|自动盯盘状态'; then
+if ! printf '%s\\n' "$watchdog_output" | grep -Eq '^[[](CRITICAL|WARN)[]] (自动盘锁|自动循环新鲜度|自动盯盘状态) -'; then
   echo "Watchdog failed but no auto-runtime fault, skip restart." >> "$LOG_FILE"
   stamp="$(date '+%Y-%m-%d %H:%M:%S')"
   echo "===== $stamp END exit=$watchdog_exit =====" >> "$LOG_FILE"

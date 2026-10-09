@@ -11,10 +11,11 @@ import sys
 import tempfile
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scheduler.auto_trader import AutoTraderState, run_auto_cycle
+from scheduler.auto_trader import AutoTraderState, check_stops_once, run_auto_cycle
 
 
 def assert_true(condition, message):
@@ -308,35 +309,38 @@ def test_paused_cycle_still_refreshes_stop_heartbeat():
 
     stop_calls = []
 
-    def fake_check_stops_once():
-        stop_calls.append("called")
-        return {"checked": 0, "sold": 0}
-
     def unexpected_scan():
         raise AssertionError("暂停期间不应执行扫描")
 
     try:
-        result = run_auto_cycle(
-            state=AutoTraderState(date="2026-06-09", last_stop_check_at=0.0),
-            status_override="盘中",
-            trading_day_override=True,
-            today_override="2026-06-09",
-            now_override=datetime(2026, 6, 9, 10, 0),
-            now_ts_override=2000,
-            services={
-                "check_stops_once": fake_check_stops_once,
-                "run_watch_cycle": lambda **kw: {
-                    "actions": [], "details": {"top_watch": []}, "watchlist": {"items": {}},
-                    "missed_opportunity": False, "rescue_requested": False, "eligible_codes": [],
+        def real_paused_stops():
+            stop_calls.append("called")
+            return check_stops_once()
+
+        # 使用真实止损入口的暂停返回值，防止成功 stub 掩盖生产中的自锁。
+        with patch("scheduler.control.get_auto_control_state", return_value={"paused": True}), \
+                patch("execution.broker.get_broker_adapter", side_effect=AssertionError("暂停时不得访问交易通道")), \
+                patch("scheduler.auto_trader._record_auto_event") as record_event:
+            result = run_auto_cycle(
+                state=AutoTraderState(date="2026-06-09", last_stop_check_at=0.0,
+                                      last_error="止损巡检未完成: 交易已暂停，止损执行跳过"),
+                status_override="盘中",
+                trading_day_override=True,
+                today_override="2026-06-09",
+                now_override=datetime(2026, 6, 9, 10, 0),
+                now_ts_override=2000,
+                services={
+                    "check_stops_once": real_paused_stops,
+                    "run_scan": unexpected_scan,
+                    "execute_trades": unexpected_scan,
                 },
-                "run_scan": unexpected_scan,
-            },
-            persist_state=True,
-            record_event=False,
-            state_file=state_path,
-            control_file=control_path,
-            notify=False,
-        )
+                persist_state=True,
+                record_event=True,
+                state_file=state_path,
+                control_file=control_path,
+                notify=False,
+            )
+            events = [call.args[1] for call in record_event.call_args_list]
         with open(state_path, "r", encoding="utf-8") as file:
             persisted = json.load(file)
     finally:
@@ -347,6 +351,37 @@ def test_paused_cycle_still_refreshes_stop_heartbeat():
     assert_true(stop_calls == ["called"], "暂停期间止损巡检仍被调度")
     assert_true(persisted["last_stop_check_at"] == 2000, "暂停期间止损巡检心跳照常推进")
     assert_true(not persisted.get("active_stage"), "巡检结束后不留悬挂阶段标记")
+    assert_true(persisted["last_error"] == "", "真实暂停返回值不会制造异常，并清除上次循环错误")
+    assert_true(not any(event["error"] for event in events), "暂停心跳不会写入失败事件")
+    assert_true(events[0]["status"] == "skipped", "暂停止损记录为跳过，不能冒充已完成巡检")
+    assert_true(any("止损执行跳过" in action for action in result["actions"]), "暂停报告说明仅刷新监控心跳")
+
+
+def test_pause_during_stop_check_skips_remaining_actions():
+    control = {"paused": False, "reason": ""}
+
+    def pause_then_check_stops():
+        control.update(paused=True, reason="巡检期间人工暂停")
+        return check_stops_once()
+
+    def unexpected_action(*args, **kwargs):
+        raise AssertionError("巡检收到暂停后不得继续看盘、扫描或执行")
+
+    with patch("scheduler.control.get_auto_control_state", side_effect=lambda **kwargs: dict(control)), \
+            patch("execution.broker.get_broker_adapter", side_effect=AssertionError("暂停时不得访问交易通道")):
+        result = run_auto_cycle(
+            state=AutoTraderState(date="2026-06-09"),
+            status_override="盘中", trading_day_override=True,
+            today_override="2026-06-09", now_override=datetime(2026, 6, 9, 10),
+            now_ts_override=2000, persist_state=False, record_event=False, notify=False,
+            services={"check_stops_once": pause_then_check_stops,
+                      "run_watch_cycle": unexpected_action, "run_scan": unexpected_action,
+                      "execute_trades": unexpected_action},
+        )
+    assert_true(result["state"]["last_error"] == "", "巡检期间收到暂停不会制造循环错误")
+    assert_true(result["state"]["last_scan_at"] == 0, "巡检期间收到暂停会中止本轮扫描")
+    assert_true(result["state"]["last_execute_at"] == 0, "巡检期间收到暂停会中止本轮交易执行")
+    assert_true(control["paused"], "不会擅自解除人工暂停")
 
 
 def main():
@@ -358,6 +393,7 @@ def main():
     test_state_checkpoint_after_stop_check()
     test_failed_stage_clears_active_state()
     test_paused_cycle_still_refreshes_stop_heartbeat()
+    test_pause_during_stop_check_skips_remaining_actions()
     test_notification_filter()
     print("=" * 60)
     print("全部通过")

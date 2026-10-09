@@ -37,6 +37,11 @@ logger = logging.getLogger("scheduler.auto_trader")
 
 AUTO_STATE_FILE = os.path.join(DATA_DIR, "auto_trader_state.json")
 AUTO_LOCK_FILE = os.path.join(DATA_DIR, "auto_trader.lock")
+AUTO_TRADE_LOCK = threading.RLock()
+
+
+class _AutoCyclePaused(Exception):
+    """巡检期间收到暂停时，中止本轮后续动作而不记录故障。"""
 
 # 每个外部阶段在状态文件中声明自己的硬预算。Watchdog 只能对当前
 # 匹配阶段在预算内临时豁免，不能用循环心跳掩盖其他交易动作的超时。
@@ -313,7 +318,8 @@ def check_stops_once() -> dict:
     from scheduler.control import get_auto_control_state
     control = get_auto_control_state()
     if control.get("paused"):
-        return {"checked": 0, "sold": 0, "trades": [], "error": "交易已暂停，止损执行跳过"}
+        return {"checked": 0, "sold": 0, "trades": [], "error": "",
+                "skipped": True, "skip_reason": "交易已暂停，止损执行跳过"}
     today = _today()
     if not is_trading_day(today) or get_market_status() != "盘中":
         return {"checked": 0, "sold": 0, "trades": [], "error": "止损执行仅允许交易日盘中"}
@@ -445,9 +451,11 @@ def _run_rescue_scan_default(watch_result: dict, on_execute: Callable[[], None] 
     plan_data = getattr(scan_result, "trade_plan", {}) or {}
     filtered_plan = filter_trade_plan_for_rescue(plan_data, eligible_codes)
     if filtered_plan:
-        if on_execute:
-            on_execute()
-        exec_result = execute_trade_plan(filtered_plan, allow_historical_plan=False)
+        # 扫描期间止损独立调度，但领取/成交计划必须与止损互斥。
+        with AUTO_TRADE_LOCK:
+            if on_execute:
+                on_execute()
+            exec_result = execute_trade_plan(filtered_plan, allow_historical_plan=False)
     else:
         exec_result = None
     return {
@@ -526,7 +534,8 @@ def run_auto_cycle(
     detect_regime_func = _service(services, "detect_regime", detect_regime)
     check_stops_func = _service(services, "check_stops_once", check_stops_once)
     def checked_stops():
-        outcome = check_stops_func()
+        with AUTO_TRADE_LOCK:
+            outcome = check_stops_func()
         if outcome.get("error"):
             raise RuntimeError(f"止损巡检未完成: {outcome['error']}")
         return outcome
@@ -545,6 +554,7 @@ def run_auto_cycle(
     )
     extra_events = []
     rescue_ran = False
+    stop_failure = None
 
     def _checkpoint_state():
         """在耗时阶段之间刷新状态，让Watchdog看到仍在运行的循环。"""
@@ -555,6 +565,8 @@ def run_auto_cycle(
         return float(now_ts_override) if now_ts_override is not None else time.time()
 
     def _begin_stage(stage: str):
+        if AUTO_STAGE_ACTIONS.get(stage) == "execute" and stop_failure is not None:
+            raise stop_failure
         _start_active_stage(state, stage, now_ts=_stage_now_ts())
         _checkpoint_state()
 
@@ -567,18 +579,90 @@ def run_auto_cycle(
         state.last_rescue_scan_at = now_ts
         state.last_scan_at = now_ts
         if isinstance(rescue, dict) and rescue.get("exec_result") is not None:
-            state.last_execute_at = now_ts
+            state.last_execute_at = _stage_now_ts()
         _checkpoint_state()
+
+    def _run_with_stop_checks(func: Callable, *args, **kwargs):
+        """耗时扫描在单个工作线程运行；调度线程继续真实止损检查。
+
+        保留扫描阶段标记及其原预算，不以通用心跳豁免止损超时。
+        即使止损失败也等待扫描线程退出，防止释放单实例锁后遗留交易线程。
+        """
+        nonlocal stop_failure
+        finished = threading.Event()
+        outcome = {}
+
+        def work():
+            try:
+                outcome["result"] = func(*args, **kwargs)
+            except BaseException as exc:
+                outcome["exception"] = exc
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=work, name="auto-scan-stage", daemon=True)
+        worker.start()
+        interval = max(0.01, AUTO_STOP_INTERVAL)
+        next_check = time.monotonic() + interval
+        try:
+            while not finished.wait(min(1.0, interval)):
+                if time.monotonic() < next_check or stop_failure is not None:
+                    continue
+                # 收盘或午休后不继续交易；使用测试覆盖值时无需真实日历调用。
+                market_status = status_override or get_market_status()
+                if market_status != "盘中":
+                    next_check = time.monotonic() + interval
+                    continue
+                if not AUTO_TRADE_LOCK.acquire(blocking=False):
+                    continue
+                try:
+                    stop_result = checked_stops()
+                    _mark_stage_value("last_stop_check_at", _stage_now_ts())
+                    event_status = "skipped" if stop_result.get("skipped") else "completed"
+                    actions.append(
+                        "扫描期间止损执行跳过" if stop_result.get("skipped") else
+                        f"止损巡检: 持仓{stop_result.get('checked', 0)}只 "
+                        f"卖出{stop_result.get('sold', 0)}笔 (扫描期间)"
+                    )
+                    if record_event:
+                        _record_auto_event(db_path, {"date": today, "event_type": "stage_result",
+                            "status": event_status, "actions": ["stop_check"],
+                            "details": {"stage": "stop_check", "during_stage": state.active_stage}, "error": ""})
+                except Exception as exc:
+                    stop_failure = exc
+                    state.last_error = str(exc)
+                    _checkpoint_state()
+                    if record_event:
+                        _record_auto_event(db_path, {"date": today, "event_type": "stage_result",
+                            "status": "failed", "actions": ["stop_check"],
+                            "details": {"stage": "stop_check", "during_stage": state.active_stage}, "error": str(exc)})
+                finally:
+                    AUTO_TRADE_LOCK.release()
+                next_check = time.monotonic() + interval
+        finally:
+            worker.join()
+        if stop_failure is not None:
+            raise stop_failure
+        if "exception" in outcome:
+            raise outcome["exception"]
+        return outcome["result"]
 
     def _run_stage(stage: str, func: Callable, *args,
                    after_success: Callable[[Any], None] = None, **kwargs):
         """在每个耗时阶段前落盘状态，结束或失败后清除阶段标记。"""
         _begin_stage(stage)
         try:
-            result = func(*args, **kwargs)
+            if status == "盘中" and stage in ("scan", "rescue_scan", "watch_cycle"):
+                result = _run_with_stop_checks(func, *args, **kwargs)
+            elif AUTO_STAGE_ACTIONS.get(stage) == "execute":
+                with AUTO_TRADE_LOCK:
+                    result = func(*args, **kwargs)
+            else:
+                result = func(*args, **kwargs)
             if after_success:
                 after_success(result)
-            _record_auto_event(db_path, {"date": today, "event_type": "stage_result", "status": "completed",
+            stage_status = "skipped" if isinstance(result, dict) and result.get("skipped") else "completed"
+            _record_auto_event(db_path, {"date": today, "event_type": "stage_result", "status": stage_status,
                                        "actions": [stage], "details": {"stage": stage}, "error": ""}) if record_event else None
             return result
         except Exception as exc:
@@ -659,14 +743,15 @@ def run_auto_cycle(
             # last_stop_check_at 停更：巡检偶尔迟到触发 watchdog critical ->
             # doctor 暂停 -> 暂停又让心跳停更 -> critical 永远不解除。
             # 2026-09-30 实测 11:10~11:12 正是这个自锁，暂停了 2 分钟。
-            # 止损检查本身在 checked_stops 内部按 paused 自行短路（见其开头的
-            # "交易已暂停，止损执行跳过"），所以这里只恢复心跳，不会真的卖出。
+            # 止损检查按 paused 返回 skipped；刷新监控心跳，不把正常跳过
+            # 记为失败，也不执行卖出。真实行情/执行错误仍由 checked_stops 抛出。
             if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
                 _run_stage(
                     "stop_check",
                     checked_stops,
                     after_success=lambda _: _mark_stage_value("last_stop_check_at", now_ts),
                 )
+                actions.append("暂停监控心跳已刷新: 止损执行跳过")
 
         elif status == "盘中":
             if now_ts - state.last_stop_check_at >= AUTO_STOP_INTERVAL:
@@ -675,6 +760,8 @@ def run_auto_cycle(
                     checked_stops,
                     after_success=lambda _: _mark_stage_value("last_stop_check_at", now_ts),
                 )
+                if stop_result.get("skipped"):
+                    raise _AutoCyclePaused(stop_result.get("skip_reason", "止损巡检已跳过"))
                 actions.append(
                     f"止损巡检: 持仓{stop_result.get('checked', 0)}只 "
                     f"卖出{stop_result.get('sold', 0)}笔"
@@ -858,6 +945,12 @@ def run_auto_cycle(
                 actions.append("盘后: 等待复盘窗口或今日已复盘")
 
         state.last_error = ""
+    except _AutoCyclePaused as e:
+        state.last_error = ""
+        control_state = get_auto_control_state(control_file=control_file)
+        paused = bool(control_state.get("paused"))
+        actions.append(str(e))
+        actions.append("盘中交易动作跳过: 扫描/模拟执行")
     except Exception as e:
         state.last_error = str(e)
         logger.error(f"自动盯盘循环异常: {e}", exc_info=True)

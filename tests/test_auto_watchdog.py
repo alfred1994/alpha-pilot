@@ -220,6 +220,57 @@ def main():
             "扫描阶段不能同时豁免止损巡检",
         )
 
+        first_scan_state = dict(long_cycle_state)
+        first_scan_state.update({"last_scan_at": 0, "last_execute_at": 0})
+        for changes, expected_ok, label in [
+            ({}, True, "首轮扫描预算内允许等待首次执行"),
+            ({"stage_started_at": now_ts - 181}, False, "首轮扫描超预算仍触发执行critical"),
+            ({"active_stage": ""}, False, "未启动首轮扫描不能豁免首次执行"),
+            ({"stage_budget_seconds": 0}, False, "缺少扫描预算不能豁免首次执行"),
+            ({"last_scan_at": now_ts - 2000}, False, "已有扫描但没有执行不能当作首轮等待"),
+            ({"last_execute_at": now_ts - 2000}, False, "已有执行的真实停滞不能当作首轮等待"),
+            ({"active_stage": "rescue_scan"}, False, "补救扫描不能豁免首次执行"),
+            ({"date": "2026-06-08"}, False, "昨日扫描状态不能豁免今日首次执行"),
+        ]:
+            _write_state(state_path, dict(first_scan_state, **changes))
+            first_scan_named = _by_name(run_auto_watchdog(
+                now=now, status_override="盘中", trading_day_override=True,
+                state_file=state_path, lock_file=lock_path, db_path=db_path,
+                max_scan_lag_sec=300, max_stop_lag_sec=120,
+            ))
+            assert_true(first_scan_named["盘中模拟执行"].ok == expected_ok, label)
+            if expected_ok:
+                assert_true("等待首轮扫描" in first_scan_named["盘中模拟执行"].detail, "Watchdog解释首次执行等待原因")
+                assert_true(first_scan_named["盘中止损巡检"].severity == "critical", "首轮等待不豁免过期止损")
+
+        control_file = tempfile.NamedTemporaryFile(suffix="_recovery_control.json", delete=False)
+        control_path = control_file.name
+        control_file.close()
+        temp_paths.append(control_path)
+        resume_ts = now_ts - 120
+        recovery_control = {"paused": False, "updated_by": "auto_doctor",
+                            "updated_at": datetime.fromtimestamp(resume_ts).isoformat()}
+        for changes, control_changes, expected_ok, label in [
+            ({}, {}, True, "Doctor刚恢复后的首次扫描可等待执行"),
+            ({"stage_started_at": now_ts - 181}, {}, False, "恢复扫描超预算不豁免执行"),
+            ({"stage_started_at": resume_ts + 1}, {"updated_at": datetime.fromtimestamp(resume_ts - 1000).isoformat()}, False, "旧恢复记录不能反复豁免后续扫描"),
+            ({"last_scan_at": resume_ts + 1}, {}, False, "恢复后已完成扫描就必须执行"),
+            ({"last_execute_at": resume_ts + 1}, {}, False, "恢复后执行记录过期仍须告警"),
+            ({}, {"updated_by": "operator"}, False, "非Doctor恢复不扩大执行豁免"),
+            ({}, {"updated_at": "invalid"}, False, "无效恢复时间不豁免执行"),
+        ]:
+            recovery_state = dict(long_cycle_state, **changes)
+            # 恢复后执行已发生的用例使用短时效，验证仍检查真实执行时效。
+            _write_state(state_path, recovery_state)
+            _write_state(control_path, dict(recovery_control, **control_changes))
+            recovery_named = _by_name(run_auto_watchdog(
+                now=now, status_override="盘中", trading_day_override=True,
+                state_file=state_path, lock_file=lock_path, control_file=control_path,
+                db_path=db_path, max_scan_lag_sec=60, max_stop_lag_sec=120,
+            ))
+            assert_true(recovery_named["盘中模拟执行"].ok == expected_ok, label)
+            assert_true(recovery_named["盘中止损巡检"].severity == "critical", "恢复等待仍保留止损超时告警")
+
         execute_stage_state = dict(long_cycle_state)
         execute_stage_state.update({
             "active_stage": "execute_trades",

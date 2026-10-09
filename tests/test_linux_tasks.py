@@ -6,6 +6,8 @@ Ubuntu/Hermes无人值守任务脚本测试
 systemd --user 安装/卸载脚本，且所有运行脚本默认强制 BROKER_MODE=paper。
 """
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -36,11 +38,51 @@ def _remove_tree(path: str):
     os.rmdir(path)
 
 
+def test_restart_only_for_runtime_fault(script_path: str, temp_dir: str):
+    bash = shutil.which("bash")
+    if not bash and os.name == "nt":
+        candidate = os.path.join(os.environ.get("ProgramFiles", "C:/Program Files"), "Git", "bin", "bash.exe")
+        bash = candidate if os.path.isfile(candidate) else None
+    if not bash:
+        print("  SKIP 自动重启行为演练: 本机未安装bash")
+        return
+    marker = os.path.join(temp_dir, "restart_marker").replace("\\", "/")
+    # 执行生成的真实脚本；拦截Watchdog和systemctl，绝不触碰本机服务。
+    harness = '''
+timeout() { printf '%s\\n' "$TASK_WATCHDOG_OUTPUT"; return "$TASK_WATCHDOG_EXIT"; }
+systemctl() { printf '%s\\n' "$*" >> "$TASK_RESTART_MARKER"; }
+source "$1"
+'''
+    healthy_runtime = "[OK] 自动盘锁 - 心跳正常\n[OK] 自动循环新鲜度 - 正常\n"
+    cases = [
+        (healthy_runtime + "[CRITICAL] 最近循环错误 - 止损执行跳过", 1, False),
+        (healthy_runtime + "[CRITICAL] 最近循环错误 - 自动盘锁历史错误", 1, False),
+        ("[CRITICAL] 自动循环新鲜度 - 更新过期", 1, True),
+        ("[WARN] 自动盘锁 - 未发现长驻锁\n[CRITICAL] 今日异常事件 - 未恢复", 1, True),
+        ("[CRITICAL] 自动盯盘状态 - 状态文件不可读", 1, True),
+        (healthy_runtime, 0, False),
+    ]
+    for output, exit_code, should_restart in cases:
+        if os.path.exists(marker):
+            os.unlink(marker)
+        env = dict(os.environ, TASK_WATCHDOG_OUTPUT=output, TASK_WATCHDOG_EXIT=str(exit_code),
+                   TASK_RESTART_MARKER=marker, HERMES_ENV_FILE=marker + ".absent")
+        result = subprocess.run(
+            [bash, "-c", harness, "restart-test", script_path.replace("\\", "/")],
+            env=env, capture_output=True, text=True, encoding="utf-8", timeout=20,
+        )
+        assert_true(os.path.exists(marker) == should_restart, f"真实重启脚本按异常项决策: {output.strip()}")
+        assert_true(result.returncode == (0 if should_restart else exit_code),
+                    f"重启脚本返回预期状态: {result.stderr}")
+        if should_restart:
+            assert_true("--user restart alpha-pilot-test-auto.service" in _read(marker), "仅重启指定的Auto服务")
+
+
 def main():
     temp_dir = tempfile.mkdtemp(prefix="quant_linux_tasks_")
     try:
         paths = generate_linux_task_scripts(
-            project_dir=temp_dir,
+            project_dir=temp_dir.replace("\\", "/"),
             output_dir=temp_dir,
             python_cmd="python3",
             service_prefix="alpha-pilot-test",
@@ -96,6 +138,7 @@ def main():
         assert_true("timeout --kill-after=15s 180s" in restart_auto, "自动盘重启脚本Watchdog带超时保护")
         assert_true("自动盘锁|自动循环新鲜度|自动盯盘状态" in restart_auto, "自动盘重启脚本只匹配运行态故障")
         assert_true('systemctl --user restart "$AUTO_UNIT"' in restart_auto, "自动盘重启脚本重启systemd服务")
+        test_restart_only_for_runtime_fault(paths["restart_auto"], temp_dir)
         assert_true("main.py --doctor" in run_doctor, "Doctor脚本执行--doctor")
         assert_true("timeout --kill-after=15s 240s" in run_doctor, "Doctor脚本带超时保护")
         assert_true("main.py --ai-report --report-days 7" in run_report, "报告脚本使用指定回看天数")
