@@ -2059,7 +2059,7 @@ def run_review() -> PipelineResult:
             db.complete_review_execution(date, "; ".join(result.errors) if result is not None else "复盘异常中断，需人工核对")
 
 
-def _run_review_impl() -> PipelineResult:
+def _run_review_impl(*, resume_snapshot: dict = None) -> PipelineResult:
     """每日复盘（慢链路，LLM深度分析）"""
     result = PipelineResult(date=_now_bj().strftime("%Y-%m-%d"))
     t0 = time.time()
@@ -2083,7 +2083,9 @@ def _run_review_impl() -> PipelineResult:
 
     try:
         from review.daily_review import run_daily_review
-        review_payload = run_daily_review(return_data=True)
+        # 操作员核对副作用后可从已有基础复盘继续；常规入口仍先原子领取。
+        review_payload = ({"text": "", "data": dict(resume_snapshot)}
+                          if resume_snapshot is not None else run_daily_review(return_data=True))
         review_text = review_payload.get("text", "")
         review_data = review_payload.get("data", {})
         review_data["order_audit"] = _load_today_order_audit(result.date)

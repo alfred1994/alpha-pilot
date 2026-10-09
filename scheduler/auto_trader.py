@@ -14,6 +14,7 @@ import os
 import time
 import logging
 import threading
+import hashlib
 from dataclasses import dataclass, asdict, field
 from datetime import datetime
 from typing import Dict, Optional, Callable, Any
@@ -37,6 +38,7 @@ logger = logging.getLogger("scheduler.auto_trader")
 
 AUTO_STATE_FILE = os.path.join(DATA_DIR, "auto_trader_state.json")
 AUTO_LOCK_FILE = os.path.join(DATA_DIR, "auto_trader.lock")
+AUTO_DEPLOY_HOLD_FILE = os.path.join(DATA_DIR, "auto_deploy_hold.json")
 AUTO_TRADE_LOCK = threading.RLock()
 
 
@@ -80,6 +82,8 @@ class AutoTraderState:
     last_watch_at: float = 0.0
     last_rescue_scan_at: float = 0.0
     last_review_date: str = ""
+    last_review_attempt_date: str = ""
+    last_review_notice: str = ""
     morning_baseline: dict = field(default_factory=dict)
     watchlist_count: int = 0
     missed_opportunity_count: int = 0
@@ -555,6 +559,8 @@ def run_auto_cycle(
     extra_events = []
     rescue_ran = False
     stop_failure = None
+    review_error = ""
+    review_notice = ""
 
     def _checkpoint_state():
         """在耗时阶段之间刷新状态，让Watchdog看到仍在运行的循环。"""
@@ -661,9 +667,10 @@ def run_auto_cycle(
                 result = func(*args, **kwargs)
             if after_success:
                 after_success(result)
-            stage_status = "skipped" if isinstance(result, dict) and result.get("skipped") else "completed"
+            stage_errors = getattr(result, "errors", []) if stage == "review" else []
+            stage_status = "failed" if stage_errors else ("skipped" if isinstance(result, dict) and result.get("skipped") else "completed")
             _record_auto_event(db_path, {"date": today, "event_type": "stage_result", "status": stage_status,
-                                       "actions": [stage], "details": {"stage": stage}, "error": ""}) if record_event else None
+                                       "actions": [stage], "details": {"stage": stage}, "error": "; ".join(stage_errors)}) if record_event else None
             return result
         except Exception as exc:
             _record_auto_event(db_path, {"date": today, "event_type": "stage_result", "status": "failed",
@@ -914,17 +921,32 @@ def run_auto_cycle(
 
         else:
             if after_review_time and state.last_review_date != today:
-                review_result = _run_stage(
-                    "review",
-                    run_review_func,
-                    after_success=lambda review: _mark_stage_value("last_review_date", today) if not review.errors else None,
-                )
+                if state.last_review_attempt_date == today:
+                    from data.database import Database
+                    with Database(db_path=db_path, readonly=True) as db:
+                        claim = db.conn.execute("SELECT status,error FROM review_executions WHERE review_date=?", (today,)).fetchone()
+                    if claim and claim["status"] == "completed":
+                        _mark_stage_value("last_review_date", today)
+                        actions.append("盘后复盘已完成: 已同步恢复结果")
+                        review_result = None
+                    else:
+                        review_error = f"今日复盘未完成，领取状态={claim['status'] if claim else 'unknown'}，需核对"
+                        actions.append("盘后复盘待核对: 不重复执行进化")
+                        review_result = None
+                else:
+                    # 开始前落盘；进程被部署中断后仍能识别当天已尝试，禁止每分钟重跑。
+                    _mark_stage_value("last_review_attempt_date", today)
+                    review_result = _run_stage(
+                        "review", run_review_func,
+                        after_success=lambda review: _mark_stage_value("last_review_date", today) if not review.errors else None,
+                    )
+                if review_result is not None:
+                    review_error = "; ".join(review_result.errors)
                 actions.append(
-                    f"盘后复盘进化: 步骤{len(review_result.steps)}项 "
-                    f"错误{len(review_result.errors)}项"
-                )
+                    f"盘后复盘进化: 步骤{len(review_result.steps)}项 错误{len(review_result.errors)}项"
+                ) if review_result is not None else None
                 # 添加复盘详细内容 - 从steps中提取关键信息
-                for step in review_result.steps:
+                for step in review_result.steps if review_result is not None else []:
                     success = getattr(step, "success", True) if not isinstance(step, dict) else step.get("success", True)
                     name = getattr(step, "name", str(step)) if not isinstance(step, dict) else step.get("name", "")
                     detail = getattr(step, "detail", "") if not isinstance(step, dict) else step.get("detail", "")
@@ -938,13 +960,14 @@ def run_auto_cycle(
                     else:
                         actions.append(f"  {status_icon} {name}")
                 # 如果有错误，也显示出来
-                if review_result.errors:
-                    for err in review_result.errors:
+                if review_error:
+                    for err in [review_error]:
                         actions.append(f"  ⚠️ 错误: {err[:100]}")
+                    review_notice = hashlib.sha256((today + ":review-unresolved").encode()).hexdigest()
             else:
                 actions.append("盘后: 等待复盘窗口或今日已复盘")
 
-        state.last_error = ""
+        state.last_error = review_error
     except _AutoCyclePaused as e:
         state.last_error = ""
         control_state = get_auto_control_state(control_file=control_file)
@@ -953,6 +976,8 @@ def run_auto_cycle(
         actions.append("盘中交易动作跳过: 扫描/模拟执行")
     except Exception as e:
         state.last_error = str(e)
+        if status == "盘后" and state.last_review_attempt_date == today:
+            review_notice = hashlib.sha256((today + ":review-unresolved").encode()).hexdigest()
         logger.error(f"自动盯盘循环异常: {e}", exc_info=True)
         actions.append(f"异常: {e}")
     finally:
@@ -988,7 +1013,7 @@ def run_auto_cycle(
         })
 
     notified = False
-    if notify_enabled:
+    if notify_enabled and (not review_notice or review_notice != state.last_review_notice):
         try:
             if notify_func is None:
                 from scheduler.notifier import send_auto_cycle_report
@@ -1000,6 +1025,9 @@ def run_auto_cycle(
                 loop_count=state.loop_count,
                 error=state.last_error,
             ))
+            if notified and review_notice:
+                state.last_review_notice = review_notice
+                _checkpoint_state()
         except Exception as e:
             logger.warning(f"自动盯盘通知失败(非致命): {e}")
 
@@ -1090,6 +1118,22 @@ def run_auto_loop(loop_interval: int = None, scan_interval: int = None,
 
     try:
         while True:
+            # 部署先请求停在完整循环边界，再等待确认后停止服务/更新源码。
+            # 不在复盘、交易执行或其子进程仍运行时确认，避免留下孤儿领取。
+            while os.path.exists(AUTO_DEPLOY_HOLD_FILE):
+                from scheduler.persistence import update_json
+                with open(AUTO_DEPLOY_HOLD_FILE, encoding="utf-8") as file:
+                    hold = json.load(file)
+                nonce = hold.get("nonce")
+                expires = float(hold.get("expires_at", 0) or 0)
+                if not nonce or expires < time.time():
+                    break
+                update_json(AUTO_DEPLOY_HOLD_FILE + ".ready", lambda _: {
+                    "nonce": nonce, "pid": os.getpid(), "ready_at": _now_bj().isoformat(),
+                })
+                if loop_lock:
+                    loop_lock.heartbeat()
+                time.sleep(1)
             if loop_lock:
                 loop_lock.heartbeat()
             result = run_auto_cycle(state=state, force_scan=force_scan, scan_interval=scan_interval)

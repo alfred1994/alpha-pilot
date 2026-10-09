@@ -171,7 +171,7 @@ def main():
             "scripts", "deploy_hermes.sh",
         ))
         assert_true("ensure_swap" in deploy_script, "部署脚本包含swap保障函数")
-        assert_true("ensure_swap\nprepare_git_repository" in deploy_script, "部署主流程先保障swap")
+        assert_true("ensure_swap\nquiesce_auto_before_deploy\nprepare_git_repository" in deploy_script, "部署主流程先保障swap并等待安全边界")
         assert_true("vm.swappiness=10" in deploy_script, "swap仅作为OOM安全垫且swappiness压低")
         assert_true("sudo -n grep -q '^/swapfile ' /etc/fstab" in deploy_script, "fstab写入幂等")
 

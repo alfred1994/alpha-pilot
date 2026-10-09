@@ -31,6 +31,74 @@ on_error() {
 
 trap on_error ERR
 
+QUIESCED_UNITS=()
+DEPLOY_HOLD_OWNED=false
+restore_quiesced_units() {
+  if [ "$DEPLOY_HOLD_OWNED" = true ]; then
+    rm -f "$PROJECT_DIR/data/auto_deploy_hold.json" "$PROJECT_DIR/data/auto_deploy_hold.json.ready"
+  fi
+  if [ "${#QUIESCED_UNITS[@]}" -gt 0 ]; then
+    systemctl --user start "${QUIESCED_UNITS[@]}" || log "failed to restore quiesced units"
+  fi
+}
+trap restore_quiesced_units EXIT
+
+quiesce_auto_before_deploy() {
+  [ -d "$PROJECT_DIR/.git" ] || return 0
+  for unit in alpha-pilot-doctor.timer alpha-pilot-auto-restart.timer; do
+    if systemctl --user is-active --quiet "$unit"; then
+      QUIESCED_UNITS+=("$unit")
+      systemctl --user stop "$unit"
+    fi
+  done
+  for unit in alpha-pilot-doctor.service alpha-pilot-auto-restart.service; do
+    for attempt in $(seq 1 330); do
+      state="$(systemctl --user show "$unit" -p ActiveState --value)"
+      case "$state" in active|activating|deactivating) sleep 2 ;; *) break ;; esac
+    done
+    case "$state" in active|activating|deactivating) log "operational job still running; abort deploy"; return 41 ;; esac
+  done
+  if ! systemctl --user is-active --quiet alpha-pilot-auto.service; then
+    return 0
+  fi
+  # 创建有时限的停靠请求。新版循环只有整个复盘结束后才确认，超时就取消部署。
+  hold="$PROJECT_DIR/data/auto_deploy_hold.json"
+  if [ -e "$hold" ]; then
+    log "another deployment hold exists; abort deploy"
+    return 42
+  fi
+  DEPLOY_HOLD_OWNED=true
+  "$PYTHON_CMD" - "$PROJECT_DIR" <<'PY'
+import json, os, pathlib, secrets, sys, time
+p = pathlib.Path(sys.argv[1])
+hold = p / "data/auto_deploy_hold.json"
+nonce = secrets.token_hex(16)
+with hold.open("x") as f:
+    json.dump({"nonce": nonce, "expires_at": time.time() + 720}, f)
+modern = "AUTO_DEPLOY_HOLD_FILE" in (p / "scheduler/auto_trader.py").read_text()
+deadline = time.monotonic() + 660
+while time.monotonic() < deadline:
+    try:
+        if modern:
+            ready = json.loads(pathlib.Path(str(hold) + ".ready").read_text())
+            safe = ready.get("nonce") == nonce
+        else:
+            # 首次升级旧循环：仅在状态明确显示没有执行中的阶段时停止。
+            state = json.loads((p / "data/auto_trader_state.json").read_text())
+            safe = "active_stage" in state and not state["active_stage"]
+        if safe:
+            print("[deploy-hermes] auto reached safe cycle boundary", flush=True)
+            break
+    except (OSError, ValueError):
+        pass
+    time.sleep(2)
+else:
+    raise SystemExit("Auto did not reach a safe boundary; deployment cancelled")
+PY
+  QUIESCED_UNITS+=("alpha-pilot-auto.service")
+  systemctl --user stop alpha-pilot-auto.service
+}
+
 git_auth() {
   if [ -n "$REPO_TOKEN" ] && [ -n "$REPO_URL" ]; then
     auth="$(printf 'x-access-token:%s' "$REPO_TOKEN" | base64 | tr -d '\n')"
@@ -281,6 +349,7 @@ restart_web_process() {
 }
 
 ensure_swap
+quiesce_auto_before_deploy
 prepare_git_repository
 
 cd "$PROJECT_DIR"
