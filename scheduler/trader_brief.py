@@ -5,6 +5,7 @@
 """
 import json
 import os
+import sqlite3
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
@@ -177,6 +178,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
     current_directive = None
     pending_directive = None
     counterfactual = {}
+    hold_opportunity_audit = {}
     with Database(db_path=db_path, readonly=readonly) as db:
         # 日终事实必须覆盖当天全部事件；固定取最近500条会让早盘扫描
         # 被后续Doctor/心跳事件挤出窗口，进而污染AI复盘和次日策略。
@@ -213,6 +215,17 @@ def build_daily_facts(date: str = None, db_path: str = None,
             GROUP BY denial_layer
         """, (date,)).fetchall()
         denial_summary = {str(row["denial_layer"]): int(row["count"]) for row in denial_rows}
+        try:
+            from strategy.decision_audit import build_hold_audit_from_db
+            audit = build_hold_audit_from_db(db.conn, date)
+            hold_opportunity_audit = {key: value for key, value in audit.items() if key != "samples"}
+            hold_opportunity_audit["examples"] = [
+                {**item, "reason": str(item.get("reason") or "")[:200]}
+                for item in audit.get("samples", [])[-6:]
+            ]
+        except (ValueError, KeyError, TypeError, sqlite3.Error):
+            # 兼容旧库/只读看板，覆盖缺口也必须成为复盘事实。
+            hold_opportunity_audit = {"price_quality": "audit_unavailable", "promotion_evidence": False}
 
     scan_journeys = []
     order_audit = []
@@ -361,6 +374,7 @@ def build_daily_facts(date: str = None, db_path: str = None,
         "degradations": degradations,
         "vibe_factors": _vibe_factors_summary(),
         "text_sentiment": _text_sentiment_summary(),
+        "hold_opportunity_audit": hold_opportunity_audit,
         "reviewed": reviewed,
         "latest_scan": latest_scan,
         "strategy": {

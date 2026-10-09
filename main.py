@@ -892,7 +892,8 @@ def main():
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
     parser.add_argument("--wf-train-days", type=int, default=250, help="walk-forward训练窗K线数")
     parser.add_argument("--wf-valid-days", type=int, default=60, help="walk-forward验证窗K线数")
-    parser.add_argument("--capital", type=float, default=1000000, help="初始资金")
+    from config import INITIAL_CAPITAL
+    parser.add_argument("--capital", type=float, default=INITIAL_CAPITAL, help="初始资金（默认10万元）")
     parser.add_argument("--mode", choices=["weighted", "llm", "strategy"], default="weighted", help="决策模式")
     parser.add_argument("--stocks", nargs="+", help="回测股票列表")
     parser.add_argument("--strategy", default="zt_reversal", help="策略名称（用于 strategy 模式）")

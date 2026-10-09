@@ -57,3 +57,4 @@ data/*.db-*
 .codex/
 data/vibe/
 data/laya/
+data/round_archives/

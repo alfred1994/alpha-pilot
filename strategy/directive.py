@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Callable, Dict, Optional
 
 from scheduler.market_calendar import next_trading_day
+from strategy.trading_style import STYLE_DESCRIPTIONS, normalize_style_plan
 
 logger = logging.getLogger("strategy.directive")
 
@@ -97,6 +98,7 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
             rationale += " [安全护栏: 前序策略证据不足(inconclusive)，禁止扩大风险，参数已受风控约束保持稳健]"
 
     now = datetime.now().isoformat()
+    style_plan = normalize_style_plan(raw.get("style_plan"))
     version = f"directive-{effective_date.replace('-', '')}-{datetime.now().strftime('%H%M%S%f')}"
     return {
         "version": version,
@@ -109,6 +111,7 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
         "diagnosis": diagnosis,
         "rationale": rationale,
         "hypothesis": str(raw.get("hypothesis") or "观察该策略版本的决策质量与执行结果").strip(),
+        **({"style_plan": style_plan} if style_plan else {}),
         "evaluation": {
             "previous_version": str(evaluation.get("previous_version") or "").strip(),
             "verdict": verdict,
@@ -161,7 +164,9 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
             f"- {line}" for line in benchmark_lines
         ) + "\n"
 
-    return f"""你是 AlphaPilot 的自主策略负责人。请在收盘后，为下一交易日生成一份可直接执行的策略指令。
+    return f"""你是 AlphaPilot 的独立复盘与策略评估智能体，与盘中交易员分工。
+请检查交易员的成绩、踏空与错误入场，为下一交易日生成有版本的策略和动态提示计划。
+你的任务是纠错与比较替代方案，不能因为交易员给出了理由就认定其正确，也不改写硬风控。
 
 复盘日期：{review_date}
 生效日期：{effective_date}
@@ -186,6 +191,14 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
 5. 当 verdict 为 inconclusive 时，严禁下调入场门槛 (降低 min_score) 或放大单票仓位 (提高 max_weight) 扩大风险。
 6. 只输出一个 JSON 对象，不要 Markdown 或额外文字。
 7. params.top_k 必须是 1-5 的整数；params.min_score 必须为 45-75；params.max_weight 必须为 0.03-0.25。
+8. 同时检查空仓HOLD的机会成本、持仓HOLD、T+1锁定、解析失败与实际买入成绩；同日同股重复扫描不能充数。
+   事后最高价只说明曾有波段空间，不等于能成交；缺日线、样本未成熟或收益口径未核验必须写明未知。
+9. 根据市场状态选择趋势跟随、波段、超跌反弹、事件或防守重点；不只寻找低估股，也不把熊市当作永久禁买。
+   T+0必须有执行链路和证券制度支持；不得以提示词将普通A股改成T+0，不得把短线波动直接称为套利。
+10. style_plan 只调整分析重点、待验证假设和失效条件，不修改系统规则。
+    计划仅在生效日期且市场状态匹配时使用；盘中状态切换按当前市场重评。
+    preferred_styles 从以下枚举选择1-4个，不重复：{json.dumps(STYLE_DESCRIPTIONS, ensure_ascii=False)}
+    focus 和 invalidate_when 各不超过600字。缺少有效收益证据时可提出分析假设，但不能宣称已验证提升。
 
 JSON 格式：
 {{
@@ -196,7 +209,8 @@ JSON 格式：
   "rationale": "为什么选择这些参数，必须引用当天事实",
   "hypothesis": "明日怎样的结果会支持或否定这次调整",
   "evaluation": {{"previous_version": "当前策略版本", "verdict": "supported/refuted/inconclusive", "evidence": "引用当日漏斗和执行事实"}},
-  "params": {{"top_k": 3, "min_score": 58, "max_weight": 0.1}}
+  "params": {{"top_k": 3, "min_score": 58, "max_weight": 0.1}},
+  "style_plan": {{"preferred_styles": ["trend_following", "swing"], "focus": "引用成绩证据，说明优先分析的机会及待验证假设", "invalidate_when": "什么市场变化或后续结果将否定计划"}}
 }}"""
 
 

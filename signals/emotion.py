@@ -70,7 +70,7 @@ def limit_ratio_signal() -> SignalResult:
         signals.append(f"跌停{down_count}只, 无涨停, 极度恐慌")
     else:
         score = int(ratio * 100)
-        signals.append(f"涨停{up_count}只 vs 跌停{down_count}只, 比值{ratio:.2f}")
+        signals.append(f"涨停{up_count}只 vs 跌停{down_count}只, 涨停占比={ratio:.2%}（涨停/(涨停+跌停)）")
 
     # 极端值修正: 过度亢奋可能是顶部信号
     if up_count > 80 and ratio > 0.9:

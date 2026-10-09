@@ -718,7 +718,7 @@ class TradeMemory:
                 "code": code,
                 "date": datetime.now().strftime("%Y-%m-%d"),
                 "action": action,
-                "llm_prompt": prompt[:2000],  # 截断避免过大
+                "llm_prompt": prompt,  # 保留完整输入，复盘才能还原动态风格与决策约束
                 "llm_response": response[:2000],
                 "reasoning": reasoning,
                 "confidence": confidence,

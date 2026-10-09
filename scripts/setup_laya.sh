@@ -5,7 +5,7 @@
 #       主链路不依赖它（LAYA_ENABLED=0 时 trader 侧零调用）。
 set -euo pipefail
 
-LAYA_VERSION="0.3.5"
+LAYA_VERSION="0.4.1"
 LAYA_HOME="${ALPHAPILOT_LAYA_HOME:-$HOME/.laya-venv}"
 PORT="${LAYA_PORT:-8642}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -44,16 +44,17 @@ t0 = time.time()
 from laya import Router
 router = Router(preload=True)
 print(f"LOAD {time.time() - t0:.1f}s")
-state = {"code": "601123", "name": "恒瑞医药",
-         "dimensions": {"technical": {"score": 70, "confidence": 0.8},
-                        "sentiment": {"score": 65, "confidence": 0.6}}}
-questions = {"action": {"type": "choice",
-                        "instructions": "Trading decision from 0-100 dimension scores (60+ bullish).",
-                        "criteria": {"buy": "bullish", "hold": "neutral", "sell": "bearish"}}}
+state = {"text": "公司公告预计净利润同比大幅增长，主营业务订单增加。"}
+questions = {"sentiment": {"type": "choice",
+                           "instructions": "判断这段财经文本的情绪倾向。",
+                           "criteria": {"positive": "明确利好", "neutral": "中性或证据不足", "negative": "明确利空"}}}
 t1 = time.time()
 res = router.predict(state, questions)
 print(f"CALL {(time.time() - t1) * 1000:.0f}ms")
 print(json.dumps(res["answers"], ensure_ascii=False))
+answer = res["answers"]["sentiment"]
+assert answer["choice"] in questions["sentiment"]["criteria"]
+assert set(answer["probabilities"]) == set(questions["sentiment"]["criteria"])
 PY
 
 if [ "${1:-}" = "--install-service" ] && command -v systemctl; then
@@ -78,7 +79,8 @@ Nice=10
 WantedBy=default.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now alpha-pilot-laya.service
+    systemctl --user enable alpha-pilot-laya.service
+    systemctl --user restart alpha-pilot-laya.service
     sleep 3
     if curl -sf --max-time 10 "http://127.0.0.1:$PORT/health" >/dev/null; then
         echo ">> 服务健康: http://127.0.0.1:$PORT/health"

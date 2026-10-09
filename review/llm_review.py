@@ -253,6 +253,13 @@ def build_llm_review_prompt(date: str, review_data: dict, adaptive_data: dict = 
                 "- 近期候选反事实结果: "
                 + "，".join(f"{key}={value}" for key, value in sorted(counterfactual.items()))
             )
+        hold_audit = daily_facts.get("hold_opportunity_audit") or {}
+        if hold_audit:
+            prompt_parts.append(
+                "- 空仓HOLD机会成本审计（与持仓/T+1/失败分开；峰值非可实现收益；"
+                "价格未核验或未成熟不得认定有效提升）: "
+                + json.dumps(hold_audit, ensure_ascii=False)
+            )
         vibe_factors = daily_facts.get("vibe_factors") or {}
         if vibe_factors:
             try:
@@ -792,7 +799,8 @@ def run_decision_evolution_analysis(db=None) -> dict:
         # 分析决策准确率
         analysis = analyze_decision_accuracy(db, days=7)
 
-        if analysis.get("total_decisions", 0) > 0:
+        if (analysis.get("total_decisions", 0) > 0
+                or (analysis.get("hold_opportunity_audit") or {}).get("n_flat_hold_stock_days", 0) > 0):
             # 保存进化报告
             save_evolution_report(analysis, db)
             report_text = format_evolution_report(analysis)

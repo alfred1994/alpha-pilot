@@ -18,6 +18,7 @@
 """
 import argparse
 import json
+from importlib.metadata import PackageNotFoundError, version
 import logging
 import sys
 import threading
@@ -45,6 +46,10 @@ def load_router(preload=True):
 
 
 def make_handler(router):
+    try:
+        laya_version = version("laya")
+    except PackageNotFoundError:
+        laya_version = "unknown"
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt, *args):  # 访问日志走 stderr，保持 stdout 干净
             sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
@@ -67,6 +72,7 @@ def make_handler(router):
                 self._send_json({
                     "ok": True,
                     "model": "laya-router",
+                    "laya_version": laya_version,
                     "uptime_s": round(time.time() - _STARTED_AT, 1),
                 })
             else:

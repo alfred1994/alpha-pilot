@@ -146,6 +146,9 @@ tests/                    本地契约与回归测试
 下面这组命令适合第一次把车点火：创建虚拟环境、安装依赖、检查配置、跑一圈模拟驾驶，
 最后打开本地驾驶舱。默认只跑模拟盘，不会触发真实交易。
 
+新模拟盘默认从 **10万元** 开始。已有账户不会随配置自动重置；归档旧轮次和切换资金基准的步骤见
+[模拟盘资金轮次与动态风格](docs/opportunity-driven-trading.md)。
+
 ```bash
 git clone https://github.com/alfred1994/alpha-pilot.git
 cd alpha-pilot

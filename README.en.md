@@ -139,6 +139,9 @@ This is the shortest path to start the race car in paper mode: create the virtua
 environment, install dependencies, check readiness, run one autonomous cycle, and
 open the local cockpit. By default this project is designed for paper trading.
 
+New paper accounts start with **CNY 100,000**. Existing accounts are preserved until an explicit,
+archived round transition; see [paper rounds and trading styles](docs/opportunity-driven-trading.md).
+
 ```bash
 git clone https://github.com/alfred1994/alpha-pilot.git
 cd alpha-pilot

@@ -417,7 +417,7 @@ def fast_scan(
             if sentiment_boost:
                 logger.info(f"[快链路] 舆情加成: {sentiment_boost}")
 
-            # 低位潜力股模式：专注低位股，避免追高
+            # 多机会候选池：低位、事件和放量趋势并存，由动态风格与风控判断。
             candidates = with_timeout(
                 lambda: pick_stocks(
                     top_n=10,
@@ -426,11 +426,11 @@ def fast_scan(
                     use_north_flow=True,      # 启用北向资金
                     use_performance=True,     # 启用业绩预增
                     use_survey=True,          # 启用机构调研
-                    use_volume=False,         # 关闭异动放量
+                    use_volume=True,          # 放量趋势/突破候选
                     use_financing=False,      # 关闭融资融券
                     use_unlock_alert=False,   # 关闭解禁预警
                     use_low_position=True,    # 启用低位潜力股
-                    low_position_mode=True,   # 低位模式
+                    low_position_mode=False,  # 不用纯低位模式屏蔽龙虎榜与趋势机会
                     sentiment_boost=sentiment_boost,  # 舆情加成
                 ),
                 timeout=FAST_SCAN_STOCK_PICK_TIMEOUT,
