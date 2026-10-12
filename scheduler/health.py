@@ -167,6 +167,11 @@ def run_health_check(db_path: str = None, control_file: str = None, *, readonly:
     ]:
         items.append(_check_env(env, required=False))
 
+    from research.runtime import health as research_health
+    evidence = research_health()
+    if evidence["enabled"]:
+        items.append(HealthItem("旁路研究", evidence["status"] == "ok",
+                                str(evidence), required=False))
     return items
 
 

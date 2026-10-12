@@ -281,6 +281,111 @@ def cmd_db_maintenance(args):
     return {"errors": [] if result.get("status") == "ok" else ["db_maintenance"]}
 
 
+def cmd_factor_research(args):
+    """本地因子检验、融合选股和共享资金回测；不接交易调度器。"""
+    from pathlib import Path
+    import pandas as pd
+    from strategy.factor_research import FactorConfig, load_local_panel, run_factor_research
+    from portfolio.factor_backtest import ExecutionConfig
+
+    try:
+        if args.factor_input:
+            with open(args.factor_input, encoding="utf-8") as file:
+                payload = json.load(file)
+            panel = pd.DataFrame(payload["bars"] if isinstance(payload, dict) else payload)
+            if args.stocks:
+                panel = panel[panel["code"].astype(str).isin(args.stocks)]
+        else:
+            panel = load_local_panel(args.stocks, args.start_date, args.end_date)
+        if args.factor_input:
+            dates = pd.to_datetime(panel["date"], errors="raise")
+            panel = panel[(dates >= args.start_date) & (dates <= args.end_date)]
+            if isinstance(payload, dict):
+                panel.attrs["calendar"] = [d for d in payload.get("calendar", []) if args.start_date <= d <= args.end_date] if "calendar" in payload else None
+                panel.attrs["metadata"] = payload.get("metadata", {})
+        if args.stocks:
+            missing = sorted(set(args.stocks) - set(panel["code"].astype(str)))
+            if missing:
+                raise ValueError("所选日期范围缺少股票数据：" + ",".join(missing))
+        config = FactorConfig(train_days=args.wf_train_days, valid_days=args.wf_valid_days,
+                              rebalance_days=args.factor_rebalance_days, top_k=args.factor_top_k,
+                              min_stocks=args.factor_min_stocks, fusion=args.factor_fusion,
+                              neutralize=args.factor_neutralize)
+        execution = ExecutionConfig(capital=args.capital, max_positions=args.factor_top_k,
+                                    max_weight=min(0.2, 1 / args.factor_top_k) if args.factor_top_k > 0 else 0,
+                                    mode=args.factor_execution)
+        report = run_factor_research(panel, config, execution)
+        errors = [report["execution_status"]] if report["execution_status"].startswith("incomplete_") else []
+        result = {"report": report, "errors": errors}
+        if args.factor_report:
+            path = Path(args.factor_report).resolve()
+            if path.suffix.lower() != ".json":
+                raise ValueError("研究报告必须保存为 .json")
+            # 已有报告作为实验记录保留，不覆盖输入或其他文件。
+            encoded = json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("x", encoding="utf-8") as file:
+                file.write(encoded)
+            result = {"status": report["status"], "report_path": str(path),
+                      "execution_status": report["execution_status"],
+                      "strategy": report["strategy"]["metrics"],
+                      "benchmark": report["equal_weight_benchmark"]["metrics"], "errors": errors}
+        from research.cli import register_existing
+        result["experiment_id"] = register_existing(report, "factor", parameters=report.get("config"))
+    except Exception as exc:
+        result = {"status": "error", "reason": str(exc), "errors": ["factor_research"]}
+        try:
+            from research.cli import register_failure
+            from research.audit import fingerprint, records
+            result["experiment_id"] = register_failure("factor", {"start": args.start_date, "end": args.end_date,
+                "stocks": args.stocks, "top_k": args.factor_top_k, "train_days": args.wf_train_days,
+                "valid_days": args.wf_valid_days, "fusion": args.factor_fusion,
+                "neutralize": args.factor_neutralize, "rebalance_days": args.factor_rebalance_days,
+                "min_stocks": args.factor_min_stocks, "capital": args.capital, "mode": args.factor_execution},
+                str(exc), fingerprint(records(panel)) if "panel" in locals() else "unknown")
+        except Exception:
+            pass  # 档案不可写时仍保留原始研究失败，不掩盖诊断。
+    print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+    return result
+
+
+def cmd_ml_baseline(args):
+    """读取本地日线，输出可复核的随机森林样本外研究报告。"""
+    from strategy.ml_baseline import load_local_bars, run_baseline
+
+    reports, errors = {}, []
+    for code in args.stocks or ["600519"]:
+        try:
+            bars = load_local_bars(code, args.start_date, args.end_date)
+            bars.attrs["code"] = code
+            reports[code] = run_baseline(
+                bars, train_days=args.wf_train_days, valid_days=args.wf_valid_days,
+                validation=args.ml_validation, threshold=args.ml_threshold,
+                commission=args.ml_commission, slippage=args.ml_slippage,
+                stamp_tax=args.ml_stamp_tax,
+            )
+            from research.cli import register_existing
+            reports[code]["experiment_id"] = register_existing(
+                reports[code], "ml", parameters={"code": code, "train_days": args.wf_train_days,
+                    "valid_days": args.wf_valid_days, "threshold": args.ml_threshold,
+                    "validation": args.ml_validation, "commission": args.ml_commission,
+                    "slippage": args.ml_slippage, "stamp_tax": args.ml_stamp_tax})
+        except Exception as exc:
+            reports[code] = {"status": "error", "reason": str(exc)}
+            errors.append(code)
+            try:
+                from research.cli import register_failure
+                reports[code]["experiment_id"] = register_failure("ml", {"code": code,
+                    "start": args.start_date, "end": args.end_date, "train_days": args.wf_train_days,
+                    "valid_days": args.wf_valid_days, "threshold": args.ml_threshold,
+                    "validation": args.ml_validation}, str(exc))
+            except Exception:
+                pass
+    result = {"reports": reports, "errors": errors}
+    print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
+    return result
+
+
 def cmd_walk_forward(args):
     """walk-forward 滚动训练/验证回测：样本外口径评估，防样本内过拟合。"""
     from portfolio.fast_backtest import format_walk_forward_report, run_walk_forward
@@ -846,6 +951,8 @@ def main():
     group.add_argument("--risk", action="store_true", help="查看风控状态")
     group.add_argument("--backtest", action="store_true", help="运行回测")
     group.add_argument("--walk-forward", action="store_true", help="walk-forward滚动训练/验证回测（样本外口径，防过拟合）")
+    group.add_argument("--ml-baseline", action="store_true", help="本地只读随机森林研究：14特征、时间验证、T+1与扣费收益(JSON)")
+    group.add_argument("--factor-research", action="store_true", help="因子检验→融合选股→共享资金组合回测(JSON)，不参与自动交易")
     group.add_argument("--optimize", action="store_true", help="策略优化模式")
     group.add_argument("--after-market", action="store_true", help="收盘后分析（外围市场+新闻）")
     group.add_argument("--research-sync", action="store_true", help="盘后增量同步宽股票池研究数据，不参与交易")
@@ -892,6 +999,19 @@ def main():
     parser.add_argument("--end-date", default="2024-12-31", help="回测结束日期")
     parser.add_argument("--wf-train-days", type=int, default=250, help="walk-forward训练窗K线数")
     parser.add_argument("--wf-valid-days", type=int, default=60, help="walk-forward验证窗K线数")
+    parser.add_argument("--ml-validation", choices=["walk_forward", "holdout"], default="walk_forward", help="ML滚动验证或单次时间留出")
+    parser.add_argument("--ml-threshold", type=float, default=0.55, help="ML基线做多概率阈值，运行前固定")
+    parser.add_argument("--ml-commission", type=float, default=0.0003, help="ML基线单边佣金率")
+    parser.add_argument("--ml-slippage", type=float, default=0.001, help="ML基线单边滑点率")
+    parser.add_argument("--ml-stamp-tax", type=float, default=0.0005, help="ML基线卖出印花税率，整段采用同一费率")
+    parser.add_argument("--factor-input", default=None, help="可选历史面板JSON；默认只读本地k_daily")
+    parser.add_argument("--factor-report", default=None, help="保存完整研究JSON到新文件，不覆盖已有报告")
+    parser.add_argument("--factor-top-k", type=int, default=5, help="多因子目标持仓数，单股目标权重上限20%%")
+    parser.add_argument("--factor-min-stocks", type=int, default=5, help="有效横截面至少包含的股票数，不小于5")
+    parser.add_argument("--factor-rebalance-days", type=int, default=5, help="每N个面板交易日调仓；同时作为因子收益标签期限")
+    parser.add_argument("--factor-fusion", choices=["ic_weighted", "equal"], default="ic_weighted", help="按训练RankIC加权或方向校正后等权")
+    parser.add_argument("--factor-neutralize", action="store_true", help="使用逐日行业/市值元数据中性化；缺失则报错")
+    parser.add_argument("--factor-execution", choices=["strict", "research"], default="strict", help="strict缺元数据不成交；research允许明确标记的近似成交")
     from config import INITIAL_CAPITAL
     parser.add_argument("--capital", type=float, default=INITIAL_CAPITAL, help="初始资金（默认10万元）")
     parser.add_argument("--mode", choices=["weighted", "llm", "strategy"], default="weighted", help="决策模式")
@@ -932,10 +1052,27 @@ def main():
     parser.add_argument("--port", type=int, default=8000, help="Web 仪表盘服务端口")
     parser.add_argument("--web-reload", action="store_true", help="启用 Web 服务器自动热重载")
 
+    group.add_argument("--research-audit", action="store_true", help="审计本地研究数据或登记历史报告")
+    group.add_argument("--research-compare", action="store_true", help="更新隔离的规则/LLM/ETF对照")
+    group.add_argument("--research-report", action="store_true", help="只读查询实验档案和研究健康")
+    parser.add_argument("--research-input", help="本地JSON：bars/calendar/metadata；不下载行情")
+    parser.add_argument("--research-import", help="与research-audit搭配，登记旧JSON报告而不修改原文件")
+    parser.add_argument("--research-archive", action="store_true", help="与research-audit和research-id搭配归档实验，不删除报告")
+    parser.add_argument("--research-db", help="独立研究SQLite路径")
+    parser.add_argument("--research-id", help="继续/查询已有实验")
+    parser.add_argument("--research-parent", help="关联上次实验ID")
+    parser.add_argument("--research-hypothesis", help="稳定的研究假设标识")
+    parser.add_argument("--research-as-of", help="仅计算至该已收盘日期 YYYY-MM-DD")
+    parser.add_argument("--research-start", help="新实验开始日期 YYYY-MM-DD")
+    parser.add_argument("--research-retrospective", action="store_true", help="历史复查，允许导入扫描，不能声称新样本外验证")
+    parser.add_argument("--research-limit", type=int, default=100)
+    parser.add_argument("--research-offset", type=int, default=0)
     args = parser.parse_args()
 
     # 纯净 JSON 输出模式，用于 agent/Web API 对接，静默所有调试与欢迎语输出
-    is_silent = getattr(args, "agent_status", False) or getattr(args, "crash_info", False) or getattr(args, "resolve_crash", False)
+    is_silent = (getattr(args, "agent_status", False) or getattr(args, "crash_info", False)
+                 or getattr(args, "resolve_crash", False) or args.ml_baseline or args.factor_research
+                 or args.research_audit or args.research_compare or args.research_report)
     if is_silent:
         logging.getLogger().setLevel(logging.WARNING)
     else:
@@ -943,7 +1080,10 @@ def main():
         print("=" * 65)
 
     # 默认全链路
-    if args.crash_info:
+    if args.research_audit or args.research_compare or args.research_report:
+        from research.cli import run as run_research
+        result = run_research(args)
+    elif args.crash_info:
         cmd_crash_info()
         return
     elif args.agent_status:
@@ -990,6 +1130,10 @@ def main():
         result = cmd_backtest(args)
     elif args.walk_forward:
         result = cmd_walk_forward(args)
+    elif args.ml_baseline:
+        result = cmd_ml_baseline(args)
+    elif args.factor_research:
+        result = cmd_factor_research(args)
     elif args.list_strategies:
         cmd_list_strategies()
         return

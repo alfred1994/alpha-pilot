@@ -619,6 +619,7 @@ def fast_scan(
         logger.warning(f"[快链路] pooled批量预取跳过: {exc}")
 
     scored = _parallel_score(candidates, sentiment_scores, timeout=remaining(), errors=plan.errors)
+    research_scores_complete = len(scored) == len(candidates)
 
     # 排序
     scored.sort(key=lambda x: x["composite"], reverse=True)
@@ -656,6 +657,8 @@ def fast_scan(
     top_k = params.get("top_k", 3)
     min_score = params.get("min_score", 58)
     max_weight = params.get("max_weight", 0.20)
+    # 仅供旁路研究记录当时实际参数，不参与正式订单或策略生效。
+    plan.research_context = {"top_k": int(top_k), "min_score": float(min_score), "max_weight": float(max_weight)}
 
     # 影子策略：全部变体在同一候选池与同一份打分上推导决策并落库，
     # 复用反事实回填的净收益计算对比指标；晋级只产生候选行，不改变
@@ -733,6 +736,7 @@ def fast_scan(
         llm_count = 0
         # 并发LLM决策
         def _parallel_llm_decision(_s):
+            _research_started = time.monotonic()
             try:
                 from strategy.decision import DimensionScore as _DS
                 _dims = {}
@@ -743,7 +747,7 @@ def fast_scan(
                     )
 
                 from strategy.llm_trader import make_decision
-                return _s, make_decision(
+                _research_decision = make_decision(
                     code=_s["code"],
                     name=_s["name"],
                     dimensions=_dims,
@@ -758,6 +762,8 @@ def fast_scan(
                     llm_timeout=FAST_SCAN_LLM_DECISION_TIMEOUT,
                     scan_id=plan.scan_id,
                 )
+                _research_decision.research_elapsed_seconds = time.monotonic() - _research_started
+                return _s, _research_decision
             except Exception as _e:
                 logger.warning(f"[快链路] LLM决策异常 {_s.get('code', '?')}: {_e}")
                 return _s, None
@@ -780,6 +786,7 @@ def fast_scan(
                         _s["llm_confidence"] = _decision.confidence
                         _s["llm_reason"] = _decision.reason
                         _s["decision_id"] = getattr(_decision, "decision_id", None)
+                        _s["llm_elapsed_seconds"] = getattr(_decision, "research_elapsed_seconds", None)
                         if _decision.confidence > 0:
                             _llm_timeout_count = 0  # P2-8: LLM成功则重置超时计数
                             llm_count += 1
@@ -787,9 +794,14 @@ def fast_scan(
                             plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
                         elif _decision.action == "SELL":
                             _s["llm_action"] = "SELL"
+                    else:
+                        _s["llm_status"] = "error"
                 except Exception as _e:
                     logger.warning(f"[快链路] LLM并发结果处理失败: {_e}")
         except concurrent.futures.TimeoutError:
+            for _pending, _candidate in _llm_futures.items():
+                if "llm_action" not in _candidate and "llm_status" not in _candidate:
+                    _candidate["llm_status"] = "timeout"
             plan.errors.append("LLM决策收集超时，未返回候选保持HOLD；下次扫描重新尝试")
             logger.warning(
                 f"[快链路] LLM决策超时({FAST_SCAN_LLM_RESULT_TIMEOUT}s)，已使用已有结果"
@@ -1136,6 +1148,7 @@ def fast_scan(
         logger.warning(f"[快链路-可转债] 扫描失败(非致命): {e}")
 
     # ── 75-90s: 输出 ──
+    plan.research_complete = research_scores_complete and bool(persist_plan)
     plan.elapsed = elapsed()
     logger.info(f"[快链路] 完成 | 耗时={plan.elapsed:.1f}s | 买入={len(plan.orders)} | HOLD={len(plan.hold_reasons)}")
 
@@ -2493,6 +2506,13 @@ def run_scan(
     result.trade_plan = plan.to_dict()
     result.candidates = plan.raw_scores
     result.errors.extend(plan.errors)
+
+    # 旁路失败不得改变 scan/execute 的结果；不记录 Prompt 或外部凭据。
+    try:
+        from research.runtime import record_scan
+        record_scan(plan)
+    except Exception:
+        logger.warning("旁路研究记录不可用，正式扫描继续")
 
     try:
         from strategy.counterfactual import record_trade_plan_candidates

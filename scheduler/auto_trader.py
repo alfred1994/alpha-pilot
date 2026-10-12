@@ -920,6 +920,13 @@ def run_auto_cycle(
             actions.append("午休: 保持监控状态")
 
         else:
+            # 与复盘成功/领取状态独立，研究计算在子进程运行，不占用交易循环。
+            if after_review_time:
+                try:
+                    from research.runtime import launch_due
+                    launch_due(now_dt)
+                except Exception:
+                    logger.warning("旁路研究调度不可用，正式循环继续")
             if after_review_time and state.last_review_date != today:
                 if state.last_review_attempt_date == today:
                     from data.database import Database

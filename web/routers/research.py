@@ -33,6 +33,85 @@ from web.read_store import open_db as _open_db, number as _number, object_value 
 from web.api_errors import unavailable
 
 
+def _evidence_summary(item):
+    """显式白名单；档案中的路径、原始报告、Prompt 和自由文本不透传。"""
+    latest = item.get("latest") or {}
+    audit = latest.get("audit") or {}
+    metrics = latest.get("metrics") or {}
+    fields = ("total_return", "max_drawdown", "mean_daily_turnover", "mean_exposure",
+              "trade_count", "commission", "stamp_tax", "slippage_cost", "ending_equity")
+    as_of = latest.get("as_of")
+    try:
+        as_of = date.fromisoformat(as_of).isoformat()
+    except (ValueError, TypeError):
+        as_of = None
+    return {"id": item["id"], "kind": item["kind"] if item["kind"] in ("comparison", "audit", "legacy", "factor", "ml", "etf-data", "etf") else "other",
+            "status": item["status"] if item["status"] in ("registered", "running", "waiting_data", "completed", "archived") else "unknown",
+            "verdict": item["verdict"] if item["verdict"] in ("supported", "refuted", "inconclusive") else "inconclusive",
+            "as_of": as_of, "observed_days": _number(latest.get("observed_days")),
+            "report_count": item["report_count"], "hypothesis_attempts": item["hypothesis_attempts"],
+            "metrics": {name: {key: _number((metrics.get(name) or {}).get(key)) for key in fields}
+                        for name in ("A", "B", "C", "D") if name in metrics},
+            "net_return_delta": _number(latest.get("net_return_delta")),
+            "paired_count": _number((latest.get("paired") or {}).get("mature_count")),
+            "paired_filter_delta": _number((latest.get("paired") or {}).get("mean_filter_delta")),
+            "llm_latency_mean_seconds": _number((latest.get("llm_latency") or {}).get("mean_seconds")),
+            "llm_cost": None,
+            "missing_scan_days": len(latest.get("missing_scan_dates") or []),
+            "audit_status": audit.get("status") if audit.get("status") in ("unavailable", "approximate_only", "strict_ready") else "unknown",
+            "data_gap_count": len(audit.get("gaps") or []),
+            "interval_role": item["manifest"].get("interval_role") if item["manifest"].get("interval_role") in ("forward", "review") else "unknown",
+            "promotion_allowed": False,
+            "note": "独立研究组合，仅衡量最后一道LLM过滤；候选标签不等于账户收益，未自动启用策略。"}
+
+
+@router.get("/research/experiments")
+def evidence_experiments(limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0, le=100000)):
+    try:
+        from research.store import read_experiments
+        items = read_experiments(limit=limit, offset=offset)
+        return {"success": True, "experiments": [_evidence_summary(item) for item in items]}
+    except Exception:
+        return unavailable()
+
+
+@router.get("/research/experiments/{experiment_id}")
+def evidence_experiment(experiment_id: str):
+    import re
+    if not re.fullmatch(r"[0-9a-f]{32}", experiment_id):
+        raise HTTPException(status_code=404, detail="实验不存在")
+    try:
+        from research.store import read_experiments
+        items = read_experiments(identity=experiment_id)
+        if items:
+            return {"success": True, "experiment": _evidence_summary(items[0])}
+    except Exception:
+        return unavailable()
+    raise HTTPException(status_code=404, detail="实验不存在")
+
+
+@router.get("/research/health")
+def evidence_health():
+    try:
+        from research.runtime import health
+        state = health()
+        jobs = []
+        for item in state["jobs"]:
+            def stamp(key):
+                from datetime import datetime
+                try:
+                    return datetime.fromisoformat(item[key]).isoformat()
+                except (ValueError, TypeError):
+                    return None
+            jobs.append({"kind": "capture" if item["name"] == "capture" else "comparison",
+                         "status": item["status"] if item["status"] in ("ok", "running", "stale", "waiting_data", "failed") else "unknown",
+                         "last_success": stamp("last_success"), "attempted_at": stamp("attempted_at"),
+                         "reason": "数据待补齐" if item["status"] == "waiting_data" else "研究任务异常或过期" if item["status"] in ("failed", "stale") else ""})
+        return {"success": True, "enabled": state["enabled"], "status": state["status"], "jobs": jobs}
+    except Exception:
+        return unavailable()
+
+
 @router.get("/research/market")
 def market_evidence():
     """Only expose whitelisted persisted indicators, not model reasoning."""
