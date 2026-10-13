@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="AlphaPilot 多市场模拟交易工作台。在独立的 A 股、美股和数字资产模拟账户中，观察行情、验证策略并追踪每次成交。">
+    <meta name="theme-color" content="#f5f7fb">
+    <title>AlphaPilot · 我的量化工作台</title>
+    <link rel="icon" href="data:,">
+    <link rel="stylesheet" href="/workspace/workspace.css?v=20261013">
+    <script src="/vendor/lucide.min.js" defer></script>
+    <script src="/vendor/echarts.min.js" defer></script>
+    <script src="/workspace/workspace.js?v=20261013" defer></script>
+</head>
+<body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <noscript><p class="notice error">请启用 JavaScript，以登录并使用模拟交易工作台。</p></noscript>
+
+    <section id="boot-view" class="boot-view" aria-live="polite">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M5 25 14 7h4l9 18M10 19h12M17 7l-4 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+        <p>正在打开你的工作台</p>
+        <span class="loading-line" aria-hidden="true"></span>
+    </section>
+
+    <section id="auth-view" class="auth-layout" hidden>
+        <div class="auth-story">
+            <a class="brand" href="/"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M5 25 14 7h4l9 18M10 19h12M17 7l-4 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><strong>AlphaPilot<span class="brand-period">.</span></strong></a>
+            <div class="auth-story-content">
+                <span class="small-badge"><i data-lucide="flask-conical" aria-hidden="true"></i>多市场模拟交易</span>
+                <h1>让策略，<br>经得起市场验证<span class="accent">。</span></h1>
+                <p class="auth-lead">从第一笔模拟交易开始，在自己的工作台里观察市场、运行策略、复盘每次决策。</p>
+                <div class="auth-markets" aria-label="支持的模拟市场"><span><b>CN</b>A 股</span><span><b>US</b>美股</span><span><i data-lucide="bitcoin" aria-hidden="true"></i>数字资产</span></div>
+                <div class="auth-features">
+                    <div><i data-lucide="wallet-cards" aria-hidden="true"></i><p><strong>你的账户，你的研究</strong><span>独立模拟资金与持仓，按市场分别核算。</span></p></div>
+                    <div><i data-lucide="route" aria-hidden="true"></i><p><strong>看见每次策略执行</strong><span>从行情状态到模拟委托，保留可追溯记录。</span></p></div>
+                    <div><i data-lucide="shield-check" aria-hidden="true"></i><p><strong>先验证，再形成判断</strong><span>只使用模拟资金，无需连接真实交易账户。</span></p></div>
+                </div>
+            </div>
+            <div class="auth-story-footer"><span>研究 · 验证 · 复盘</span><a href="/">浏览公开演示<i data-lucide="arrow-up-right" aria-hidden="true"></i></a></div>
+        </div>
+        <div class="auth-form-panel">
+            <div class="auth-top-tools"><label class="theme-control"><i data-lucide="sun-moon" aria-hidden="true"></i><span class="sr-only">外观</span><select data-theme-control><option value="system">跟随系统</option><option value="light">浅色模式</option><option value="dark">深色模式</option></select></label></div>
+            <div class="auth-form-wrap">
+                <span class="auth-form-kicker">欢迎使用 AlphaPilot</span>
+                <h2 id="auth-heading">回到你的工作台</h2>
+                <p id="auth-description" class="muted">登录后继续你的模拟交易与策略研究。</p>
+                <div id="standard-auth-content">
+                <div class="segmented auth-tabs" aria-label="登录或注册"><button type="button" data-auth-mode="login" class="active" aria-pressed="true">登录</button><button type="button" data-auth-mode="register" aria-pressed="false">免费注册</button></div>
+                <p id="auth-status" class="notice" role="alert" hidden></p>
+                <form id="auth-form">
+                    <fieldset id="auth-fields">
+                        <label class="field">邮箱地址<input id="auth-email" type="email" name="email" autocomplete="email" placeholder="you@example.com" maxlength="254" required></label>
+                        <label class="field">密码<span class="password-input"><input id="auth-password" type="password" name="password" autocomplete="current-password" placeholder="输入你的密码" maxlength="128" required><button class="icon-button" id="toggle-password" type="button" aria-label="显示密码" aria-pressed="false"><i data-lucide="eye" aria-hidden="true"></i></button></span></label>
+                        <p id="password-help" class="field-hint" hidden>至少 12 个字符；建议使用独立的长密码。</p>
+                        <label id="confirm-password-field" class="field" hidden>确认密码<input id="auth-confirm" type="password" name="confirm-password" autocomplete="new-password" placeholder="再次输入密码" maxlength="128"></label>
+                        <label id="paper-agreement-field" class="checkbox-field" hidden><input id="paper-agreement" type="checkbox"><span>我了解这是模拟交易服务，不涉及真实资金，模拟结果不代表未来收益。</span></label>
+                        <button id="auth-submit" class="button primary wide" type="submit"><span>登录工作台</span><i data-lucide="arrow-right" aria-hidden="true"></i></button>
+                    </fieldset>
+                </form>
+                <div class="auth-help-row"><span id="auth-delivery-note" class="auth-account-note">正在读取账户服务状态</span><button id="forgot-password" type="button" class="text-button">忘记密码？</button></div>
+                </div>
+                <section id="account-recovery-panel" class="recovery-panel" hidden>
+                    <p id="recovery-status" class="notice" role="status" hidden></p>
+                    <form id="recovery-form"><fieldset id="recovery-fields">
+                        <label id="recovery-email-field" class="field" hidden>注册邮箱<input id="recovery-email" type="email" autocomplete="email" maxlength="254" placeholder="you@example.com"></label>
+                        <label id="recovery-password-field" class="field" hidden>新密码<input id="recovery-password" type="password" autocomplete="new-password" minlength="12" maxlength="128" placeholder="至少 12 个字符"></label>
+                        <label id="recovery-confirm-field" class="field" hidden>确认新密码<input id="recovery-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" placeholder="再次输入新密码"></label>
+                        <p id="recovery-explanation" class="recovery-explanation"></p>
+                        <button id="recovery-submit" type="submit" class="button primary wide"><span>继续</span><i data-lucide="arrow-right" aria-hidden="true"></i></button>
+                    </fieldset></form>
+                    <button id="recovery-back" type="button" class="text-button recovery-back"><i data-lucide="arrow-left" aria-hidden="true"></i><span>返回登录</span></button>
+                </section>
+                <div class="auth-divider"><span>想先了解产品？</span></div>
+                <a class="button secondary wide" href="/">查看公开模拟盘<i data-lucide="arrow-up-right" aria-hidden="true"></i></a>
+                <p class="auth-disclaimer"><i data-lucide="shield" aria-hidden="true"></i>模拟交易仅供研究，不构成投资建议。</p>
+            </div>
+            <div class="auth-footer">AlphaPilot · 个人量化研究工作台</div>
+        </div>
+    </section>
+
+    <div id="app-view" class="app-layout" hidden>
+        <aside class="sidebar" aria-label="工作台导航">
+            <a class="brand" href="/workspace/"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M5 25 14 7h4l9 18M10 19h12M17 7l-4 18" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><strong>AlphaPilot<span class="brand-period">.</span></strong></a>
+            <div class="workspace-label"><span class="workspace-square"><i data-lucide="flask-conical" aria-hidden="true"></i></span><div><strong>个人工作台</strong><span>模拟交易空间</span></div><i data-lucide="lock-keyhole" aria-hidden="true"></i></div>
+            <nav class="main-nav" aria-label="主要页面">
+                <span class="nav-label">工作空间</span>
+                <button type="button" class="nav-button active" data-view="overview" aria-current="page"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span>账户总览</span></button>
+                <button type="button" class="nav-button" data-view="performance"><i data-lucide="line-chart" aria-hidden="true"></i><span>收益表现</span></button>
+                <button type="button" class="nav-button" data-view="trading"><i data-lucide="arrow-left-right" aria-hidden="true"></i><span>模拟交易</span></button>
+                <button type="button" class="nav-button" data-view="strategies"><i data-lucide="workflow" aria-hidden="true"></i><span>我的策略</span></button>
+                <span class="nav-label second">账户</span>
+                <button type="button" class="nav-button" data-view="billing"><i data-lucide="layers-2" aria-hidden="true"></i><span>套餐与用量</span></button>
+                <button type="button" class="nav-button" data-view="security"><i data-lucide="shield-check" aria-hidden="true"></i><span>账号安全</span></button>
+                <a class="nav-button demo-nav" href="/"><i data-lucide="external-link" aria-hidden="true"></i><span>公开演示</span></a>
+            </nav>
+            <div class="sidebar-bottom">
+                <div class="paper-note"><i data-lucide="shield-check" aria-hidden="true"></i><strong>用模拟资金验证想法</strong><p>独立核算每个市场，所有交易均为模拟。</p></div>
+                <div class="user-block"><span id="user-avatar" class="user-avatar">A</span><div><strong id="user-email">—</strong><span id="user-plan">免费版</span></div><button type="button" class="icon-button" id="logout-button" aria-label="退出登录" title="退出登录"><i data-lucide="log-out" aria-hidden="true"></i></button></div>
+            </div>
+        </aside>
+
+        <div class="workspace-main">
+            <header class="topbar"><div class="breadcrumb"><span>我的工作台</span><i data-lucide="chevron-right" aria-hidden="true"></i><strong id="breadcrumb-current">账户总览</strong></div><div class="topbar-tools"><span class="paper-badge"><span></span>模拟交易</span><label class="theme-control"><i data-lucide="sun-moon" aria-hidden="true"></i><span class="sr-only">外观</span><select data-theme-control><option value="system">跟随系统</option><option value="light">浅色模式</option><option value="dark">深色模式</option></select></label><button type="button" class="icon-button" id="refresh-workspace" title="刷新数据" aria-label="刷新数据"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></div></header>
+
+            <main id="main-content" class="page-content" tabindex="-1">
+                <div class="page-heading"><div><div class="page-kicker"><span class="status-dot"></span>个人模拟交易工作台</div><h1 id="page-title">账户总览</h1><p id="page-description">让每次交易和每个策略，都有据可循。</p></div><span id="sync-status" class="sync-status" role="status">正在同步</span></div>
+                <p id="workspace-notice" class="notice" role="status" hidden></p>
+                <div id="verification-banner" class="verification-banner" hidden><i data-lucide="mail" aria-hidden="true"></i><p id="verification-banner-copy"></p><button type="button" class="text-button" data-navigate="security">前往验证<i data-lucide="arrow-right" aria-hidden="true"></i></button></div>
+
+                <div id="market-toolbar" class="market-toolbar">
+                    <div id="market-tabs" class="market-tabs" aria-label="选择市场"><button class="market-tab active" type="button" data-market="CN" aria-pressed="true"><span class="market-symbol">CN</span><span>A 股<small>CNY</small></span><i data-lucide="check" aria-hidden="true"></i></button><button class="market-tab" type="button" data-market="US" aria-pressed="false"><span class="market-symbol">US</span><span>美股<small>USD</small></span><i data-lucide="check" aria-hidden="true"></i></button><button class="market-tab" type="button" data-market="CRYPTO" aria-pressed="false"><span class="market-symbol"><i data-lucide="bitcoin" aria-hidden="true"></i></span><span>数字资产<small>USD</small></span><i data-lucide="check" aria-hidden="true"></i></button></div>
+                    <label class="account-selector"><span>模拟账户</span><select id="account-select" aria-label="选择模拟账户"><option value="">正在读取</option></select></label>
+                </div>
+
+                <section id="market-empty" class="empty-account panel" hidden>
+                    <div class="empty-account-icon"><i data-lucide="wallet-cards" aria-hidden="true"></i></div><span class="small-badge">从一个模拟账户开始</span><h2 id="empty-account-title">创建你的 A 股模拟账户</h2><p id="empty-account-copy">获取独立的模拟资金，观察行情并验证你的交易想法。</p><button id="create-account" class="button primary" type="button"><i data-lucide="plus" aria-hidden="true"></i><span>创建模拟账户</span></button><p id="create-account-status" class="inline-status" role="status"></p><div class="onboarding-steps"><div><span>01</span><strong>选择市场</strong><p>账户按市场独立核算</p></div><div><span>02</span><strong>观察真实行情</strong><p>先确认数据状态与时效</p></div><div><span>03</span><strong>验证交易策略</strong><p>模拟成交，记录执行结果</p></div></div>
+                </section>
+
+                <section id="view-overview" class="page-view" aria-label="账户总览">
+                    <div class="requires-account" hidden>
+                        <section class="metrics-grid" aria-label="模拟账户摘要"><article class="metric-card equity-card"><span>账户权益 <small class="account-currency">—</small><i data-lucide="wallet" aria-hidden="true"></i></span><strong id="metric-equity">—</strong><p id="metric-equity-note">等待账户估值</p></article><article class="metric-card"><span>可用资金<i data-lucide="banknote" aria-hidden="true"></i></span><strong id="metric-cash">—</strong><p id="metric-cash-note">可用于新的模拟委托</p></article><article class="metric-card"><span>累计已实现盈亏<i data-lucide="line-chart" aria-hidden="true"></i></span><strong id="metric-realized">—</strong><p>按已平仓成交及费用核算</p></article><article class="metric-card"><span>当前持仓<i data-lucide="layers-2" aria-hidden="true"></i></span><strong id="metric-positions">—</strong><p id="metric-positions-value">持仓估值尚未就绪</p></article></section>
+                        <div class="overview-grid">
+                            <article class="panel allocation-panel"><header class="panel-header"><div><h2>资金分布</h2><p>按当前账户实际估值展示</p></div><span class="currency-pill account-currency">—</span></header><div class="allocation-body"><div class="allocation-chart"><svg id="allocation-chart" viewBox="0 0 180 180" role="img" aria-label="资金分布尚未就绪"><circle class="allocation-track" cx="90" cy="90" r="72"/><circle id="allocation-cash-arc" class="allocation-cash" cx="90" cy="90" r="72" stroke-dasharray="0 452.39"/><circle id="allocation-pending-arc" class="allocation-pending" cx="90" cy="90" r="72" stroke-dasharray="0 452.39"/></svg><div><strong id="allocation-percent">—</strong><span>现金占比</span></div></div><div class="allocation-legend"><div><span><i class="legend-dot cash"></i>可用资金</span><strong id="allocation-cash-value">—</strong></div><div><span><i class="legend-dot holdings"></i>持仓市值</span><strong id="allocation-holdings-value">—</strong></div><div id="allocation-pending-row" hidden><span><i class="legend-dot pending"></i>待结算资金</span><strong id="allocation-pending-value">—</strong></div><p id="allocation-note">不同市场独立核算，不混合币种。</p></div></div><footer class="panel-footer"><i data-lucide="info" aria-hidden="true"></i><span id="valuation-note">行情不完整时，估值可能不可用。</span></footer></article>
+                            <article class="panel strategy-brief"><header class="panel-header"><div><h2>让策略按计划执行</h2><p>趋势跟随（模拟）</p></div><span class="strategy-icon"><i data-lucide="workflow" aria-hidden="true"></i></span></header><span id="overview-strategy-status" class="status-pill">尚未启用</span><p id="overview-strategy-copy">为当前账户选择标的与仓位上限，开始积累可复盘的执行记录。</p><div class="strategy-brief-detail"><span>最近评估</span><strong id="overview-strategy-last-run">尚无记录</strong></div><button class="text-button" type="button" data-navigate="strategies">管理模拟策略<i data-lucide="arrow-right" aria-hidden="true"></i></button></article>
+                        </div>
+                        <article class="panel"><header class="panel-header"><div><h2>当前持仓 <span id="holdings-count" class="count-badge">0</span></h2><p>估值与盈亏取决于行情是否可用</p></div><button class="button secondary small" type="button" data-navigate="trading">模拟交易<i data-lucide="arrow-up-right" aria-hidden="true"></i></button></header><div class="table-scroll"><table><caption class="sr-only">当前账户持仓明细</caption><thead><tr><th scope="col">标的</th><th scope="col" class="numeric">数量</th><th scope="col" class="numeric">平均成本</th><th scope="col" class="numeric">最新价</th><th scope="col" class="numeric">持仓市值</th><th scope="col" class="numeric">未实现盈亏</th><th scope="col">行情状态</th></tr></thead><tbody id="positions-body"><tr><td colspan="7" class="table-empty">正在读取持仓</td></tr></tbody></table></div></article>
+                        <article class="panel"><header class="panel-header"><div><h2>最近委托</h2><p>真实记录每一次模拟交易</p></div><span class="subtle-label">北京时间</span></header><div class="table-scroll"><table><caption class="sr-only">最近模拟交易委托</caption><thead><tr><th scope="col">时间</th><th scope="col">标的</th><th scope="col">方向</th><th scope="col" class="numeric">数量</th><th scope="col" class="numeric">成交价</th><th scope="col" class="numeric">费用</th><th scope="col">状态</th></tr></thead><tbody id="orders-body"><tr><td colspan="7" class="table-empty">正在读取委托</td></tr></tbody></table></div></article>
+                    </div>
+                </section>
+
+                <section id="view-performance" class="page-view" aria-label="收益表现" hidden>
+                    <div class="requires-account" hidden>
+                        <div class="performance-toolbar"><div><h2>账户表现</h2><p id="performance-period" class="muted">正在读取净值记录</p></div><div class="export-actions"><button type="button" class="button secondary small" data-export="orders"><i data-lucide="download" aria-hidden="true"></i>成交 CSV</button><button type="button" class="button secondary small" data-export="snapshots"><i data-lucide="download" aria-hidden="true"></i>净值 CSV</button></div></div>
+                        <p id="export-status" class="inline-status" role="status"></p>
+                        <p id="performance-status" class="notice" role="status" hidden></p>
+                        <div class="observer-status"><span id="observer-state" class="status-pill">采样状态未知</span><span id="observer-detail">正在读取净值采样进程状态</span></div>
+                        <section class="metrics-grid performance-metrics" aria-label="账户表现摘要"><article class="metric-card"><span>最新净值 <small class="account-currency">—</small></span><strong id="performance-equity">—</strong><p id="performance-equity-time">尚无快照</p></article><article class="metric-card"><span>累计收益率</span><strong id="performance-return">—</strong><p id="performance-return-note">等待有效净值</p></article><article class="metric-card"><span>最大回撤</span><strong id="performance-drawdown">—</strong><p>按有效快照高点计算</p></article><article class="metric-card"><span>同期基准收益</span><strong id="performance-benchmark">—</strong><p id="performance-benchmark-name">基准数据尚未就绪</p></article></section>
+                        <article class="panel"><header class="panel-header"><div><h2>账户净值</h2><p id="equity-chart-description">真实快照 · 缺测时保留间断</p></div><span class="currency-pill account-currency">—</span></header><div id="equity-chart-empty" class="chart-empty">尚无净值记录，产生有效快照后会显示在这里。</div><div id="equity-chart" class="performance-chart" role="img" aria-label="账户净值走势图" hidden></div><footer class="panel-footer"><i data-lucide="info" aria-hidden="true"></i><span id="performance-coverage">仅显示实际留存的快照，不补造历史净值。</span></footer></article>
+                        <div class="performance-chart-grid"><article class="panel"><header class="panel-header"><div><h2>收益与基准</h2><p id="comparison-chart-description">同一观察区间，百分比</p></div></header><div id="comparison-chart-empty" class="chart-empty">需要有效账户与基准数据才能比较。</div><div id="comparison-chart" class="performance-chart compact" role="img" aria-label="账户与基准累计收益率" hidden></div></article><article class="panel"><header class="panel-header"><div><h2>回撤轨迹</h2><p>相对已记录净值高点，百分比</p></div></header><div id="drawdown-chart-empty" class="chart-empty">至少两个有效快照后展示回撤变化。</div><div id="drawdown-chart" class="performance-chart compact" role="img" aria-label="账户回撤走势图" hidden></div></article></div>
+                        <article class="panel"><header class="panel-header"><div><h2>快照明细</h2><p>北京时间 · 金额以当前账户币种计价</p></div><span id="snapshot-record-count" class="subtle-label">—</span></header><div class="table-scroll"><table><caption class="sr-only">净值快照明细</caption><thead><tr><th scope="col">快照时间</th><th scope="col" class="numeric">账户权益</th><th scope="col" class="numeric">可用资金</th><th scope="col" class="numeric">待结算</th><th scope="col" class="numeric">收益率</th><th scope="col">数据状态</th></tr></thead><tbody id="snapshots-body"><tr><td colspan="6" class="table-empty">尚无快照</td></tr></tbody></table></div><div id="performance-pagination" class="pagination" hidden><button type="button" id="performance-previous" class="button secondary small">上一页</button><span id="performance-page-label"></span><button type="button" id="performance-next" class="button secondary small">下一页</button></div></article>
+                    </div>
+                </section>
+
+                <section id="view-trading" class="page-view" aria-label="模拟交易" hidden>
+                    <div class="requires-account trading-grid" hidden>
+                        <article class="panel quote-panel"><header class="panel-header"><div><h2>市场观察</h2><p>确认行情后，再提交模拟委托</p></div><button id="refresh-quote" class="icon-button" type="button" aria-label="刷新当前行情" title="刷新当前行情"><i data-lucide="refresh-cw" aria-hidden="true"></i></button></header><label class="field">选择标的<select id="instrument-select"><option value="">正在读取标的</option></select></label><div class="quote-main"><div><span id="quote-symbol" class="quote-symbol">—</span><h3 id="quote-name">请选择标的</h3></div><span id="quote-status" class="status-pill">等待行情</span></div><div class="quote-price"><strong id="quote-price">—</strong><span id="quote-currency">—</span></div><div class="quote-spread"><div><span>买价</span><strong id="quote-bid">—</strong></div><div><span>卖价</span><strong id="quote-ask">—</strong></div></div><p id="quote-notice" class="notice" role="status">行情状态由服务端核验，缺失或过期时不可下单。</p><dl class="quote-metadata"><div><dt>行情时间</dt><dd id="quote-time">—</dd></div><div><dt>数据来源</dt><dd id="quote-provider">—</dd></div><div><dt>交易市场</dt><dd id="quote-market">—</dd></div></dl><p class="quote-footnote"><i data-lucide="info" aria-hidden="true"></i>报价仅用于模拟撮合；成交价、费用与交易限制以服务端核验结果为准。</p></article>
+                        <article class="panel order-panel"><header class="panel-header"><div><h2>提交模拟委托</h2><p id="order-account-name">—</p></div><span class="small-badge">模拟</span></header><form id="order-form"><fieldset id="order-fields"><fieldset class="order-side"><legend class="sr-only">委托方向</legend><label><input type="radio" name="order-side" value="buy" checked><span>买入</span></label><label><input type="radio" name="order-side" value="sell"><span>卖出</span></label></fieldset><div class="order-balance"><span id="order-balance-label">可用资金</span><strong id="order-balance">—</strong></div><label class="field">委托数量<input id="order-quantity" name="quantity" type="text" inputmode="decimal" pattern="[0-9]+([.][0-9]+)?" maxlength="24" placeholder="输入数量" required aria-describedby="order-quantity-help"></label><p id="order-quantity-help" class="field-hint">数量与交易规则由服务端校验。</p><dl class="order-estimate"><div><dt>参考价格</dt><dd id="order-price">—</dd></div><div><dt>预估金额</dt><dd id="order-total">—</dd></div></dl><p class="field-hint">预估金额不含费用，最终以模拟成交记录为准。</p><button id="order-submit" class="button primary wide" type="submit" disabled><i data-lucide="plus" aria-hidden="true"></i><span>模拟买入</span></button></fieldset></form><p id="order-status" class="inline-status" role="status"></p><p class="order-safety"><i data-lucide="shield-check" aria-hidden="true"></i>仅使用当前账户的模拟资金。</p></article>
+                    </div>
+                </section>
+
+                <section id="view-strategies" class="page-view" aria-label="我的策略" hidden>
+                    <div class="requires-account strategy-grid" hidden>
+                        <article class="panel strategy-config"><header class="panel-header"><div><span class="small-badge">规则策略</span><h2>趋势跟随（模拟）</h2><p>以趋势信号管理模拟持仓，并记录每次评估结果。</p></div><span class="strategy-icon large"><i data-lucide="workflow" aria-hidden="true"></i></span></header><div class="strategy-rule-note"><i data-lucide="shield-check" aria-hidden="true"></i><p>单标的最高仓位 20%。以策略运行后的净值高水位为基准，回撤达到 10% 时暂停自动策略，请检查现有持仓；行情不符合要求时跳过下单并记录原因。</p></div><p id="strategy-support-notice" class="notice warning" hidden>A 股新账户当前支持 ETF 手动模拟交易。自动趋势策略本轮支持美股与数字资产；原 A 股 AI 交易员可在公开演示中查看。</p><form id="strategy-form"><fieldset id="strategy-fields"><label class="field">策略标的<select id="strategy-instrument" required><option value="">请选择标的</option></select></label><label class="field">目标仓位上限<select id="strategy-allocation"><option value="0.10">10% · 谨慎验证</option><option value="0.20" selected>20% · 默认上限</option></select></label><label class="strategy-enable"><div><strong>启用自动模拟交易</strong><span>允许服务端在信号与风控条件满足时提交模拟委托。</span></div><input type="checkbox" id="strategy-enabled" role="switch"></label><button type="submit" id="strategy-submit" class="button primary"><i data-lucide="check" aria-hidden="true"></i><span>保存策略设置</span></button></fieldset></form><p id="strategy-save-status" class="inline-status" role="status"></p></article>
+                        <article class="panel strategy-runtime"><header class="panel-header"><div><h2>执行状态</h2><p>来自服务端的最近运行事实</p></div><i data-lucide="activity" aria-hidden="true"></i></header><span id="strategy-runtime-status" class="status-pill">尚未启用</span><dl class="runtime-facts"><div><dt>当前标的</dt><dd id="strategy-runtime-instrument">—</dd></div><div><dt>仓位上限</dt><dd id="strategy-runtime-allocation">—</dd></div><div><dt>执行进程</dt><dd id="strategy-worker-status">—</dd></div><div><dt>最近心跳</dt><dd id="strategy-worker-heartbeat">尚无记录</dd></div><div><dt>最近评估</dt><dd id="strategy-runtime-last-run">尚无记录</dd></div></dl><div class="runtime-reason"><span>最近评估说明</span><p id="strategy-runtime-reason">尚无运行记录。保存并启用策略后，执行结果会显示在这里。</p></div><div class="strategy-disclaimer"><i data-lucide="info" aria-hidden="true"></i><p>已启用代表允许自动执行，不代表已成交或将获得收益。请结合委托记录与行情状态评估结果。</p></div></article>
+                    </div>
+                </section>
+
+                <section id="strategy-history-section" class="requires-account panel" aria-label="策略修改记录" hidden><header class="panel-header"><div><h2>策略修改记录</h2><p>保存设置时留存版本，便于核对执行边界</p></div><i data-lucide="history" aria-hidden="true"></i></header><div class="table-scroll"><table><caption class="sr-only">策略参数版本记录</caption><thead><tr><th scope="col">版本</th><th scope="col">保存时间</th><th scope="col">标的</th><th scope="col" class="numeric">仓位上限</th><th scope="col">状态</th></tr></thead><tbody id="strategy-versions-body"><tr><td colspan="5" class="table-empty">尚无修改记录</td></tr></tbody></table></div></section>
+
+                <section id="view-security" class="page-view" aria-label="账号安全" hidden>
+                    <div class="security-grid"><article class="panel security-email"><header class="panel-header"><div><h2>邮箱验证</h2><p>保护账号并接收安全邮件</p></div><i data-lucide="mail-check" aria-hidden="true"></i></header><div class="security-panel-body"><div class="security-identity"><strong id="security-email">—</strong><span id="security-email-state" class="status-pill">待核验</span></div><p id="security-verification-help" class="muted">正在读取邮箱服务状态</p><dl class="runtime-facts email-facts"><div><dt>最近验证邮件</dt><dd id="verification-delivery-status">尚未请求</dd></div><div><dt>请求时间</dt><dd id="verification-requested-at">尚无记录</dd></div></dl><button type="button" id="send-verification" class="button primary"><i data-lucide="send" aria-hidden="true"></i><span>发送验证邮件</span></button><p id="verification-status" class="inline-status" role="status"></p></div></article><article class="panel security-password"><header class="panel-header"><div><h2>修改密码</h2><p>修改成功后，所有设备需重新登录</p></div><i data-lucide="key-round" aria-hidden="true"></i></header><form id="password-change-form" class="security-panel-body"><fieldset id="password-change-fields"><label class="field">当前密码<input id="current-password" type="password" autocomplete="current-password" maxlength="128" required></label><label class="field">新密码<input id="new-password" type="password" autocomplete="new-password" minlength="12" maxlength="128" required aria-describedby="new-password-help"></label><p id="new-password-help" class="field-hint">至少 12 个字符，建议使用独立长密码。</p><label class="field">确认新密码<input id="new-password-confirm" type="password" autocomplete="new-password" minlength="12" maxlength="128" required></label><button id="password-change-submit" type="submit" class="button primary"><span>修改密码</span></button></fieldset><p id="password-change-status" class="inline-status" role="status"></p></form></article></div>
+                    <article class="panel security-sessions"><header class="panel-header"><div><h2>登录会话</h2><p>按登录时间识别会话 · 北京时间</p></div><button type="button" id="revoke-other-sessions" class="button secondary small">注销其他会话</button></header><p id="sessions-status" class="notice" role="status" hidden></p><div id="session-list" class="session-list"><p class="table-empty">正在读取登录会话</p></div><footer class="panel-footer"><i data-lucide="info" aria-hidden="true"></i><span>当前版本不采集设备名称或 IP；不再使用的会话可以单独注销。</span></footer></article>
+                </section>
+
+                <section id="view-billing" class="page-view" aria-label="套餐与用量" hidden>
+                    <div class="billing-grid"><article class="panel current-plan"><header class="panel-header"><div><span class="small-badge">当前套餐</span><h2 id="billing-plan-name">免费版</h2><p>从多市场模拟账户开始验证你的策略。</p></div><i data-lucide="layers-2" aria-hidden="true"></i></header><div class="plan-price">免费<span>当前无需支付费用</span></div><div class="usage-heading"><strong>模拟账户用量</strong><span id="billing-usage">—</span></div><progress id="billing-progress" max="3" value="0" aria-label="模拟账户额度使用情况"></progress><p id="billing-usage-description" class="muted">正在读取账户额度</p><ul class="plan-features"><li><i data-lucide="check" aria-hidden="true"></i>A 股、美股、数字资产模拟市场</li><li><i data-lucide="check" aria-hidden="true"></i>独立资金、持仓与委托记录</li><li><i data-lucide="check" aria-hidden="true"></i>趋势跟随模拟策略</li></ul></article><article class="panel future-plan"><span class="small-badge">产品规划</span><h2>为更深入的研究<br>准备更多可能</h2><p>面向国内用户规划人民币套餐，后续支持微信支付和支付宝，逐步扩展账户容量与策略研究能力。</p><div class="planned-feature"><i data-lucide="wallet-cards" aria-hidden="true"></i><div><strong>更多研究空间</strong><span>在更多独立账户中比较策略。</span></div><span class="planning-label">规划中</span></div><div class="planned-feature"><i data-lucide="line-chart" aria-hidden="true"></i><div><strong>更完整的策略分析</strong><span>形成跨周期、可复盘的研究记录。</span></div><span class="planning-label">规划中</span></div><p class="billing-note"><i data-lucide="info" aria-hidden="true"></i>当前没有付费入口或自动扣费。套餐价格及具体权益将在上线前公布。</p></article></div>
+                    <article class="panel billing-usage-panel"><header class="panel-header"><div><h2>本期使用记录</h2><p id="billing-period">正在读取统计区间</p></div><span class="small-badge">仅记录用量</span></header><div class="billing-usage-grid"><div><span>模拟账户</span><strong id="billing-account-count">—</strong></div><div><span>当前启用策略</span><strong id="billing-strategy-count">—</strong></div><div><span>本月模拟成交</span><strong id="billing-order-count">—</strong></div></div><p id="billing-metering-note" class="billing-metering-note">当前免费版不会根据这些使用记录产生扣费。</p><p id="billing-load-status" class="notice" role="status" hidden></p></article>
+                </section>
+
+                <footer class="page-footer"><span>AlphaPilot · 让研究可验证</span><p>模拟交易仅供研究。市场数据可能延迟，模拟结果不代表未来收益。</p></footer>
+            </main>
+        </div>
+    </div>
+</body>
+</html>

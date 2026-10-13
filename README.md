@@ -11,12 +11,18 @@
 - **公开网站怎么保护**：[公网 Web 安全模型](#公网-web-安全模型)
 - **本地验证命令**：[测试](#测试)
 - **使用文档**：[本地演示](docs/demo.md) / [AI 驾驶员指南](docs/ai-driver-skill.md) / [部署到 Hermes](docs/hermes-github-actions-deploy.md) / [Vibe-Trading 研究层](docs/vibe-trading.md)
+- **多用户与多市场内测版**：[注册登录、模拟账户及商业化设计](docs/customer-workspace.md)，新增入口 `/workspace/`。
 
 面向个人自部署的一对一 A 股 AI 模拟盘交易员。
 
 AlphaPilot 把行情理解、交易判断、模拟执行、日终复盘和次日策略接成一个自动闭环：
 LLM 负责交易决策和策略复盘，Linux/Hermes Agent 可以无人值守驾驶，Watchdog 和 Doctor
 负责监控与自愈。每个部署实例只服务自己的账户，公网只读仪表盘是这个 AI 交易员的个人工作台。
+
+新增的用户工作台在 `/workspace/` 提供独立注册登录、分市场模拟账户和规则策略。
+它使用独立存储与执行器，支持 A 股 ETF、美股 ETF 和 BTC/ETH 美元现货模拟；原有 AI 交易员和 `/` 只读看板继续独立运行。
+当前是内测版：支持邮箱验证、密码恢复、会话管理、净值/回撤与基准对照、CSV 导出和策略版本。
+生产需显式开启并配置邮件服务，付费入口尚未开放；具体能力与部署边界见[用户工作台文档](docs/customer-workspace.md)。
 
 > 仅用于研究、教育和模拟盘观察。AlphaPilot 不构成投资建议，不保证收益。
 > 除非你完全理解风险，请保持 `BROKER_MODE=paper`。

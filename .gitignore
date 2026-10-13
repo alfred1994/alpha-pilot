@@ -9,6 +9,7 @@ build/
 
 # 虚拟环境
 .venv/
+.venv-*/
 venv/
 env/
 
@@ -21,6 +22,7 @@ env/
 # 数据文件（含敏感信息）
 data/*.json
 data/*.db
+data/*.sqlite3*
 data/*.lock
 data/snapshots/
 data/signal_cache.json

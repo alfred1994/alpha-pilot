@@ -1,4 +1,5 @@
 import os
+import sqlite3
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +10,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from web.public_safety import is_control_api_enabled, is_production
 
 is_prod = is_production()
+workspace_enabled = os.environ.get("ALPHAPILOT_WORKSPACE_ENABLED", "0" if is_prod else "1").lower() in {"1", "true", "yes"}
 
 app = FastAPI(
     title="AlphaPilot Web API",
@@ -48,9 +50,16 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     """给公网仪表盘补充基础安全响应头。"""
 
     async def dispatch(self, request, call_next):
+        if request.url.path.startswith("/api/workspace") and not workspace_enabled:
+            return JSONResponse(status_code=503, content={"detail": "用户工作台尚未开放。"}, headers={"Cache-Control": "no-store"})
         if is_prod and not is_control_api_enabled() and request.url.path.startswith("/api/control"):
             return JSONResponse(status_code=404, content={"detail": "Not Found"})
         response = await call_next(request)
+        if request.url.path.startswith("/api/workspace"):
+            response.headers["Cache-Control"] = "no-store"
+        if request.url.path.startswith("/workspace"):
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["Cache-Control"] = "no-store"
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
@@ -62,7 +71,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             )
             if request.url.scheme == "https":
                 response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
-            if request.url.path.startswith("/api/") or request.url.path == "/" or request.url.path.endswith(".html"):
+            if request.url.path.startswith(("/api/", "/workspace")) or request.url.path == "/" or request.url.path.endswith(".html"):
                 response.headers.setdefault("Cache-Control", "no-store")
             else:
                 response.headers.setdefault("Cache-Control", "public, max-age=0, must-revalidate")
@@ -77,6 +86,32 @@ app.include_router(status.router, prefix="/api", tags=["Status"])
 app.include_router(database.router, prefix="/api", tags=["Database"])
 app.include_router(research.router, prefix="/api", tags=["Research"])
 app.include_router(returns.router, prefix="/api", tags=["Returns"])
+
+if workspace_enabled:
+    from services.identity import IdentityError
+    from services.market_types import MarketError
+    from web.routers import identity, workspace
+
+    @app.exception_handler(MarketError)
+    async def workspace_error(request, error):
+        code = 404 if error.code == "not_found" else 409 if error.code in {"account_exists", "idempotency_conflict", "strategy_changed"} else 422
+        if error.code.endswith("unavailable") or error.code in {"missing_credentials", "provider_unavailable", "paper_required"}:
+            code = 503
+        return JSONResponse(status_code=code, content={"detail": error.message, "code": error.code}, headers={"Cache-Control": "no-store"})
+
+    @app.exception_handler(IdentityError)
+    async def identity_error(request, error):
+        headers = {"Cache-Control": "no-store"}
+        if error.retry_after is not None:
+            headers["Retry-After"] = str(error.retry_after)
+        return JSONResponse(status_code=error.status_code, content={"detail": error.message}, headers=headers)
+
+    app.include_router(identity.router, prefix="/api/workspace", tags=["Identity"])
+    app.include_router(workspace.router, prefix="/api/workspace", tags=["Workspace"])
+
+    @app.exception_handler(sqlite3.Error)
+    async def storage_error(request, error):
+        return JSONResponse(status_code=503, content={"detail": "数据服务暂不可用，请稍后重试。"}, headers={"Cache-Control": "no-store"})
 
 if not is_prod or is_control_api_enabled():
     from web.routers import control

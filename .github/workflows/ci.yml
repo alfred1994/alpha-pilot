@@ -41,7 +41,7 @@ jobs:
           python -m pip check
 
       - name: Compile project
-        run: python -m compileall -q web scheduler strategy execution data portfolio realtime risk review signals scripts main.py config.py tests
+        run: python -m compileall -q web services scheduler strategy execution data portfolio realtime risk review signals scripts main.py config.py tests
 
       - name: Run deterministic regression suite
         run: |
