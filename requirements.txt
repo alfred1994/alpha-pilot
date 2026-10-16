@@ -1,4 +1,4 @@
-pandas>=2.2
+pandas>=3.0.3
 numpy>=1.26
 requests>=2.31
 akshare>=1.14
