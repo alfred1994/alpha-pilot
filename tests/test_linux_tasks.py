@@ -150,6 +150,15 @@ def main():
         assert_true("main.py --laya-text" in run_laya_text, "Laya文本情绪脚本已生成")
         assert_true("export BROKER_MODE=paper" in run_laya_text, "Laya文本情绪脚本默认模拟盘")
         assert_true("systemctl --user enable --now alpha-pilot-test-laya-text.timer" in install, "安装脚本启用Laya文本情绪timer")
+        run_style_shadow = _read(paths["run_style_shadow"])
+        assert_true(os.access(paths["run_style_shadow"], os.X_OK), "风格影子脚本可执行")
+        assert_true("main.py --adjusted-daily-sync" in run_style_shadow
+                    and "main.py --style-shadow" in run_style_shadow, "风格影子脚本先同步复权日线再记录影子")
+        assert_true(run_style_shadow.index("--adjusted-daily-sync") < run_style_shadow.index("--style-shadow"),
+                    "复权同步成功后才运行影子记录")
+        assert_true("export BROKER_MODE=paper" in run_style_shadow, "风格影子脚本默认模拟盘")
+        assert_true("systemctl --user enable --now alpha-pilot-test-style-shadow.timer" in install, "安装脚本启用风格影子timer")
+        assert_true("Mon..Fri *-*-* 18,20:30:00" in _read(paths["style_shadow_timer"]), "风格影子盘后运行并有重试")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto.service" in install, "安装脚本启用Auto服务")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto-restart.timer" in install, "安装脚本启用Auto-Restart timer")
         assert_true("systemctl --user enable --now alpha-pilot-test-research.timer" in install, "安装脚本启用研究同步timer")

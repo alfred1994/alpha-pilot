@@ -12,6 +12,7 @@ exchange_calendars>=4.11,<5
 tzdata>=2024.1
 lightgbm>=4.0
 scikit-learn>=1.4
+pyarrow>=15
 vectorbt>=1.0
 # vectorbt 1.x 引用 plotly.scattermapbox，plotly>=6/7 已移除该属性导致 import 失败
 plotly<6

@@ -60,3 +60,4 @@ data/*.db-*
 data/vibe/
 data/laya/
 data/round_archives/
+data/market_dumps/

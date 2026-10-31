@@ -260,6 +260,42 @@ def cmd_laya_text(args):
     return {"errors": []}
 
 
+def cmd_adjusted_daily_sync(args):
+    """同花顺市场数据包 -> 等比复权全市场日线库（旁路，不参与交易）。"""
+    from data.adjusted_daily import sync
+    try:
+        summary = sync(full=True if getattr(args, "adjusted_full", False) else None)
+    except Exception as exc:  # noqa: BLE001 - 以非零退出码暴露给 systemd
+        print(f"复权日线同步失败: {type(exc).__name__}: {exc}")
+        return {"errors": ["adjusted_daily_sync"]}
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return {"errors": []}
+
+
+def cmd_style_shadow(args):
+    """盘后风格池/因子分/大盘仓位上限影子记录（不下单）。"""
+    from data.hithink import HiThinkClient
+    from strategy.style_shadow import run_daily
+    client = HiThinkClient(timeout=60)
+    summary = run_daily(client=client if client.available else None)
+    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    return {"errors": [] if summary.get("status") == "ok" else ["style_shadow"]}
+
+
+def cmd_style_shadow_report(args):
+    """风格池影子评估与晋级门槛报告（只读）。"""
+    from strategy.style_shadow import evaluate, format_report
+    try:
+        report = evaluate()
+    except FileNotFoundError:
+        print("风格影子库尚未生成，请先运行 --style-shadow")
+        return {"errors": []}
+    print(format_report(report))
+    if getattr(args, "json", False):
+        print(json.dumps(report, ensure_ascii=False, indent=2))
+    return {"errors": []}
+
+
 def cmd_backfill_kline(args):
     """全市场/研究池日线回填到本地 k_daily（资源自适应，不参与交易）。"""
     from data.universe_backfill import run_backfill
@@ -971,6 +1007,11 @@ def main():
     group.add_argument("--pooled-ml-status", action="store_true", help="查看 pooled ML 影子模型状态")
     group.add_argument("--db-maintenance", action="store_true", help="数据库维护：完整性检查+在线备份+运维日志清理，不参与交易")
     group.add_argument("--laya-text", action="store_true", help="Laya本地财经文本情绪盘后评分（须盘后当天跑，新闻源不按日期过滤）")
+    group.add_argument("--adjusted-daily-sync", action="store_true", help="同步同花顺市场数据包到等比复权全市场日线库（旁路，不参与交易）")
+    parser.add_argument("--adjusted-full", action="store_true", help="与 --adjusted-daily-sync 合用：强制下载10年全量并重建")
+    group.add_argument("--style-shadow", action="store_true", help="盘后风格池/因子分/大盘仓位上限影子记录（不下单）")
+    group.add_argument("--style-shadow-report", action="store_true", help="风格池影子评估与晋级门槛报告（只读）")
+    parser.add_argument("--json", action="store_true", help="与 --style-shadow-report 合用：同时输出JSON")
     group.add_argument("--db-vacuum", action="store_true", help="DB维护时执行VACUUM回收空间（建议每周一次）")
     group.add_argument("--shadow-report", action="store_true", help="查看影子策略排行榜与晋级候选(JSON)")
     group.add_argument("--shadow-approve", metavar="VARIANT_ID", default=None, help="批准影子晋级候选（人工闭环，只记审批不改正式参数）")
@@ -1187,6 +1228,12 @@ def main():
         result = cmd_closure_repair(args)
     elif args.laya_text:
         result = cmd_laya_text(args)
+    elif args.adjusted_daily_sync:
+        result = cmd_adjusted_daily_sync(args)
+    elif args.style_shadow:
+        result = cmd_style_shadow(args)
+    elif args.style_shadow_report:
+        result = cmd_style_shadow_report(args)
     elif args.realtime:
         cmd_realtime()
         return

@@ -11,6 +11,7 @@ Linux/Hermes无人值守任务脚本生成器
   - run_pooled_ml.sh: 盘后训练 pooled ML 影子模型
   - run_db_maintenance.sh: 每日数据库维护（备份/巡检/清理）
   - run_laya_text.sh: 盘后 Laya 财经文本情绪评分（须当天跑）
+  - run_style_shadow.sh: 盘后等比复权日线同步 + 风格池/因子分影子记录
   - install_systemd_user.sh: 安装并启用用户级systemd服务/定时器
   - uninstall_systemd_user.sh: 停用并删除用户级systemd服务/定时器
 
@@ -42,6 +43,7 @@ SCRIPT_KEYS = [
     "run_pooled_ml",
     "run_db_maintenance",
     "run_laya_text",
+    "run_style_shadow",
     "install",
     "uninstall",
 ]
@@ -63,6 +65,8 @@ SERVICE_KEYS = [
     "maintenance_timer",
     "laya_text_service",
     "laya_text_timer",
+    "style_shadow_service",
+    "style_shadow_timer",
 ]
 LOG_NAMES = {
     "Auto": "auto.log",
@@ -74,6 +78,7 @@ LOG_NAMES = {
     "PooledML": "pooled_ml.log",
     "Maintenance": "db_maintenance.log",
     "LayaText": "laya_text.log",
+    "StyleShadow": "style_shadow.log",
 }
 
 
@@ -169,16 +174,22 @@ def _runner_script(project_dir: str, python_cmd: str, args: str,
                    log_name: str, hermes_env_file: str = "$HOME/.hermes/.env",
                    timeout_seconds: int = 0,
                    tolerate_failure: bool = False,
-                   cleanup_stale_lock: bool = False) -> str:
-    """生成Linux运行脚本"""
+                   cleanup_stale_lock: bool = False,
+                   then_args: str = "",
+                   then_timeout_seconds: int = 0) -> str:
+    """生成Linux运行脚本；then_args 非空时在首个命令成功后串行执行第二个命令"""
     log_path = _join_target_path(project_dir, "logs", log_name)
-    if timeout_seconds:
-        command = (
-            f"timeout --kill-after=15s {int(timeout_seconds)}s "
-            f"$PYTHON_CMD main.py {args} >> \"$LOG_FILE\" 2>&1"
-        )
-    else:
-        command = f"$PYTHON_CMD main.py {args} >> \"$LOG_FILE\" 2>&1"
+
+    def _command(cmd_args: str, seconds: int) -> str:
+        if seconds:
+            return (f"timeout --kill-after=15s {int(seconds)}s "
+                    f"$PYTHON_CMD main.py {cmd_args} >> \"$LOG_FILE\" 2>&1")
+        return f"$PYTHON_CMD main.py {cmd_args} >> \"$LOG_FILE\" 2>&1"
+
+    command = _command(args, timeout_seconds)
+    if then_args:
+        command = (f"{command}\nexit_code=$?\nif [ \"$exit_code\" -eq 0 ]; then\n"
+                   f"  {_command(then_args, then_timeout_seconds)}\n  exit_code=$?\nfi\n(exit \"$exit_code\")")
     final_exit = "0" if tolerate_failure else "$exit_code"
     cleanup_block = _stale_lock_cleanup_block() if cleanup_stale_lock else ""
     return f"""#!/usr/bin/env bash
@@ -373,6 +384,7 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "run_pooled_ml": join(output_dir, "run_pooled_ml.sh"),
         "run_db_maintenance": join(output_dir, "run_db_maintenance.sh"),
         "run_laya_text": join(output_dir, "run_laya_text.sh"),
+        "run_style_shadow": join(output_dir, "run_style_shadow.sh"),
         "install": join(output_dir, "install_systemd_user.sh"),
         "uninstall": join(output_dir, "uninstall_systemd_user.sh"),
         "units_dir": units_dir,
@@ -395,6 +407,8 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "maintenance_timer": join(units_dir, _unit_name(service_prefix, "db-maintenance", "timer")),
         "laya_text_service": join(units_dir, _unit_name(service_prefix, "laya-text")),
         "laya_text_timer": join(units_dir, _unit_name(service_prefix, "laya-text", "timer")),
+        "style_shadow_service": join(units_dir, _unit_name(service_prefix, "style-shadow")),
+        "style_shadow_timer": join(units_dir, _unit_name(service_prefix, "style-shadow", "timer")),
     })
     return paths
 
@@ -419,6 +433,8 @@ def _install_script(config: LinuxTaskConfig, paths: Dict[str, str]) -> str:
         os.path.basename(paths["maintenance_timer"]),
         os.path.basename(paths["laya_text_service"]),
         os.path.basename(paths["laya_text_timer"]),
+        os.path.basename(paths["style_shadow_service"]),
+        os.path.basename(paths["style_shadow_timer"]),
     ]
     unit_lines = "\n".join(
         f"install -m 0644 { _sh_quote(_join_target_path(paths['units_dir'], unit)) } \"$SYSTEMD_USER_DIR/{unit}\""
@@ -430,7 +446,7 @@ set -euo pipefail
 SYSTEMD_USER_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 
-chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])} {_sh_quote(paths['run_pooled_ml'])} {_sh_quote(paths['run_db_maintenance'])} {_sh_quote(paths['run_laya_text'])}
+chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])} {_sh_quote(paths['run_pooled_ml'])} {_sh_quote(paths['run_db_maintenance'])} {_sh_quote(paths['run_laya_text'])} {_sh_quote(paths['run_style_shadow'])}
 {unit_lines}
 
 systemctl --user daemon-reload
@@ -443,6 +459,7 @@ systemctl --user enable --now {os.path.basename(paths['research_timer'])}
 systemctl --user enable --now {os.path.basename(paths['pooled_ml_timer'])}
 systemctl --user enable --now {os.path.basename(paths['maintenance_timer'])}
 systemctl --user enable --now {os.path.basename(paths['laya_text_timer'])}
+systemctl --user enable --now {os.path.basename(paths['style_shadow_timer'])}
 
 cat <<'EOF'
 AlphaPilot systemd --user tasks installed.
@@ -478,6 +495,8 @@ def _uninstall_script(service_prefix: str) -> str:
         _unit_name(service_prefix, "db-maintenance", "timer"),
         _unit_name(service_prefix, "laya-text"),
         _unit_name(service_prefix, "laya-text", "timer"),
+        _unit_name(service_prefix, "style-shadow"),
+        _unit_name(service_prefix, "style-shadow", "timer"),
     ]
     units_text = " ".join(units)
     return f"""#!/usr/bin/env bash
@@ -547,6 +566,10 @@ def generate_linux_task_scripts(
         paths["run_pooled_ml"]: _runner_script(project_dir, python_cmd, "--train-pooled-model", "pooled_ml.log", hermes_env_file, timeout_seconds=900),
         paths["run_db_maintenance"]: _runner_script(project_dir, python_cmd, "--db-maintenance", "db_maintenance.log", hermes_env_file, timeout_seconds=600),
         paths["run_laya_text"]: _runner_script(project_dir, python_cmd, "--laya-text", "laya_text.log", hermes_env_file, timeout_seconds=600),
+        paths["run_style_shadow"]: _runner_script(
+            project_dir, python_cmd, "--adjusted-daily-sync", "style_shadow.log", hermes_env_file,
+            timeout_seconds=1500, then_args="--style-shadow", then_timeout_seconds=1500,
+        ),
         paths["install"]: _install_script(config, target_paths),
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
@@ -576,6 +599,15 @@ def generate_linux_task_scripts(
             "AlphaPilot Laya 财经文本情绪盘后评分（须盘后当天跑，新闻源不按日期过滤）",
             os.path.basename(paths["laya_text_service"]),
             f"Mon..Fri *-*-* {config.laya_text_time}:00",
+        ),
+        paths["style_shadow_service"]: _oneshot_service_unit(
+            "AlphaPilot 盘后等比复权日线同步与风格池影子记录", target_paths["run_style_shadow"],
+            timeout_start_sec=3200, resource_limits=True,
+        ),
+        paths["style_shadow_timer"]: _calendar_timer_unit(
+            "AlphaPilot 盘后风格池影子（18:30，20:30重试；重跑幂等）",
+            os.path.basename(paths["style_shadow_service"]),
+            "Mon..Fri *-*-* 18,20:30:00",
         ),
     }
     for path, content in {**scripts, **units}.items():
@@ -644,6 +676,7 @@ def _query_systemd_units(service_prefix: str) -> Dict[str, Dict]:
         _unit_name(service_prefix, "research", "timer"),
         _unit_name(service_prefix, "pooled-ml", "timer"),
         _unit_name(service_prefix, "laya-text", "timer"),
+        _unit_name(service_prefix, "style-shadow", "timer"),
     ]
     result = {}
     for unit in units:
