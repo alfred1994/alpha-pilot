@@ -4,8 +4,10 @@
 功能: 涨停板、龙虎榜、融资融券、板块数据
 """
 import pandas as pd
+import math
 from datetime import datetime, timedelta
 from data import logger
+from data.hithink import HiThinkError
 
 # 数据源选择: "eastmoney" 或 "akshare"
 DATA_SOURCE = "akshare"
@@ -81,10 +83,35 @@ def get_limit_down(date: str = None) -> pd.DataFrame:
     if not date:
         date = datetime.now().strftime("%Y%m%d")
     
-    if DATA_SOURCE == "eastmoney":
-        return _get_limit_down_eastmoney(date)
-    else:
-        return _get_limit_down_akshare(date)
+    primary = _get_limit_down_eastmoney if DATA_SOURCE == "eastmoney" else _get_limit_down_akshare
+    frame = primary(date)
+    if frame is not None and not frame.empty:
+        return frame
+    try:
+        from data.hithink import get_client
+        client = get_client()
+        if client is None:
+            return frame
+        day = datetime.strptime(str(date).replace("-", ""), "%Y%m%d").strftime("%Y-%m-%d")
+        data = client.get_limit_down(day)
+        rows = client._items(data)
+        mapped = []
+        for row in rows:
+            try:
+                price = float(row["last_price"]); change = float(row["price_change_ratio_pct"])
+                if not math.isfinite(price) or price <= 0 or not math.isfinite(change):
+                    continue
+                mapped.append({"代码": str(row["thscode"]).split(".")[0], "名称": row.get("name", ""),
+                               "最新价": price, "涨跌幅": change, "换手率": row.get("turnover_ratio_pct")})
+            except (KeyError, TypeError, ValueError):
+                continue
+        result = pd.DataFrame(mapped)
+        result.attrs["source"] = "hithink"
+        logger.info("跌停板 %s: %s只 (同花顺备用)", day, len(result))
+        return result
+    except Exception as exc:
+        logger.warning("同花顺跌停板回退失败: %s", str(exc) if isinstance(exc, HiThinkError) else type(exc).__name__)
+        return frame
 
 
 def _get_limit_down_eastmoney(date: str) -> pd.DataFrame:
@@ -137,10 +164,40 @@ def get_dragon_tiger(date: str = None) -> pd.DataFrame:
     Returns:
         DataFrame: 代码, 名称, 涨跌幅, 龙虎榜净买额, 上榜原因
     """
-    if DATA_SOURCE == "eastmoney":
-        return _get_dragon_tiger_eastmoney(date)
-    else:
-        return _get_dragon_tiger_akshare(date)
+    # 龙虎榜盘中本日未发布时，明确使用最近已公布交易日，保留上榜日。
+    try:
+        from data.hithink import get_client
+        client = get_client()
+        if client is not None:
+            selected_date = date
+            from scheduler.market_calendar import _now_bj
+            now = _now_bj()
+            if date and str(date).replace("-", "") == now.strftime("%Y%m%d") and now.hour < 16:
+                selected_date = None
+            payload = client.get_dragon_tiger(selected_date)
+            mapped = []
+            for row in payload["stock_items"]:
+                try:
+                    net = float(row["net_value"])
+                    change = float(row["change"]) * 100
+                    if not math.isfinite(net) or not math.isfinite(change):
+                        continue
+                    mapped.append({"代码": str(row["thscode"]).split(".")[0], "名称": row.get("name", ""),
+                                   "涨跌幅": change, "龙虎榜净买额": net, "上榜日": payload.get("trade_date"),
+                                   "上榜原因": row.get("limit_reason", "")})
+                except (KeyError, TypeError, ValueError):
+                    continue
+            if mapped:
+                frame = pd.DataFrame(mapped).drop_duplicates("代码")
+                frame.attrs["source"] = "hithink"
+                logger.info("龙虎榜 %s: %s只 (同花顺)", payload.get("trade_date"), len(frame))
+                return frame
+    except Exception as exc:
+        logger.warning("同花顺龙虎榜回退: %s", str(exc) if isinstance(exc, HiThinkError) else type(exc).__name__)
+    primary = _get_dragon_tiger_eastmoney if DATA_SOURCE == "eastmoney" else _get_dragon_tiger_akshare
+    secondary = _get_dragon_tiger_akshare if DATA_SOURCE == "eastmoney" else _get_dragon_tiger_eastmoney
+    frame = primary(date)
+    return frame if frame is not None and not frame.empty else secondary(date)
 
 
 def _get_dragon_tiger_eastmoney(date: str = None) -> pd.DataFrame:

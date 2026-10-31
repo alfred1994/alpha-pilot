@@ -18,28 +18,42 @@ logger = logging.getLogger("review.daily")
 REVIEW_DIR = os.path.join(DATA_DIR, "reviews")
 
 
+def _load_hs300_history(date):
+    from data.benchmark import load_hs300_history
+    try:
+        frame = load_hs300_history(date, persist=True)
+        if frame is not None and not frame.empty:
+            return frame
+    except Exception as exc:
+        logger.warning("指数专用行情失败: %s", type(exc).__name__)
+    from data.history import get_daily
+    return get_daily("000300", start_date="20240101", end_date=date.replace("-", ""), refresh=True)
+
+
 def _fetch_hs300_daily_pct(date: str = None) -> Optional[float]:
     """获取沪深300指定日期日涨跌幅（小数）。失败返回 None。
 
     最后一根K线必须来自目标日期(非交易日则为其前一交易日)：陈旧K线
-    被当作"当日涨跌"会让基准链整体失真(2026-09 曾以 09-21 的 +0.71%
-    连续三天复合)。取不到合格K线时返回 None，由累计链延续上一日。
+    被当作"当日涨跌"会让基准链整体失真。取不到合格K线时返回 None。
     """
     try:
-        from data.history import get_daily
         from scheduler.market_calendar import is_trading_day, prev_trading_day
         target = date or datetime.now().strftime("%Y-%m-%d")
         end = target.replace("-", "")
-        df = get_daily("000300", start_date="20240101", end_date=end)
+        df = _load_hs300_history(target)
         if df is None or len(df) < 2 or "close" not in df.columns:
             return None
         last_date = str(df["date"].iloc[-1]).strip()[:10]
         expected = target if is_trading_day(target) else prev_trading_day(target)
-        if last_date != expected:
+        if last_date.replace("-", "") != expected.replace("-", ""):
             logger.warning(
                 f"沪深300基准最后K线 {last_date} 早于 {target} 的最近交易日 "
-                f"{expected}，按取数失败处理(延续上一日累计基准)"
+                f"{expected}，基准收益不可用"
             )
+            return None
+        previous_date = str(df["date"].iloc[-2]).strip()[:10].replace("-", "")
+        if previous_date != str(prev_trading_day(expected)).replace("-", ""):
+            logger.warning("沪深300缺少前一交易日，不能将多日变化当成当日收益")
             return None
         closes = df["close"].astype(float)
         cur, prev = float(closes.iloc[-1]), float(closes.iloc[-2])
@@ -51,14 +65,14 @@ def _fetch_hs300_daily_pct(date: str = None) -> Optional[float]:
         return None
 
 
-def _compute_benchmark_pnl_pct(date: str, review_dir: str = None) -> float:
+def _compute_benchmark_pnl_pct(date: str, review_dir: str = None) -> Optional[float]:
     """计算并累计沪深300基准收益率（相对复盘序列起点）。
 
-    当日基准取数失败时延续上一日的累计值（曲线保持连续），
-    而不是归零重算——旧实现会把缺失日之后的基准曲线整体作废。
+    缺失日不可当作零收益；累计链有缺口时用相同起点的指数端点重算。
     """
     directory = review_dir or REVIEW_DIR
     prev_bm = 0.0
+    files = []
     try:
         if os.path.exists(directory):
             files = sorted(
@@ -68,15 +82,29 @@ def _compute_benchmark_pnl_pct(date: str, review_dir: str = None) -> float:
             )
             if files:
                 with open(os.path.join(directory, files[-1]), "r", encoding="utf-8") as f:
-                    prev_bm = float(json.load(f).get("benchmark_pnl_pct") or 0.0)
+                    previous = json.load(f).get("benchmark_pnl_pct")
+                    prev_bm = float(previous) if previous is not None else None
+                from scheduler.market_calendar import prev_trading_day
+                previous_day = files[-1][7:-5]
+                expected = str(prev_trading_day(date)).replace("-", "")
+                if prev_bm is None or previous_day.replace("-", "") != expected:
+                    start = files[0][7:-5].replace("-", "")
+                    frame = _load_hs300_history(date)
+                    if frame is None or frame.empty:
+                        return None
+                    prices = dict(zip(frame["date"].astype(str).str.replace("-", "").str[:8], frame["close"]))
+                    base, last = prices.get(start), prices.get(date.replace("-", ""))
+                    return float(last) / float(base) - 1 if base and last and base > 0 and last > 0 else None
     except Exception:
-        prev_bm = 0.0
+        logger.warning("沪深300累计基准历史读取失败，收益不可用")
+        return None
 
     daily = _fetch_hs300_daily_pct(date)
     if daily is None:
-        logger.warning(f"沪深300基准当日({date})取数失败，延续上一日累计基准 {prev_bm:+.4f}")
-        return prev_bm
-    return (1.0 + prev_bm) * (1.0 + daily) - 1.0
+        logger.warning(f"沪深300基准当日({date})取数失败，收益不可用")
+        return None
+    # 首份账户快照是比较起点，不能把账户登记前的指数变化算入超额。
+    return (1.0 + prev_bm) * (1.0 + daily) - 1.0 if files else 0.0
 
 
 def _parse_dimensions(raw) -> dict:
@@ -433,23 +461,20 @@ class DailyReviewer:
                             "date": data["date"],
                             "total_assets": float(data["total_assets"]),
                         })
-                        benchmark_nav.append({
-                            "date": data["date"],
-                            "nav": 1.0 + float(data.get("benchmark_pnl_pct") or 0.0),
-                        })
+                        if data.get("benchmark_pnl_pct") is not None:
+                            benchmark_nav.append({"date": data["date"], "nav": 1.0 + float(data["benchmark_pnl_pct"])})
                     except (json.JSONDecodeError, KeyError, TypeError, ValueError):
                         continue
             nav_series.append({"date": date, "total_assets": float(total_assets)})
-            benchmark_nav.append({
-                "date": date,
-                "nav": 1.0 + float(benchmark_pnl_pct or 0.0),
-            })
+            if benchmark_pnl_pct is not None:
+                benchmark_nav.append({"date": date, "nav": 1.0 + float(benchmark_pnl_pct)})
+            benchmark_complete = len(benchmark_nav) == len(nav_series)
 
             metrics = PerformanceAnalyzer().analyze_from_nav_series(
                 nav_series,
                 trades=[asdict(t) for t in trade_reviews],
                 initial_capital=initial_capital,
-                benchmark_nav=benchmark_nav,
+                benchmark_nav=benchmark_nav if benchmark_complete else [],
             )
             return {
                 "start_date": metrics.start_date,
@@ -462,9 +487,10 @@ class DailyReviewer:
                 "sharpe_ratio": round(metrics.sharpe_ratio, 4),
                 "sortino_ratio": round(metrics.sortino_ratio, 4),
                 "calmar_ratio": round(metrics.calmar_ratio, 4),
-                "information_ratio": round(metrics.information_ratio, 4),
-                "tracking_error": round(metrics.tracking_error, 6),
-                "benchmark_return": round(metrics.benchmark_return, 6),
+                "benchmark_available": benchmark_complete,
+                "information_ratio": round(metrics.information_ratio, 4) if benchmark_complete else None,
+                "tracking_error": round(metrics.tracking_error, 6) if benchmark_complete else None,
+                "benchmark_return": round(metrics.benchmark_return, 6) if benchmark_complete else None,
                 "total_trades": metrics.total_trades,
                 "win_rate": round(metrics.win_rate, 4),
                 "profit_factor": (

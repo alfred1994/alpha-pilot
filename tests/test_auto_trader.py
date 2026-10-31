@@ -24,7 +24,8 @@ def assert_true(condition, message):
     print(f"  OK {message}")
 
 
-def test_premarket_cycle():
+@patch("data.sentiment_analyzer.run_sentiment_analysis", return_value={"success": False})
+def test_premarket_cycle(_sentiment):
     calls = []
 
     def fake_prefetch():

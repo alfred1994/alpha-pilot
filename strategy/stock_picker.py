@@ -10,10 +10,71 @@ from datetime import datetime
 
 import pandas as pd
 import requests
+import math
+import time
+import threading
 
 from config import PICKER_TOP_N, PICKER_MIN_SCORE, PICKER_MAX_PE, PICKER_MIN_AMOUNT
 
 logger = logging.getLogger("strategy.picker")
+_HITHINK_MARKET_CACHE = {}
+_HITHINK_MARKET_LOCK = threading.Lock()
+
+
+def _hithink_liquidity_fallback(min_amount: float, limit: int) -> Dict[str, str]:
+    """完整快照按成交额筛选；PE来自同花顺估值，缺少PE时不放行。"""
+    from data.hithink import get_client, HiThinkError
+    client = get_client()
+    if client is None:
+        return {}
+    try:
+        with _HITHINK_MARKET_LOCK:
+            cache_key = (min_amount, limit)
+            if (_HITHINK_MARKET_CACHE.get("key") != cache_key
+                    or time.monotonic() - _HITHINK_MARKET_CACHE.get("at", -1000) > 180):
+                prices = client._request("/api/a-share/prices/snapshot", {"limit": 6000, "offset": 0})
+                price_rows = client._items(prices)
+                if not isinstance(prices.get("total"), int) or len(price_rows) < prices["total"]:
+                    raise HiThinkError("HiThink incomplete market snapshot")
+                ranked = []
+                for row in price_rows:
+                    code = str(row.get("thscode") or "").split(".")[0]
+                    try:
+                        amount = float(row["turnover"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                    if (len(code) == 6 and code.startswith(("0", "3", "6")) and not code.startswith("688")
+                            and math.isfinite(amount) and amount >= min_amount * 10000):
+                        ranked.append((row, amount))
+                ranked.sort(key=lambda item: item[1], reverse=True)
+                price_rows = [row for row, amount in ranked[:max(100, min(limit*2, 1600))]]
+                values = client.get_valuations([row["thscode"] for row in price_rows])
+                value_rows = values["item"]
+                _HITHINK_MARKET_CACHE.update(key=cache_key, at=time.monotonic(), prices=price_rows,
+                    values={row.get("thscode"): row for row in value_rows})
+            price_rows = list(_HITHINK_MARKET_CACHE["prices"])
+            values = dict(_HITHINK_MARKET_CACHE["values"])
+        eligible = []
+        for row in price_rows:
+            value = values.get(row.get("thscode"), {})
+            code = str(row.get("thscode") or "").split(".")[0]
+            name = str(value.get("name") or "")
+            try:
+                amount, pe = float(row["turnover"]), float(value["pe_ttm"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (len(code) != 6 or not code.startswith(("0", "3", "6")) or code.startswith("688")
+                    or not name or "ST" in name.upper() or "退" in name
+                    or not math.isfinite(amount) or not math.isfinite(pe)
+                    or amount < min_amount * 10000 or pe > PICKER_MAX_PE):
+                continue
+            eligible.append((code, name, amount))
+        stocks = {code: name for code, name, amount in sorted(eligible, key=lambda x: x[2], reverse=True)[:limit]}
+        logger.info("活跃股备用源: 同花顺完整快照(PE_TTM)，%s只", len(stocks))
+        return stocks
+    except Exception as exc:
+        logger.warning("同花顺活跃股回退失败: %s", str(exc) if isinstance(exc, HiThinkError) else type(exc).__name__)
+        return {}
 
 
 @dataclass
@@ -346,8 +407,8 @@ def _get_volume_candidates() -> Dict[str, Candidate]:
         url = (
             "https://push2.eastmoney.com/api/qt/clist/get?"
             "pn=1&pz=100&po=1&np=1&fltt=2&invt=2"
-            "&fields=f2,f3,f5,f6,f8,f12,f14,f18"
-            "&fid=f18"
+            "&fields=f2,f3,f5,f6,f8,f10,f12,f14"
+            "&fid=f10"
             "&fs=m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23"
             "&ut=fa5fd1943c7b386f172d6893dbbd1180"
         )
@@ -366,7 +427,7 @@ def _get_volume_candidates() -> Dict[str, Candidate]:
                 price = float(item.get("f2") or 0)
                 change_pct = float(item.get("f3") or 0)
                 turnover = float(item.get("f8") or 0)
-                volume_ratio = float(item.get("f18") or 0)
+                volume_ratio = float(item.get("f10") or 0)
 
                 if volume_ratio < 3 or change_pct < -5 or price <= 0:
                     continue
@@ -822,7 +883,7 @@ def _get_active_stocks(min_amount: float = None, limit: int = 500) -> Dict[str, 
 
         items = data.get("data", {}).get("diff", [])
         if not items:
-            return stocks
+            return _hithink_liquidity_fallback(min_amount, limit)
 
         for item in items:
             code = str(item.get("f12", ""))
@@ -869,7 +930,7 @@ def _get_active_stocks(min_amount: float = None, limit: int = 500) -> Dict[str, 
     except Exception as e:
         logger.warning(f"获取活跃股失败: {e}")
 
-    return stocks
+    return stocks or _hithink_liquidity_fallback(min_amount, limit)
 
 
 def pick_stocks_by_htsc(

@@ -36,6 +36,10 @@ def audit_panel(panel, calendar=None, metadata=None, expected_codes=None):
     if parsed.isna().any():
         return {"status": "unavailable", "execution_verified": False,
                 "errors": ["invalid_dates"], "gaps": [], "coverage": [], "input_sha256": None}
+    if (parsed != parsed.dt.normalize()).any():
+        errors.append("non_daily_dates")
+    if (parsed.dt.dayofweek >= 5).any():
+        errors.append("weekend_bars")
     frame["date"] = parsed.dt.strftime("%Y-%m-%d")
     if not frame.code.map(lambda v: isinstance(v, str) and len(v) == 6 and v.isdigit()).all():
         errors.append("invalid_security_codes")
@@ -90,12 +94,16 @@ def audit_panel(panel, calendar=None, metadata=None, expected_codes=None):
     if missing_days:
         gaps.append("missing_entire_sessions")
     codes = sorted(set(expected_codes or frame.code.unique()))
+    if set(codes) - set(frame.code):
+        errors.append("missing_requested_securities")
     coverage = []
     years = sorted(set(day[:4] for day in sessions) | set(frame.date.str[:4]))
+    # 宽股票池按组索引一次，避免每个股票/年份重新扫描整张百万行面板。
+    groups = frame.groupby([frame.date.str[:4], "code"], sort=False).groups
     for year in years:
         expected = {d for d in sessions if d.startswith(year)}
         for code in codes:
-            part = frame[(frame.code == code) & frame.date.str.startswith(year)]
+            part = frame.loc[groups.get((year, code), [])]
             absent = sorted(expected - set(part.date))
             if absent:
                 gaps.append("missing_security_sessions")

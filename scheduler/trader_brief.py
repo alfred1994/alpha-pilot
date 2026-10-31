@@ -183,17 +183,23 @@ def build_daily_facts(date: str = None, db_path: str = None,
         # 日终事实必须覆盖当天全部事件；固定取最近500条会让早盘扫描
         # 被后续Doctor/心跳事件挤出窗口，进而污染AI复盘和次日策略。
         events = db.get_auto_events(date=date, limit=None)
+        all_decisions = db.get_llm_decisions(start_date=date, end_date=date, limit=None)
         decisions = [
-            item for item in db.get_llm_decisions(start_date=date, end_date=date, limit=None)
+            item for item in all_decisions
             if _valid_llm_decision(item)
         ]
+        observations = [dict(row) for row in db.conn.execute(
+            "SELECT scan_id,code,hold_reason,dimensions FROM candidate_outcomes WHERE observation_date=?",
+            (date,),
+        )]
         trades = [
             dict(row) for row in db.conn.execute(
                 "SELECT code, name, action, created_at FROM trades WHERE substr(created_at, 1, 10)=?",
                 (date,),
             ).fetchall()
         ]
-        reviewed = db.get_review_snapshot(date) is not None
+        claim = db.conn.execute("SELECT status FROM review_executions WHERE review_date=?", (date,)).fetchone()
+        reviewed = bool(claim and claim["status"] == "completed")
         current_directive = db.get_effective_strategy_directive(date)
         pending_directive = db.get_next_strategy_directive(date)
         # 反事实统计：按 (observation_date, code) 去重，统计独立机会样本数，避免重复扫描轮次充数
@@ -202,8 +208,9 @@ def build_daily_facts(date: str = None, db_path: str = None,
             FROM candidate_outcomes
             WHERE outcome_label <> ''
               AND observation_date >= date(?, '-30 days')
+              AND observation_date <= ?
             GROUP BY outcome_label
-        """, (date,)).fetchall()
+        """, (date, date)).fetchall()
         counterfactual = {str(row["outcome_label"]): int(row["count"]) for row in rows}
 
         # 拒绝层级统计（区分门槛、排名还是LLM拒绝）
@@ -212,8 +219,9 @@ def build_daily_facts(date: str = None, db_path: str = None,
             FROM candidate_outcomes
             WHERE denial_layer <> ''
               AND observation_date >= date(?, '-30 days')
+              AND observation_date <= ?
             GROUP BY denial_layer
-        """, (date,)).fetchall()
+        """, (date, date)).fetchall()
         denial_summary = {str(row["denial_layer"]): int(row["count"]) for row in denial_rows}
         try:
             from strategy.decision_audit import build_hold_audit_from_db
@@ -275,12 +283,18 @@ def build_daily_facts(date: str = None, db_path: str = None,
     order_audit = audit_reconciled
 
     decision_counts = {"BUY": 0, "SELL": 0, "HOLD": 0}
-    no_response_count = 0
+    missing_responses = {
+        (item.get("scan_id") or item.get("created_at") or item.get("id"), item.get("code"))
+        for item in all_decisions if not _valid_llm_decision(item)
+    }
+    missing_responses.update(
+        (item["scan_id"], item["code"]) for item in observations
+        if "LLM无响应" in (item.get("hold_reason") or "")
+    )
+    no_response_count = len(missing_responses)
     for item in decisions:
         action = str(item.get("action") or "HOLD").upper()
         decision_counts[action if action in decision_counts else "HOLD"] += 1
-        if float(item.get("confidence") or 0) <= 0:
-            no_response_count += 1
 
     audit_counts = {"filled": 0, "blocked": 0, "failed": 0, "skipped": 0}
     for item in order_audit:
@@ -294,7 +308,28 @@ def build_daily_facts(date: str = None, db_path: str = None,
     if trades and audit_counts["filled"] < len(trades):
         audit_counts["filled"] = len(trades)
 
-    degradations = _load_signal_degradations()
+    degradations = _load_signal_degradations() if date == now.strftime("%Y-%m-%d") else []
+    # 日终事实取整天持久化的逐扫描信号，不能被最后一次正常缓存抹去。
+    dimensions_by_sample = {}
+    for item in [*all_decisions, *observations]:
+        dimensions = item.get("dimensions") or {}
+        if isinstance(dimensions, str):
+            try:
+                dimensions = json.loads(dimensions)
+            except (ValueError, TypeError):
+                dimensions = {}
+        if isinstance(dimensions, dict) and dimensions:
+            dimensions_by_sample[(item.get("scan_id") or item.get("created_at") or item.get("id"), item.get("code"))] = dimensions
+    for name, label in _DIMENSION_LABELS.items():
+        samples = [dims[name] for dims in dimensions_by_sample.values() if isinstance(dims.get(name), dict)]
+        degraded = [item for item in samples if item.get("confidence") is not None and float(item["confidence"]) <= 0]
+        if degraded:
+            degradations = [item for item in degradations if item["key"] != name]
+            degradations.append({"key": name, "label": label,
+                                 "summary": f"当日{len(samples)}次已记录{label}中{len(degraded)}次零置信度，不可当作有效中性判断",
+                                 "degraded_observations": len(degraded), "observations": len(samples)})
+    if no_response_count:
+        degradations.append({"key": "llm", "label": "LLM判断", "summary": f"当日{no_response_count}次LLM无有效响应，未计入主动HOLD"})
     latest_scan = scan_journeys[0] if scan_journeys else {}
     funnel = {
         "scan_cycles": len(scan_journeys),

@@ -95,7 +95,7 @@ def test_outcome_lowercase_backfill():
 
 
 def test_benchmark_chain_continuity():
-    print("测试2: 基准取数失败时延续累计值")
+    print("测试2: 基准取数失败时显式缺失")
     review_dir = tempfile.mkdtemp(prefix="_bm_dir_")
     try:
         prev = {"benchmark_pnl_pct": 0.05}
@@ -106,7 +106,7 @@ def test_benchmark_chain_continuity():
         try:
             daily_review_mod._fetch_hs300_daily_pct = lambda date=None: None
             carried = _compute_benchmark_pnl_pct("2026-09-11", review_dir)
-            assert_true(abs(carried - 0.05) < 1e-9, f"取数失败延续累计基准 {carried}")
+            assert_true(carried is None, "取数失败不把昨日累计收益冒充今日基准")
             daily_review_mod._fetch_hs300_daily_pct = lambda date=None: 0.01
             chained = _compute_benchmark_pnl_pct("2026-09-11", review_dir)
             expected = (1.0 + 0.05) * (1.0 + 0.01) - 1.0

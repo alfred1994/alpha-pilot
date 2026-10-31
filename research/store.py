@@ -27,7 +27,8 @@ def default_path():
 def code_version():
     digest = hashlib.sha256()
     paths = list((ROOT / "research").glob("*.py")) + [ROOT / "portfolio/factor_backtest.py"]
-    paths += [ROOT / p for p in ("strategy/factor_research.py", "strategy/ml_baseline.py", "strategy/etf_research.py", "scheduler/pipeline.py")]
+    paths += [ROOT / p for p in ("strategy/factor_research.py", "strategy/ml_baseline.py", "strategy/ml_research.py",
+                               "scripts/run_ml_research.py", "strategy/etf_research.py", "scheduler/pipeline.py")]
     for path in sorted(paths):
         digest.update(path.relative_to(ROOT).as_posix().encode())
         digest.update(path.read_bytes())

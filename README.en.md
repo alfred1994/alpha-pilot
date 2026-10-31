@@ -54,6 +54,7 @@ resume, repair, token input, raw environment variables, or trading control endpo
 
 ## Feature Highlights
 
+- **Bounded factor research**: compare the existing 60-feature model, six complementary features, category ablations, and a fixed formula-search budget with purged time splits and the same A-share ledger. An isolated forward observer freezes all six models, records daily predictions, and reconciles late execution evidence without promoting models automatically. See [factor research](docs/factor-discovery.md) and [forward observation](docs/factor-forward.md).
 - **LLM trading decisions**: MiMo/Xiaomi-compatible OpenAI-style API for decision
   reasoning and trade plan generation.
 - **Vibe-Trading research layer (optional)**: an out-of-process bridge to the

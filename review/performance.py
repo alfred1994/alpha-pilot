@@ -295,10 +295,8 @@ class PerformanceAnalyzer:
                     "total_assets": data["total_assets"],
                 })
                 # 复盘JSON中的基准累计收益率 → 基准净值（起点=1.0）
-                benchmark_nav.append({
-                    "date": data["date"],
-                    "nav": 1.0 + float(data.get("benchmark_pnl_pct") or 0.0),
-                })
+                if data.get("benchmark_pnl_pct") is not None:
+                    benchmark_nav.append({"date": data["date"], "nav": 1.0 + float(data["benchmark_pnl_pct"])})
 
                 for t in data.get("trade_reviews", []):
                     all_trades.append(t)

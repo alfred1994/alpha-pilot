@@ -4,6 +4,7 @@
 约束结构、版本持久化和按生效日期读取，不用固定胜率规则替 AI 调参。
 """
 import json
+import hashlib
 import logging
 import re
 from datetime import datetime
@@ -146,12 +147,18 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
     if performance:
         benchmark_lines.append(
             "区间绩效：总收益 {total_return:+.2%}，最大回撤 {max_drawdown:+.2%}，"
-            "夏普 {sharpe_ratio:.2f}，信息比率 {information_ratio:.2f}（{trading_days}个交易日）".format(
-                **{key: performance.get(key, 0) for key in (
+            "夏普 {sharpe_ratio:.2f}（{trading_days}个交易日）".format(
+                **{key: performance.get(key) or 0 for key in (
                     "total_return", "max_drawdown", "sharpe_ratio",
                     "information_ratio", "trading_days")}
             )
         )
+        if performance.get("benchmark_available") is False:
+            benchmark_lines.append("基准不完整，信息比率不可用。")
+        elif performance.get("information_ratio") is not None:
+            benchmark_lines.append(f"信息比率：{performance['information_ratio']:.2f}")
+    if benchmark_pnl_pct is None:
+        benchmark_lines.append("基准收益未知，禁止将缺行情解释为基准零收益或与基准持平。")
     regime_attr = review_data.get("regime_attribution") or {}
     if regime_attr:
         benchmark_lines.append(
@@ -214,6 +221,34 @@ JSON 格式：
 }}"""
 
 
+def _call_directive_llm(prompt: str) -> Optional[str]:
+    """结构化指令使用独立协议，不把推理文本当 JSON 或复盘散文。"""
+    from strategy.mimo_client import post_chat_completion
+    from review.llm_review import LLM_MODEL, MIMO_API_KEY, MIMO_BASE_URL
+    payload = {
+        "model": LLM_MODEL,
+        "messages": [
+            {"role": "system", "content": "你生成受风控约束的策略 JSON。只输出一个完整 JSON 对象，不要分析过程、Markdown或额外文字。"},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 6000, "temperature": 0.2,
+    }
+    response = post_chat_completion(payload=payload, base_url=MIMO_BASE_URL,
+                                    api_key=MIMO_API_KEY, http_timeout=120)
+    choices = (response or {}).get("choices") or []
+    if not choices:
+        logger.warning("策略指令调用未返回 choices")
+        return None
+    choice = choices[0]
+    content = (choice.get("message") or {}).get("content") or ""
+    logger.info("策略指令响应: finish_reason=%s chars=%s sha256=%s",
+                choice.get("finish_reason"), len(content), hashlib.sha256(content.encode()).hexdigest())
+    if choice.get("finish_reason") in ("length", "content_filter"):
+        return None
+    return content.strip() or None
+
+
 def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
                                          llm_review: str, regime: str,
                                          current_params: Dict,
@@ -233,8 +268,7 @@ def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
         current_directive=current_directive,
     )
     if llm_call is None:
-        from review.llm_review import _call_llm
-        llm_call = _call_llm
+        llm_call = _call_directive_llm
     raw_text = llm_call(prompt)
     raw = _extract_json(raw_text or "")
     if raw is None:
@@ -273,4 +307,5 @@ def get_effective_trade_policy(date: str, regime: str, db_path: str = None,
         logger.warning("已保存策略指令无效，忽略: %s", exc)
         return None
     normalized["version"] = directive.get("version", normalized["version"])
+    normalized["valid_for_date"] = directive.get("effective_date") == date
     return normalized

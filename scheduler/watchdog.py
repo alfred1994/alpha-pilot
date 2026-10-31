@@ -395,6 +395,24 @@ def run_auto_watchdog(
     try:
         with Database(db_path=db_path, readonly=readonly) as db:
             events = db.get_auto_events(date=today, limit=100)
+            unresolved = db.conn.execute(
+                "SELECT review_date,status FROM review_executions WHERE review_date<=? AND "
+                "(status='needs_review' OR (status='executing' AND review_date<?)) ORDER BY review_date",
+                (today, today),
+            ).fetchall()
+            items.append(_make_item(
+                "未完成复盘", not unresolved,
+                "; ".join(f"{row['review_date']} {row['status']}" for row in unresolved) or "无未解决复盘",
+                "critical" if unresolved else "ok",
+                "仅可恢复已核对的失败步骤；日期切换不能消除复盘失败。",
+            ))
+            policy = db.get_effective_strategy_directive(today)
+            if policy and is_today_trading and status in ("盘前", "集合竞价", "盘中", "午休"):
+                current = policy.get("effective_date") == today
+                items.append(_make_item("当日策略有效期", current,
+                                       f"effective_date={policy.get('effective_date')}",
+                                       "ok" if current else "critical",
+                                       "生成当日有效策略前禁止旧指令开仓。"))
     except Exception as e:
         events = []
         items.append(_make_item("自动事件读取", False, str(e), "critical", "检查SQLite数据库。"))

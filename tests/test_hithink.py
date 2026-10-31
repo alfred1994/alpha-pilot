@@ -92,6 +92,22 @@ class HiThinkTests(unittest.TestCase):
         self.assertNotIn("secret-test-key", str(error.exception))
         self.assertTrue(error.exception.__suppress_context__)
 
+    def test_transient_network_and_gateway_retry_once(self):
+        self.net.side_effect = [requests.Timeout("secret-test-key"), response()]
+        self.assertEqual(self.client.get_tickers()["item"], [])
+        self.assertEqual(self.net.call_count, 2)
+        self.net.reset_mock()
+        gateway = response(status=503)
+        self.net.side_effect = [gateway, response()]
+        self.assertEqual(self.client.get_tickers()["item"], [])
+        self.assertEqual(self.net.call_count, 2)
+        gateway.close.assert_called_once()
+        self.net.reset_mock()
+        self.net.side_effect = requests.Timeout("secret-test-key")
+        with self.assertRaisesRegex(HiThinkError, "Timeout"):
+            self.client.get_tickers()
+        self.assertEqual(self.net.call_count, 2)
+
     def test_envelope_validation(self):
         for invalid in ([], {}, {"code": False}, {"code": 0, "data": None},
                         {"code": 0, "data": {"item": "bad"}}):

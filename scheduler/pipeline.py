@@ -690,6 +690,7 @@ def fast_scan(
         trading_date=plan.date,
     )
     plan.hold_reasons.update(gate_reasons)
+    _refresh_signal_prices(top_candidates)
 
     logger.info(
         f"[快链路] 判断广度: {len(top_candidates)}只过线(阈值{min_score})，"
@@ -845,6 +846,12 @@ def fast_scan(
         # 前置一手可买性校验：高价股在缩仓/小权重下买不满1手时直接跳过，
         # 避免 LLM 深度研判后在执行层被“不足100单位”白白阻断。
         if llm_action == "BUY":
+            if directive and not directive.get("valid_for_date", True):
+                plan.hold_reasons[s["code"]] = "HOLD_STALE_DIRECTIVE(当日策略未生成，禁止旧指令开仓)"
+                continue
+            if not s.get("signal_price_available"):
+                plan.hold_reasons[s["code"]] = "HOLD_SIGNAL_QUOTE(信号时点实时行情缺失或过期)"
+                continue
             if sum(order.action == "BUY" for order in plan.orders) >= top_k:
                 plan.hold_reasons[s["code"]] = f"HOLD_BUY_BUDGET(top_k={top_k})"
                 continue
@@ -1331,6 +1338,26 @@ def _load_trade_plan() -> Optional[dict]:
 # 交易执行（读取TradePlan执行）
 # ═══════════════════════════════════════════════════════════════════
 
+def _refresh_signal_prices(scores, realtime_func=None, now=None):
+    """冻结判断前的实时参考价；日线特征仍保留其原有时间口径。"""
+    if not scores:
+        return
+    try:
+        quotes = (realtime_func or _default_realtime_func())([item["code"] for item in scores]) or []
+    except Exception as exc:
+        logger.warning("信号参考价取数失败: %s", type(exc).__name__)
+        quotes = []
+    from data.quote_validation import normalize_quote_code
+    by_code = {normalize_quote_code(q.get("code") if isinstance(q, dict) else getattr(q, "code", "")): q for q in quotes}
+    for score in scores:
+        score["daily_close"] = score.get("latest_price")
+        check = validate_quote(by_code.get(score["code"]), expected_code=score["code"], now=now)
+        score["signal_price_available"] = check.valid
+        if check.valid:
+            score.update(latest_price=check.price, price_source="signal_realtime",
+                         signal_price_at=check.timestamp.isoformat())
+
+
 def _default_realtime_func():
     """获取默认实时行情函数: 新浪快照(KT适配器)优先，腾讯源回退。
 
@@ -1555,12 +1582,17 @@ def _execute_trade_plan_impl(
     realtime_func = realtime_func or _default_realtime_func()
 
     # 领取计划执行权。数据库中的唯一主键使重启、重试和并发调用不会重复下单。
+    policy_current = True
     try:
         from data.database import Database
         with Database(db_path=getattr(account, "db_path", None)) as db:
             execution_claim = db.claim_trade_plan_execution(
                 plan_id, plan_data["date"], payload_hash,
             )
+            if not allow_historical_plan and str(plan_data.get("strategy_version", "")).startswith("directive-"):
+                active_policy = db.get_effective_strategy_directive(plan_data["date"])
+                policy_current = bool(active_policy and active_policy.get("effective_date") == plan_data["date"]
+                                      and active_policy.get("version") == plan_data["strategy_version"])
     except Exception as e:
         result.errors.append(f"TradePlan执行权领取失败: {e}")
         return result
@@ -1811,6 +1843,9 @@ def _execute_trade_plan_impl(
 
         elif action == "BUY":
             code = order["code"]
+            if not policy_current:
+                _audit_order(result, order, "blocked", "当日策略失效或已更新，禁止旧指令开仓")
+                continue
             target_weight = order.get("target_weight", 0.10)
             max_price = order.get("max_price", 0)
             max_signal_price_drift = MAX_SIGNAL_PRICE_DRIFT
@@ -1862,7 +1897,7 @@ def _execute_trade_plan_impl(
                     )
                     continue
 
-            # 双向漂移熔断：信号是按 ref_price 打分的，若实时价已偏离该基准
+            # 双向漂移熔断：ref_price 是判断前冻结的实时价，若执行价已偏离该基准
             # 超过阈值，说明标的已经走样——涨太多是追高（实测漫步者 09-22
             # 按 10.02 打分、10.26 成交，白付 2.4%），跌太多则技术前提已失效。
             # 原实现只挡上行的硬限价，下跌方向完全没有保护。

@@ -7,6 +7,7 @@ import os
 import json
 import requests
 import pandas as pd
+import threading
 from datetime import datetime
 from data import rate_limit, logger
 
@@ -14,6 +15,8 @@ from data import rate_limit, logger
 WEIBO_COOKIES_FILE = os.path.expanduser("~/.hermes/weibo_cookies.json")
 WEIBO_FINANCE_GID = "4730324816239267"
 _WEIBO_COOKIE_WARNED = False
+_WEIBO_FETCH_LOCK = threading.Lock()
+_WEIBO_REJECTED_VERSION = None
 
 
 def _get_weibo_cookies() -> str:
@@ -47,12 +50,26 @@ def _get_weibo_cookies() -> str:
 
 
 def get_weibo_finance(limit: int = 10) -> list:
+    """同一失效Cookie只探测一次；更新文件后自动恢复探测。"""
+    with _WEIBO_FETCH_LOCK:
+        try:
+            stat = os.stat(WEIBO_COOKIES_FILE)
+            version = (stat.st_mtime_ns, stat.st_size)
+        except OSError:
+            version = None
+        if version is not None and version == _WEIBO_REJECTED_VERSION:
+            return []
+        return _fetch_weibo_finance(limit, version)
+
+
+def _fetch_weibo_finance(limit: int, version) -> list:
     """
     获取微博财经分组最新帖子
     
     Returns:
         list of dict: [{author, text, created_at, reposts, comments, likes}, ...]
     """
+    global _WEIBO_REJECTED_VERSION
     cookies = _get_weibo_cookies()
     if not cookies:
         return []
@@ -70,7 +87,8 @@ def get_weibo_finance(limit: int = 10) -> list:
         # 检查是否返回了HTML登录页面（cookies过期）
         content_type = resp.headers.get("content-type", "")
         if "text/html" in content_type or resp.text.strip().startswith("<"):
-            logger.warning("微博cookies已过期，返回登录页面")
+            _WEIBO_REJECTED_VERSION = version
+            logger.warning("微博cookies已过期，停止重复请求，更新Cookie文件后恢复；其他新闻源继续可用")
             return []
         data = resp.json()
         statuses = data.get("statuses", []) or data.get("data", {}).get("statuses", [])
@@ -119,7 +137,15 @@ def get_stock_news(code: str) -> list:
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://so.eastmoney.com/",
         }
-        resp = requests.get(url, headers=headers, timeout=10)
+        # 暂时网络错误只重试一次，最多两次短请求，避免新闻拖慢扫描预算。
+        for attempt in range(2):
+            try:
+                resp = requests.get(url, headers=headers, timeout=4)
+                resp.raise_for_status()
+                break
+            except requests.RequestException:
+                if attempt:
+                    raise
         match = re.search(r"jQuery\w*\((.+)\)", resp.text)
         if match:
             data = json.loads(match.group(1))
@@ -137,7 +163,7 @@ def get_stock_news(code: str) -> list:
             return news
     except Exception as e:
         logger.error(f"新闻获取失败: {e}")
-        return []
+    return []
 
 
 def get_market_sentiment() -> dict:

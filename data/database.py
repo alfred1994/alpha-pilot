@@ -45,7 +45,7 @@ class Database:
             db.get_kline_cached("600519", "2024-01-01", "2024-12-31", source_func)
     """
 
-    SCHEMA_VERSION = 1
+    SCHEMA_VERSION = 2
 
     def __init__(self, db_path: str = None, readonly: bool = False):
         self.db_path = db_path or DB_PATH
@@ -354,6 +354,15 @@ class Database:
                 claimed_at   TEXT NOT NULL,
                 completed_at TEXT,
                 error        TEXT
+            )
+        """)
+        c.execute("""
+            CREATE TABLE IF NOT EXISTS review_directive_recovery (
+                review_date TEXT PRIMARY KEY,
+                attempts INTEGER NOT NULL,
+                attempted_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error TEXT
             )
         """)
 

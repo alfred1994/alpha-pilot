@@ -101,12 +101,20 @@ class HiThinkClient:
                         headers={"X-api-key": self._api_key}, timeout=self.timeout,
                         allow_redirects=False,
                     )
-                except requests.RequestException:
-                    raise HiThinkError("HiThink transport failure") from None
+                except requests.RequestException as exc:
+                    if (attempt == 0 and self.max_retries > 0
+                            and isinstance(exc, (requests.Timeout, requests.ConnectionError))):
+                        time.sleep(2)
+                        continue
+                    raise HiThinkError(f"HiThink transport failure ({type(exc).__name__})") from None
                 finally:
                     _LAST_REQUEST = time.monotonic()
                 limited = response.status_code == 429
                 retry_after = response.headers.get("Retry-After")
+                if response.status_code in (500, 502, 503, 504) and attempt == 0 and self.max_retries > 0:
+                    response.close()
+                    time.sleep(2)
+                    continue
                 try:
                     if not limited and response.status_code != 200:
                         raise HiThinkError(f"HiThink HTTP status {response.status_code}")
@@ -177,14 +185,24 @@ class HiThinkClient:
     def get_valuations(self, codes):
         return self._batch("/api/a-share/valuations/snapshot", codes)
 
-    def get_daily(self, code, start_date, end_date, adjust="qfq"):
+    def get_daily(self, code, start_date, end_date, adjust="qfq", *, asset_type="stock"):
         adjustments = {"qfq": "forward", "hfq": "backward", "none": "none",
                        "forward": "forward", "backward": "backward"}
         if adjust not in adjustments:
             raise ValueError("unsupported adjustment")
-        params = dict(thscode=normalize_code(code), interval="1d", adjust=adjustments[adjust],
+        if asset_type not in ("stock", "index"):
+            raise ValueError("unsupported daily asset type")
+        symbol = normalize_code(code)
+        if asset_type == "index":
+            # 纯000300为沪深300指数，不能按0开头的股票规则映射到SZ。
+            if str(code).strip() == "000300":
+                symbol = "000300.SH"
+        params = dict(thscode=symbol, interval="1d", adjust=adjustments[adjust],
                       **_window(start_date, end_date))
-        data = self._request("/api/a-share/prices/historical", params)
+        path = "/api/a-share-index/prices/historical" if asset_type == "index" else "/api/a-share/prices/historical"
+        if asset_type == "index":
+            params["adjust"] = "none"
+        data = self._request(path, params)
         result, rejected = [], 0
         for row in self._items(data):
             try:
@@ -224,6 +242,37 @@ class HiThinkClient:
                            amount_unit="CNY", rejected_rows=rejected,
                            upstream_timestamp_ms=data.get("timestamp"))
         return frame
+
+    def get_dragon_tiger(self, date=None):
+        params = {"board_type": "all"}
+        if date:
+            params["date"] = datetime.strptime(str(date).replace("-", ""), "%Y%m%d").strftime("%Y-%m-%d")
+        data = self._request("/api/a-share/special-data/dragon-tiger-list", params)
+        rows = data.get("stock_items")
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            raise HiThinkError("HiThink invalid dragon tiger list")
+        return data
+
+    def get_limit_down(self, date):
+        """最多五页完整跌停池；date_ms为上海时区零点，不能传未定义的date。"""
+        day = datetime.strptime(str(date).replace("-", ""), "%Y%m%d")
+        params = {"date_ms": _date_ms(day), "page": 1, "size": 200}
+        data = self._request("/api/a-share/special-data/limit-down-pool", params)
+        pagination = data.get("pagination") or {}
+        total, pages = pagination.get("total"), pagination.get("pages")
+        if (type(total) is not int or total < 0 or type(pages) is not int or pages < 0):
+            raise HiThinkError("HiThink invalid limit down pagination")
+        if total > 1000 or pages > 5:
+            raise HiThinkError("HiThink limit down pool exceeds page budget")
+        rows = list(self._items(data))
+        for page in range(2, pages + 1):
+            more = self._request("/api/a-share/special-data/limit-down-pool", dict(params, page=page))
+            if (more.get("pagination") or {}).get("total") != total:
+                raise HiThinkError("HiThink limit down pool changed during pagination")
+            rows.extend(self._items(more))
+        if len(rows) != total or len({row.get("thscode") for row in rows}) != total:
+            raise HiThinkError("HiThink incomplete limit down pool")
+        return dict(data, item=rows)
 
     def get_financials(self, code, statement="income-statements", period="annual", *,
                        limit=None, start_date=None, end_date=None):

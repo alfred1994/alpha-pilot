@@ -701,6 +701,11 @@ def run_auto_cycle(
     _checkpoint_state()
 
     try:
+        if status not in ("盘中", "午休", "集合竞价"):
+            from scheduler.review_recovery import recover_pending_directives
+            recovered = recover_pending_directives(db_path=db_path, now=now_dt)
+            for item in recovered:
+                actions.append(f"策略指令恢复: {item['review_date']} {item['status']}")
         if not is_today_trading:
             actions.append("休市: 跳过交易动作")
 

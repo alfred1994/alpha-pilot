@@ -114,13 +114,27 @@ def health(path=None, now=None):
         return result
     try:
         with connect(path, readonly=True) as db:
+            archived = {row[0] for row in db.execute("SELECT id FROM experiments WHERE status='archived'")}
             for row in db.execute("SELECT * FROM jobs ORDER BY name"):
                 item = dict(row)
+                if item["name"].startswith("compare:") and item["name"].split(":", 1)[1] in archived:
+                    continue
                 if item["status"] == "running" and now - datetime.fromisoformat(item["attempted_at"]) > timedelta(minutes=30):
                     item.update(status="stale", reason="worker_overdue")
                 elif item["status"] == "ok" and now - datetime.fromisoformat(item["last_success"]) > timedelta(days=4):
                     item.update(status="stale", reason="no_recent_success")
                 result["jobs"].append(item)
+        forward_file = Path(os.environ.get("FORWARD_RESEARCH_HEALTH_FILE", ROOT / "data/research_ops/forward-health.json"))
+        if path is None and forward_file.exists():
+            forward = json.loads(forward_file.read_text(encoding="utf-8"))
+            stamp = datetime.fromisoformat(forward["attempted_at"])
+            status = forward.get("status", "unknown")
+            if (status == "running" and now - stamp > timedelta(minutes=50)) or now - stamp > timedelta(days=4):
+                status = "stale"
+            result["jobs"].append({"name": "frozen_forward", "attempted_at": forward["attempted_at"],
+                                   "last_success": forward.get("last_success"),
+                                   "status": "failed" if status == "blocked" else status,
+                                   "reason": "forward_observation_blocked" if status == "blocked" else ""})
         if result["enabled"] and result["jobs"]:
             result["status"] = "degraded" if any(j["status"] in ("failed", "waiting_data", "stale") for j in result["jobs"]) else "ok"
     except Exception:

@@ -566,7 +566,7 @@ def generate_linux_task_scripts(
         paths["status_service"]: _oneshot_service_unit("AlphaPilot 自动盯盘运维状态", target_paths["run_status"]),
         paths["status_timer"]: _calendar_timer_unit("AlphaPilot 盘后运维状态", os.path.basename(paths["status_service"]), f"Mon..Fri *-*-* {config.status_time}:00"),
         paths["research_service"]: _oneshot_service_unit("AlphaPilot 盘后研究数据同步", target_paths["run_research_sync"], timeout_start_sec=900, resource_limits=True),
-        paths["research_timer"]: _calendar_timer_unit("AlphaPilot 盘后宽股票池研究同步", os.path.basename(paths["research_service"]), "Mon..Fri *-*-* 19:10:00"),
+        paths["research_timer"]: _calendar_timer_unit("AlphaPilot 盘后宽股票池研究同步", os.path.basename(paths["research_service"]), "Mon..Fri *-*-* 18,19,20:00,20,40:00"),
         paths["pooled_ml_service"]: _oneshot_service_unit("AlphaPilot 盘后 pooled ML 影子训练", target_paths["run_pooled_ml"], timeout_start_sec=900, resource_limits=True),
         paths["pooled_ml_timer"]: _calendar_timer_unit("AlphaPilot 盘后 pooled ML 影子训练", os.path.basename(paths["pooled_ml_service"]), "Mon..Fri *-*-* 21:10:00"),
         paths["maintenance_service"]: _oneshot_service_unit("AlphaPilot 数据库维护(备份/巡检/清理)", target_paths["run_db_maintenance"], timeout_start_sec=900, resource_limits=True),

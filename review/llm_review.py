@@ -82,6 +82,8 @@ def build_llm_review_prompt(date: str, review_data: dict, adaptive_data: dict = 
         prompt_parts.append(
             f"- 基准(沪深300)累计: {benchmark_pnl_pct:+.2%} | 相对基准超额: {excess:+.2%}"
         )
+    else:
+        prompt_parts.append("- 基准收益不可用：缺少同日行情或累计链不完整，不能声称持平、跑赢或跑输。")
     prompt_parts.append(f"- 可用现金: {review_data.get('cash', 0):,.0f} 元")
     prompt_parts.append(f"- 持仓市值: {review_data.get('market_value', 0):,.0f} 元")
     prompt_parts.append(f"- 持仓数量: {review_data.get('position_count', 0)} 只")
@@ -180,7 +182,7 @@ def build_llm_review_prompt(date: str, review_data: dict, adaptive_data: dict = 
             f"索提诺: {performance.get('sortino_ratio', 0):.2f} | "
             f"卡尔玛: {performance.get('calmar_ratio', 0):.2f}"
         )
-        if performance.get("tracking_error", 0) > 0:
+        if (performance.get("tracking_error") or 0) > 0:
             prompt_parts.append(
                 f"- 信息比率: {performance.get('information_ratio', 0):.2f} | "
                 f"年化跟踪误差: {performance.get('tracking_error', 0):.2%} | "

@@ -463,13 +463,18 @@ def _try_hithink(code: str, start_date: str, end_date: str,
         expected_adjust = {"qfq": "forward", "hfq": "backward", "": "none"}.get(adjust)
         if expected_adjust is None:
             return None
-        df = client.get_daily(code, start_date, end_date, adjust=expected_adjust)
-        if df is not None and not df.empty and df.attrs.get("adjust") == expected_adjust:
+        index = (str(code).strip().upper() in {"000300", "000300.SH", "SH.000300", "000001.SH", "SH.000001"}
+                 or _to_system_code(code).startswith("399"))
+        kwargs = {"asset_type": "index"} if index else {}
+        df = client.get_daily(code, start_date, end_date, adjust=expected_adjust, **kwargs)
+        if df is not None and not df.empty and df.attrs.get("adjust") == ("none" if index else expected_adjust):
             df.attrs["adjust"] = adjust
             df.attrs["source"] = "hithink"
             return df
     except Exception as exc:
-        logger.warning("同花顺日线不可用，回退已有源: %s", type(exc).__name__)
+        from data.hithink import HiThinkError
+        reason = str(exc) if isinstance(exc, HiThinkError) else type(exc).__name__
+        logger.warning("同花顺日线不可用，回退已有源: code=%s reason=%s", code, reason)
     return None
 
 
@@ -537,7 +542,7 @@ def _try_longbridge(code: str, start_date: str, end_date: str,
 
 def get_daily(code: str, start_date: str = None, end_date: str = None,
               adjust: str = "qfq", simple: bool = True,
-              require_full_range: bool = False) -> pd.DataFrame:
+              require_full_range: bool = False, refresh: bool = False) -> pd.DataFrame:
     """
     获取日线数据（缓存 + 可选同花顺 + 长桥 + Baostock）
 
@@ -554,6 +559,7 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
         adjust: "qfq"前复权 / "hfq"后复权 / ""不复权
         simple: True=简单字段(快), False=完整字段(含PE/PB等)
         require_full_range: True时缓存必须覆盖起始日期，供研究数据补齐使用
+        refresh: True时主动拉取供应商数据，不因三日缓存宽限期跳过盘后补齐
 
     Returns:
         DataFrame: date, open, high, low, close, volume, amount, turn, pctChg
@@ -599,7 +605,7 @@ def get_daily(code: str, start_date: str = None, end_date: str = None,
         # 1. 先查SQLite缓存
         df = _try_cache(code, start_date, end_date, adjust,
                         require_full_range=require_full_range)
-        if df is not None:
+        if df is not None and not refresh:
             return df
         # 外部源失败时保留旧缓存作为明确降级结果，但不把它当作新鲜数据。
         stale_cache = _try_cache(code, start_date, end_date, adjust,

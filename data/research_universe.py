@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import math
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List
 
@@ -16,7 +17,7 @@ logger = logging.getLogger("data.research_universe")
 
 UNIVERSE_FILE = os.path.join(DATA_DIR, "research_universe.json")
 RESEARCH_UNIVERSE_SIZE = int(os.environ.get("RESEARCH_UNIVERSE_SIZE", "800"))
-RESEARCH_SYNC_BATCH = int(os.environ.get("RESEARCH_SYNC_BATCH", "8"))
+RESEARCH_SYNC_BATCH = int(os.environ.get("RESEARCH_SYNC_BATCH", "800"))
 RESEARCH_SYNC_WORKERS = int(os.environ.get("RESEARCH_SYNC_WORKERS", "1"))
 RESEARCH_HISTORY_DAYS = int(os.environ.get("RESEARCH_HISTORY_DAYS", "730"))
 RESEARCH_ITEM_TIMEOUT = int(os.environ.get("RESEARCH_ITEM_TIMEOUT", "95"))
@@ -107,9 +108,13 @@ def _hithink_active_stocks(limit: int) -> Dict:
         return {}
 
 
-def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
+def refresh_research_universe(limit: int = None, path: str = None, *, reuse_today: bool = False) -> Dict:
     """以成交额靠前的普通A股构建研究池，保留已有样本以保障连续性。"""
     limit = max(20, int(limit or RESEARCH_UNIVERSE_SIZE))
+    current = _load_universe(path)
+    if (reuse_today and str(current.get("generated_at") or "").startswith(datetime.now().strftime("%Y-%m-%d"))
+            and len(current.get("codes") or []) == limit):
+        return current
     from strategy.stock_picker import _get_active_stocks
 
     active = _hithink_active_stocks(limit)
@@ -117,7 +122,6 @@ def refresh_research_universe(limit: int = None, path: str = None) -> Dict:
     if not active:
         active = _get_active_stocks(min_amount=3000, limit=limit)
         active_source = "active_liquidity"
-    current = _load_universe(path)
     ordered: List[Dict] = []
     seen = set()
     for code, name in active.items():
@@ -222,7 +226,7 @@ def _sync_one(item: Dict, start_date: str, end_date: str) -> Dict:
         from data.history import _assess_daily_coverage, get_daily
         df = get_daily(
             code, start_date=start_date, end_date=end_date,
-            require_full_range=True,
+            require_full_range=True, refresh=True,
         )
         if df is None or df.empty:
             return {"code": code, "status": "empty", "rows": 0}
@@ -274,6 +278,10 @@ def _sync_one_bounded(item: Dict, start_date: str, end_date: str) -> Dict:
     import multiprocessing as mp
     import queue
 
+    # fork继承父进程缓存，避免每只股票重新等待三个年份的日历网络超时。
+    from data.history import _load_year_trading_days
+    for year in range(int(start_date[:4]), int(end_date[:4]) + 1):
+        _load_year_trading_days(year)
     ctx = mp.get_context("fork")
     result_queue = ctx.Queue(maxsize=1)
     process = ctx.Process(target=_sync_worker, args=(item, start_date, end_date, result_queue))
@@ -362,12 +370,14 @@ def _release_lock(path: str = None):
 
 
 def sync_research_universe(batch_size: int = None, workers: int = None,
-                           history_days: int = None, path: str = None) -> Dict:
-    """同步研究池的一小批股票，采用轮转游标，适合盘后定时长期运行。"""
+                           history_days: int = None, path: str = None, *,
+                           job_started_at: float = None) -> Dict:
+    """默认按新鲜度续跑全池；显式批次按游标轮转，受墙钟预算限制。"""
     lock_path = f"{path}.lock" if path else RESEARCH_LOCK_FILE
     if not _acquire_lock(lock_path):
         return {"status": "locked", "synced": 0}
     try:
+        job_started = time.monotonic() if job_started_at is None else job_started_at
         payload = _load_universe(path)
         if not payload.get("codes"):
             payload = refresh_research_universe(path=path)
@@ -375,8 +385,8 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
         if not codes:
             return {"status": "no_universe", "synced": 0}
 
-        max_batch = max(1, (RESEARCH_JOB_TIMEOUT - 30) // max(1, RESEARCH_ITEM_TIMEOUT))
-        batch_size = max(1, min(int(batch_size or RESEARCH_SYNC_BATCH), len(codes), max_batch))
+        auto_freshness = batch_size is None
+        batch_size = max(1, min(int(batch_size or RESEARCH_SYNC_BATCH), len(codes)))
         # 研究同步优先确定性和可恢复性；单标的已在子进程隔离，workers 参数
         # 预留给后续可靠数据源扩容，当前强制顺序执行避免供应商并发封锁。
         workers = 1
@@ -414,8 +424,24 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
                     selected_retry_codes.add(code)
         end_date = datetime.now().strftime("%Y-%m-%d")
         start_date = (datetime.now() - timedelta(days=history_days)).strftime("%Y-%m-%d")
+        latest = {}
+        if auto_freshness:
+            # 先补缺失/最陈旧标的。默认批次可覆盖全池，实际运行由墙钟预算
+            # 限制；后续定时任务跳过当天已补齐股票，不能每天只转8只。
+            from data.database import Database
+            with Database(readonly=True) as db:
+                rows = db.conn.execute("SELECT code,MAX(date) AS latest FROM k_daily GROUP BY code").fetchall()
+                latest = {str(row["code"]): str(row["latest"] or "") for row in rows}
+            eligible = [item for item in codes if latest.get(str(item["code"]), "") < end_date
+                        or str(item["code"]) in retry_set]
+            # 失败标的留待本轮其余旧数据之后，避免反复超时挤占所有续跑预算。
+            eligible.sort(key=lambda item: (str(item["code"]) in retry_set,
+                                           latest.get(str(item["code"]), ""), str(item["code"])))
+            batch = eligible[:batch_size]
         results = []
         for item in batch:
+            if time.monotonic() - job_started >= RESEARCH_JOB_TIMEOUT - RESEARCH_ITEM_TIMEOUT - 30:
+                break
             _heartbeat_lock(lock_path)
             results.append(_sync_one_bounded(item, start_date, end_date))
             _heartbeat_lock(lock_path)
@@ -429,11 +455,17 @@ def sync_research_universe(batch_size: int = None, workers: int = None,
         # 不能因单次预算不足而丢弃尚未轮到的失败标的；已尝试且成功的标的
         # 从队列移除，失败的标的回到队尾，防止永久优先级饥饿。
         failed_codes = [str(row["code"]) for row in results if row.get("status") != "ok"]
+        if auto_freshness:
+            selected_retry_codes = {str(row["code"]) for row in results}
         pending_retry_codes = [code for code in retry_codes if code not in selected_retry_codes]
         payload["retry_codes"] = list(dict.fromkeys(pending_retry_codes + failed_codes))
         summary = {
             "at": datetime.now().isoformat(),
-            "requested": batch_size,
+            "requested": len(batch),
+            "attempted": len(results),
+            "budget_exhausted": len(results) < len(batch),
+            "fresh_before": sum(latest.get(str(item["code"]), "") >= end_date for item in codes) if auto_freshness else None,
+            "universe_size": len(codes),
             "workers": workers,
             "ok": sum(1 for row in results if row.get("status") == "ok"),
             "stale": sum(1 for row in results if row.get("status") == "stale"),

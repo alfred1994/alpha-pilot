@@ -3,7 +3,15 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 class Element {
-    constructor() { this.children = []; this.textContent = ''; this.value = ''; this.listeners = {}; }
+    constructor() {
+        this.children = []; this.textContent = ''; this.value = ''; this.listeners = {};
+        const classes = new Set();
+        this.classList = {
+            add(...values) { values.forEach(value => classes.add(value)); },
+            remove(...values) { values.forEach(value => classes.delete(value)); },
+            contains(value) { return classes.has(value); },
+        };
+    }
     addEventListener(name, callback) { this.listeners[name] = callback; }
     replaceChildren(...children) { this.children = children; }
     append(child) { this.children.push(child); }
@@ -45,6 +53,7 @@ assert.equal(document.getElementById('returns-rows').children.length, 3);
 assert.deepEqual(charts[0].options.series[1].data, [0, null, 0]);
 assert.equal(charts[0].options.series[1].connectNulls, false);
 assert.equal(charts[1].options.series[0].data[0].value, null);
+assert.equal(document.getElementById('returns-chart').classList.contains('is-empty'), false);
 // In-flight older success cannot overwrite the newer empty response.
 let release;
 globalThis.fetch = () => new Promise(resolve => { release = resolve; });
@@ -62,4 +71,5 @@ await tab.load();
 assert.match(document.getElementById('returns-status').textContent, /读取失败/);
 assert.equal(document.getElementById('returns-rows').children.length, 0);
 assert.ok(charts.every(chart => chart.cleared));
+assert.equal(document.getElementById('returns-chart').classList.contains('is-empty'), true);
 console.log('PASS returns frontend: zero/missing, charts, table, stale requests, empty and failure states');

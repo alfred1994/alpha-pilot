@@ -16,6 +16,7 @@ import os
 import json
 import argparse
 import logging
+import time
 from datetime import datetime
 
 # 确保项目根目录在 path 中
@@ -223,17 +224,22 @@ def cmd_research_sync(args):
     """盘后宽股票池研究数据增量同步，不参与交易执行。"""
     from data.research_universe import refresh_research_universe, sync_research_universe
 
-    universe = refresh_research_universe(limit=args.research_universe_size)
+    job_started_at = time.monotonic()
+    universe = refresh_research_universe(limit=args.research_universe_size, reuse_today=True)
     result = sync_research_universe(
         batch_size=args.research_batch_size,
         workers=args.research_workers,
         history_days=args.research_history_days,
+        job_started_at=job_started_at,
     )
     result["universe_size"] = len(universe.get("codes") or [])
     print(json.dumps(result, ensure_ascii=False, indent=2))
-    # 研究任务只在整批成功时返回零退出码；partial 也必须失败，避免
-    # timeout/stale/incomplete/empty 混入成功批次后被 systemd 标成成功。
-    return {"errors": ["research_sync"] if result.get("status") != "success" else []}
+    # 预算耗尽但所有已尝试标的成功属于正常续跑；真实的超时/旧数据/空数据
+    # 仍使任务失败。last_sync保留partial和attempted，不能冒充全池已完成。
+    progressing = (result.get("status") == "partial" and result.get("budget_exhausted")
+                   and result.get("attempted", 0) > 0
+                   and result.get("ok") == result.get("attempted"))
+    return {"errors": [] if result.get("status") == "success" or progressing else ["research_sync"]}
 
 
 def cmd_laya_text(args):
@@ -1019,7 +1025,7 @@ def main():
     parser.add_argument("--strategy", default="zt_reversal", help="策略名称（用于 strategy 模式）")
     parser.add_argument("--rounds", type=int, default=3, help="优化轮数（用于 optimize 模式）")
     parser.add_argument("--research-universe-size", type=int, default=None, help="研究股票池上限，默认800")
-    parser.add_argument("--research-batch-size", type=int, default=None, help="单次研究K线同步数量，默认8")
+    parser.add_argument("--research-batch-size", type=int, default=None, help="单次研究K线同步数量，默认全池按新鲜度补齐，受任务预算限制")
     parser.add_argument("--research-workers", type=int, default=None, help="研究K线同步并发数；当前为保护数据源固定串行")
     parser.add_argument("--research-history-days", type=int, default=None, help="研究K线补齐自然日范围，默认730")
     parser.add_argument("--pooled-min-symbols", type=int, default=5, help="pooled ML最少股票数")
