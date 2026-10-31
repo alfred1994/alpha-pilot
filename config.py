@@ -84,6 +84,16 @@ DECISION_MIN_BUY_TECHNICAL = float(os.environ.get("DECISION_MIN_BUY_TECHNICAL", 
 # 则放弃本次下单。双向生效——上行是追高（实测 09-22 漫步者按 10.02 打分、
 # 10.26 成交，白付 2.4%），下行意味着技术前提已经失效。0 表示关闭该保护。
 MAX_SIGNAL_PRICE_DRIFT = float(os.environ.get("MAX_SIGNAL_PRICE_DRIFT", "0.03"))
+# 单笔最低买入金额：避免最低佣金(5元)吃掉过小订单，但不得高于策略允许的最小仓位。
+# 旧实现写死 5000 元，而熊市指令 max_weight=0.05 在 10 万资金下恰为 5000 元，
+# 再乘任何低于 1 的系数都必然被拦截，导致熊市参数下永远无法开仓。
+# 实际下限 = min(MIN_BUY_AMOUNT, 总资产 × MIN_BUY_ASSET_RATIO)。
+MIN_BUY_AMOUNT = float(os.environ.get("MIN_BUY_AMOUNT", "3000"))
+MIN_BUY_ASSET_RATIO = float(os.environ.get("MIN_BUY_ASSET_RATIO", "0.015"))
+# 同一交易日同一股票的 LLM HOLD 结论复用窗口(秒)；输入未实质变化时不重复调用。
+# 只复用 HOLD，BUY/SELL 每次都重新判断。0 表示关闭复用。
+LLM_HOLD_REUSE_SECONDS = int(os.environ.get("LLM_HOLD_REUSE_SECONDS", "3600"))
+LLM_HOLD_REUSE_MAX_SCORE_DELTA = float(os.environ.get("LLM_HOLD_REUSE_MAX_SCORE_DELTA", "2"))
 
 # ══════════════════════════════════════════════════════════════════
 # 调度参数

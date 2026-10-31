@@ -21,6 +21,54 @@ MIN_TOP_K = 1
 MAX_TOP_K = 5
 MIN_WEIGHT = 0.03
 MAX_WEIGHT = 0.25
+# inconclusive 时允许的 min_score 最大下调步长，以及边缘候选证据门槛
+RELAX_MAX_STEP = 2.0
+RELAX_BAND = 5.0
+RELAX_MIN_SAMPLES = 20
+RELAX_LOOKBACK_DAYS = 30
+
+# 复盘写入的计划只能引用这些盘中真实可观测的字段与取值范围。
+OBSERVABLE_FIELDS = {
+    "technical": "技术面 0-100 分，置信度 0-1（9 个价量子指标均值，基于已收盘日线，盘中不变）",
+    "capital": "资金面 0-100 分（两融余额变化与融资买入比）；置信度只有 0（非两融或无数据）或 0.5 两种取值",
+    "sentiment": "舆情面 0-100 分，置信度 0-1（新闻/社媒 LLM 摘要）",
+    "emotion": "情绪面：全市场涨跌停比，所有股票当日同一数值，不区分个股",
+    "fundamental": "基本面：仅 PE 档位打分，置信度固定 0.4",
+    "ml": "机器学习 0-100 分，置信度为模型样本外 AUC",
+    "signal_price": "信号时点实时现价与昨收（已校验时效）；执行时偏离超过 MAX_SIGNAL_PRICE_DRIFT 自动放弃",
+    "unavailable": "盘口、分时成交明细、主力资金流向、逐笔数据均不提供",
+}
+
+
+def marginal_band_evidence(db, min_score: float, review_date: str,
+                           band: float = RELAX_BAND, lookback_days: int = RELAX_LOOKBACK_DAYS,
+                           min_samples: int = RELAX_MIN_SAMPLES) -> Dict:
+    """统计刚好低于 min_score 的边缘候选成熟 5 日扣费净收益，决定是否允许小步放宽。
+
+    按 (日期, 股票) 去重，取当日首次观察；只有样本足够、均值为正且胜率不低于一半时允许。
+    """
+    from datetime import timedelta as _td
+    start = (datetime.strptime(review_date, "%Y-%m-%d") - _td(days=lookback_days)).strftime("%Y-%m-%d")
+    try:
+        rows = db.conn.execute(
+            "SELECT observation_date, code, score, net_return_5d FROM candidate_outcomes "
+            "WHERE observation_date >= ? AND observation_date <= ? AND net_return_5d IS NOT NULL "
+            "AND score >= ? AND score < ? ORDER BY observed_at",
+            (start, review_date, float(min_score) - band, float(min_score)),
+        ).fetchall()
+    except Exception as exc:  # noqa: BLE001 - 旧库无表时视为无证据
+        return {"allowed": False, "n": 0, "reason": f"反事实不可用: {type(exc).__name__}"}
+    seen = {}
+    for row in rows:
+        seen.setdefault((row[0], row[1]), float(row[3]))
+    values = list(seen.values())
+    n = len(values)
+    if n < min_samples:
+        return {"allowed": False, "n": n, "reason": "边缘候选成熟样本不足"}
+    mean = sum(values) / n
+    win = sum(v > 0 for v in values) / n
+    return {"allowed": mean > 0 and win >= 0.5, "n": n, "mean_net_5d": mean, "win_rate": win,
+            "band": [float(min_score) - band, float(min_score)]}
 
 
 def _next_trading_date(date: str) -> str:
@@ -60,7 +108,8 @@ def _number(value, field: str, minimum: float, maximum: float, integer: bool = F
 
 
 def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: str,
-                                 regime: str, current_params: Dict = None) -> Dict:
+                                 regime: str, current_params: Dict = None,
+                                 relax_evidence: Dict = None) -> Dict:
     """将 LLM 输出规范成可执行且可审计的策略指令。"""
     if not isinstance(raw, dict):
         raise ValueError("策略指令必须是对象")
@@ -85,7 +134,10 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
     min_score = _number(params.get("min_score"), "params.min_score", MIN_SCORE, MAX_SCORE)
     max_weight = _number(params.get("max_weight"), "params.max_weight", MIN_WEIGHT, MAX_WEIGHT)
 
-    # 安全护栏：若显式评估结论为证据不足(inconclusive)，严禁下调入场门槛或提高单票仓位扩大风险
+    # 安全护栏：若显式评估结论为证据不足(inconclusive)，严禁下调入场门槛或提高单票仓位扩大风险。
+    # 唯一例外：反事实证据显示“刚好低于门槛”的边缘候选扣费后确有正收益时，
+    # 允许 min_score 最多下调 RELAX_MAX_STEP，仓位上限仍不得提高。没有成交时
+    # 结论只能是 inconclusive，若无此例外参数会被永久锁死。
     has_explicit_inconclusive = (
         isinstance(raw.get("evaluation"), dict)
         and str(raw["evaluation"].get("verdict") or "").strip().lower() == "inconclusive"
@@ -93,10 +145,16 @@ def normalize_strategy_directive(raw: Dict, review_date: str, effective_date: st
     if current_params and has_explicit_inconclusive:
         curr_min_score = float(current_params.get("min_score") or min_score)
         curr_max_weight = float(current_params.get("max_weight") or max_weight)
-        if min_score < curr_min_score or max_weight > curr_max_weight:
-            min_score = max(min_score, curr_min_score)
+        relax_ok = bool(relax_evidence and relax_evidence.get("allowed"))
+        floor_score = curr_min_score - RELAX_MAX_STEP if relax_ok else curr_min_score
+        if min_score < floor_score or max_weight > curr_max_weight:
+            min_score = max(min_score, floor_score)
             max_weight = min(max_weight, curr_max_weight)
             rationale += " [安全护栏: 前序策略证据不足(inconclusive)，禁止扩大风险，参数已受风控约束保持稳健]"
+        if relax_ok and min_score < curr_min_score:
+            rationale += (f" [边缘候选反事实证据: n={relax_evidence.get('n')} "
+                          f"5日净收益均值{relax_evidence.get('mean_net_5d', 0):+.2%} "
+                          f"胜率{relax_evidence.get('win_rate', 0):.0%}，允许 min_score 小步下调]")
 
     now = datetime.now().isoformat()
     style_plan = normalize_style_plan(raw.get("style_plan"))
@@ -206,6 +264,11 @@ def _build_prompt(review_date: str, effective_date: str, review_data: Dict,
     计划仅在生效日期且市场状态匹配时使用；盘中状态切换按当前市场重评。
     preferred_styles 从以下枚举选择1-4个，不重复：{json.dumps(STYLE_DESCRIPTIONS, ensure_ascii=False)}
     focus 和 invalidate_when 各不超过600字。缺少有效收益证据时可提出分析假设，但不能宣称已验证提升。
+11. style_plan 中的入场/观察条件只能引用下列盘中可观测字段，且数值必须落在其实际取值范围内；
+    不得要求不存在的数据（盘口、分时、主力资金流向），也不得设置字段从未达到过的阈值：
+    {json.dumps(OBSERVABLE_FIELDS, ensure_ascii=False)}
+12. 边缘候选（综合分低于 min_score 不超过 {RELAX_BAND:.0f} 分）近期成熟反事实证据：{json.dumps(review_data.get('relax_evidence') or {'allowed': False, 'reason': '未提供'}, ensure_ascii=False)}
+    仅当 allowed 为 true 时，inconclusive 下才允许 min_score 最多下调 {RELAX_MAX_STEP:.0f} 分；max_weight 仍不得提高。
 
 JSON 格式：
 {{
@@ -258,6 +321,15 @@ def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
                                          current_directive: Dict = None) -> Optional[Dict]:
     """生成并持久化下一交易日策略指令；失败时保留上一有效版本。"""
     effective_date = effective_date or _next_trading_date(review_date)
+    relax_evidence = review_data.get("relax_evidence")
+    if relax_evidence is None and current_params and current_params.get("min_score") is not None:
+        try:
+            from data.database import Database
+            with Database(db_path=db_path, readonly=True) as _db:
+                relax_evidence = marginal_band_evidence(_db, float(current_params["min_score"]), review_date)
+        except Exception as exc:  # noqa: BLE001 - 证据不可用时维持锁定
+            relax_evidence = {"allowed": False, "n": 0, "reason": f"反事实不可用: {type(exc).__name__}"}
+        review_data = {**review_data, "relax_evidence": relax_evidence}
     prompt = _build_prompt(
         review_date,
         effective_date,
@@ -275,7 +347,9 @@ def generate_and_save_strategy_directive(review_date: str, review_data: Dict,
         logger.warning("AI 未返回可解析的策略指令，沿用上一有效版本")
         return None
     try:
-        directive = normalize_strategy_directive(raw, review_date, effective_date, regime, current_params=current_params)
+        directive = normalize_strategy_directive(raw, review_date, effective_date, regime,
+                                                 current_params=current_params,
+                                                 relax_evidence=relax_evidence)
     except ValueError as exc:
         logger.warning("AI 策略指令无效，沿用上一有效版本: %s", exc)
         return None

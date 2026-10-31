@@ -40,6 +40,8 @@ from config import (
     FAST_SCAN_STOCK_PICK_TIMEOUT,
     DECISION_MIN_BUY_TECHNICAL,
     MAX_SIGNAL_PRICE_DRIFT,
+    MIN_BUY_AMOUNT,
+    MIN_BUY_ASSET_RATIO,
     DATA_DIR,
 )
 
@@ -181,6 +183,28 @@ def _estimate_total_assets() -> float:
         return float(PaperAccount().total_assets() or 0.0)
     except Exception:
         return 0.0
+
+
+def min_buy_amount(total_assets: float) -> float:
+    """单笔最低买入金额：不高于 MIN_BUY_AMOUNT，也不高于总资产 × MIN_BUY_ASSET_RATIO。
+
+    固定 5000 元曾与熊市指令 max_weight=0.05 在 10 万资金下恰好相等，任何缩放都会
+    使订单必然被拦截；按资产比例封顶后，小资金账户仍保留过滤极小订单的作用。
+    """
+    try:
+        assets = float(total_assets or 0)
+    except (TypeError, ValueError):
+        assets = 0.0
+    floor = max(0.0, float(MIN_BUY_AMOUNT))
+    if assets > 0:
+        floor = min(floor, assets * max(0.0, float(MIN_BUY_ASSET_RATIO)))
+    return floor
+
+
+def target_buy_weight(max_weight: float, composite: float) -> float:
+    """按综合分比例分配目标仓位，且不超过 max_weight。"""
+    weight = float(max_weight) * (float(composite) / 100)
+    return min(weight, float(max_weight))
 
 
 def min_lot_affordable(
@@ -748,6 +772,19 @@ def fast_scan(
                     )
 
                 from strategy.llm_trader import make_decision
+                _quote = None
+                if _s.get("signal_price_available") and _s.get("latest_price"):
+                    _quote = {
+                        "price": _s.get("latest_price"),
+                        "prev_close": _s.get("signal_prev_close"),
+                        "at": _s.get("signal_price_at"),
+                        "daily_close": _s.get("daily_close"),
+                        "max_drift": MAX_SIGNAL_PRICE_DRIFT,
+                        "target_amount": (
+                            _total_assets * target_buy_weight(max_weight, _s.get("composite") or 0)
+                            if _total_assets else None
+                        ),
+                    }
                 _research_decision = make_decision(
                     code=_s["code"],
                     name=_s["name"],
@@ -762,6 +799,7 @@ def fast_scan(
                     llm_retries=0,
                     llm_timeout=FAST_SCAN_LLM_DECISION_TIMEOUT,
                     scan_id=plan.scan_id,
+                    market_quote=_quote,
                 )
                 _research_decision.research_elapsed_seconds = time.monotonic() - _research_started
                 return _s, _research_decision
@@ -770,10 +808,35 @@ def fast_scan(
                 return _s, None
 
         _llm_executor = concurrent.futures.ThreadPoolExecutor(max_workers=5)
+        # 同日同股 HOLD 复用：输入未实质变化时不重复调用 LLM（BUY/SELL 不复用）。
+        from strategy import llm_hold_cache as _hold_cache
+        _directive_version = plan.strategy_version or ""
+        _llm_queue = []
+        _reused = 0
+        for _s in top_candidates:
+            _cached = None
+            if _s["code"] not in (_positions or {}):
+                _cached = _hold_cache.lookup(
+                    _s["code"], date=plan.date, directive_version=_directive_version,
+                    regime=regime, composite=_s.get("composite") or 0,
+                    price=_s.get("latest_price") if _s.get("signal_price_available") else None,
+                )
+            if _cached:
+                _reused += 1
+                _at = datetime.fromtimestamp(float(_cached["at"])).strftime("%H:%M")
+                _s["llm_action"] = "HOLD"
+                _s["llm_confidence"] = _cached.get("confidence", 0.0)
+                _s["llm_reason"] = f"复用{_at}结论: {_cached.get('reason', '')}"
+                _s["llm_status"] = "reused"
+                plan.hold_reasons[_s["code"]] = f"HOLD_LLM_REUSED({_at} {str(_cached.get('reason', ''))[:40]})"
+            else:
+                _llm_queue.append(_s)
+        if _reused:
+            logger.info(f"[快链路] 复用当日HOLD结论: {_reused}只，实际调用LLM: {len(_llm_queue)}只")
         try:
             _llm_futures = {
                 _llm_executor.submit(_parallel_llm_decision, _s): _s
-                for _s in top_candidates
+                for _s in _llm_queue
             }
             for _future in concurrent.futures.as_completed(
                 _llm_futures,
@@ -793,6 +856,14 @@ def fast_scan(
                             llm_count += 1
                         if _decision.action == "HOLD":
                             plan.hold_reasons[_s["code"]] = f"HOLD_LLM({ _decision.reason[:50]})"
+                            if _decision.confidence > 0 and _s["code"] not in (_positions or {}):
+                                _hold_cache.remember(
+                                    _s["code"], date=plan.date, directive_version=_directive_version,
+                                    regime=regime, composite=_s.get("composite") or 0,
+                                    price=_s.get("latest_price") if _s.get("signal_price_available") else None,
+                                    reason=_decision.reason, confidence=_decision.confidence,
+                                    decision_id=getattr(_decision, "decision_id", None),
+                                )
                         elif _decision.action == "SELL":
                             _s["llm_action"] = "SELL"
                     else:
@@ -813,7 +884,7 @@ def fast_scan(
             # 不在收集超时后等待未完成的模型线程，防止其侵占后续执行窗口。
             _llm_executor.shutdown(wait=False, cancel_futures=True)
 
-        logger.info(f"[快链路] LLM决策: {llm_count}/{len(top_candidates)} 成功")
+        logger.info(f"[快链路] LLM决策: {llm_count}/{len(_llm_queue)} 成功")
 
         # P2-12: 关闭共享记忆连接
         try:
@@ -836,8 +907,7 @@ def fast_scan(
 
     # 生成TradeOrder（尊重LLM决策）
     for i, s in enumerate(top_candidates):
-        weight = max_weight * (s["composite"] / 100)  # 按分数比例分配仓位
-        weight = min(weight, max_weight)
+        weight = target_buy_weight(max_weight, s["composite"])  # 按分数比例分配仓位
         llm_action = s.get("llm_action", "HOLD")  # LLM失败/未返回时默认HOLD，不盲目买入
         llm_reason = s.get("llm_reason", "")
         if llm_action not in ("BUY", "SELL"):
@@ -1351,11 +1421,18 @@ def _refresh_signal_prices(scores, realtime_func=None, now=None):
     by_code = {normalize_quote_code(q.get("code") if isinstance(q, dict) else getattr(q, "code", "")): q for q in quotes}
     for score in scores:
         score["daily_close"] = score.get("latest_price")
-        check = validate_quote(by_code.get(score["code"]), expected_code=score["code"], now=now)
+        quote = by_code.get(score["code"])
+        check = validate_quote(quote, expected_code=score["code"], now=now)
         score["signal_price_available"] = check.valid
         if check.valid:
+            prev_close = quote.get("close_prev") if isinstance(quote, dict) else getattr(quote, "close_prev", None)
+            try:
+                prev_close = float(prev_close) if prev_close is not None else None
+            except (TypeError, ValueError):
+                prev_close = None
             score.update(latest_price=check.price, price_source="signal_realtime",
-                         signal_price_at=check.timestamp.isoformat())
+                         signal_price_at=check.timestamp.isoformat(),
+                         signal_prev_close=prev_close if prev_close and prev_close > 0 else None)
 
 
 def _default_realtime_func():
@@ -1921,12 +1998,14 @@ def _execute_trade_plan_impl(
             available_cash = broker.get_cash()
             buy_amount = min(buy_amount, available_cash * 0.95)  # 留5%缓冲
 
-            if buy_amount < 5000:  # 最小买入金额
-                result.errors.append(f"{code} 可买金额不足({buy_amount:.0f})")
+            min_amount = min_buy_amount(total_assets)
+            if buy_amount < min_amount:  # 最小买入金额(按资产比例封顶)
+                result.errors.append(f"{code} 可买金额不足({buy_amount:.0f}<{min_amount:.0f})")
                 _audit_order(
                     result, order, "blocked", "可买金额不足",
                     price=current_price,
                     buy_amount=round(buy_amount, 2),
+                    min_buy_amount=round(min_amount, 2),
                     available_cash=round(available_cash, 2),
                 )
                 continue

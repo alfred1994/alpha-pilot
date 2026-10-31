@@ -303,6 +303,7 @@ def _build_decision_prompt(
     overnight_text: str = "",
     strategy_directive: dict = None,
     data_quality: dict = None,
+    market_quote: dict = None,
 ) -> str:
     """
     构建LLM决策prompt
@@ -317,6 +318,7 @@ def _build_decision_prompt(
         total_assets: 总资产
         cash: 可用现金
         htsc_diagnosis: 华泰个股诊断（可选）
+        market_quote: 信号时点实时行情与执行约束（可选）
 
     Returns:
         prompt字符串
@@ -443,6 +445,8 @@ def _build_decision_prompt(
         if degraded:
             quality_section = "⚠ 数据缺失/降级: " + ", ".join(str(x) for x in degraded) + "\n" + quality_section
 
+    quote_section = _format_market_quote(market_quote)
+
     prompt = f"""请分析以下股票，主动比较可执行机会，做出交易决策。
 
 【决策时点】
@@ -450,6 +454,9 @@ def _build_decision_prompt(
 
 【股票信息】
 代码: {code}  名称: {name}
+
+【信号时点实时行情与执行约束】
+{quote_section}
 
 【市场环境】
 {regime_label}
@@ -489,6 +496,9 @@ def _build_decision_prompt(
 10. HOLD 应说明空仓等待还是持仓继续持有，以及下一次重新评估的具体触发；不能以历史HOLD延续观望。
 11. T+0机会必须有执行链路支持；普通A股新买入当日不可卖。没有双边价格和费用证据不得称无风险套利。
 12. 当前风险参数由执行系统管理；不要把历史教训中的百分比自创为新的强制止损规则。
+13. 复盘计划与优化建议中的条件，若引用【多维信号】里不存在的字段，或要求的数值超出该字段实际取值范围
+    （例如置信度从未出现过的高值），视为不可执行的条件，不得据此返回 HOLD。
+14. 【信号时点实时行情与执行约束】已给出可成交现价时，不得以“缺少现价/可成交价差证据”作为 HOLD 理由。
 
 请返回JSON:
 {{"action": "BUY/SELL/HOLD", "confidence": 0.0-1.0, "reasoning": "120字以内，包含机会类型、关键支持/反对证据及触发或失效条件"}}
@@ -518,6 +528,42 @@ def _build_decision_prompt(
         pass
 
     return prompt
+
+
+def _format_market_quote(market_quote: dict = None) -> str:
+    """把扫描时冻结的实时价和执行约束写成可核对事实；缺失时明确说明。"""
+    if not market_quote or not market_quote.get("price"):
+        return "信号时点实时行情不可用；执行层也会因缺少有效行情拒绝买入。"
+    try:
+        price = float(market_quote["price"])
+    except (TypeError, ValueError):
+        return "信号时点实时行情不可用；执行层也会因缺少有效行情拒绝买入。"
+    lines = [f"现价: {price:.2f}"]
+    prev_close = market_quote.get("prev_close")
+    try:
+        if prev_close and float(prev_close) > 0:
+            lines[0] += f"  昨收: {float(prev_close):.2f}  涨跌幅: {(price / float(prev_close) - 1) * 100:+.2f}%"
+    except (TypeError, ValueError):
+        pass
+    if market_quote.get("at"):
+        lines.append(f"行情时间: {market_quote['at']}（已通过代码与时效校验）")
+    daily_close = market_quote.get("daily_close")
+    try:
+        if daily_close and float(daily_close) > 0:
+            lines.append(f"打分所用最近已收盘日线收盘价: {float(daily_close):.2f}")
+    except (TypeError, ValueError):
+        pass
+    drift = market_quote.get("max_drift")
+    target_amount = market_quote.get("target_amount")
+    lot_cost = price * 100
+    exec_line = "执行: 模拟盘按执行时实时价成交"
+    if drift:
+        exec_line += f"，偏离本现价超过 ±{float(drift) * 100:.0f}% 自动放弃"
+    lines.append(exec_line + "。")
+    if target_amount:
+        affordable = "可买" if float(target_amount) >= lot_cost else "不足一手"
+        lines.append(f"本次仓位预算约 {float(target_amount):,.0f} 元，一手成本约 {lot_cost:,.0f} 元（{affordable}）。")
+    return "\n".join(lines)
 
 
 def is_t1_locked(position: dict, today: str = None) -> bool:
@@ -553,6 +599,7 @@ def make_decision(
     llm_retries: int = 2,
     llm_timeout: int = DEFAULT_HTTP_TIMEOUT,
     scan_id: str = None,
+    market_quote: dict = None,
 ) -> TradeDecision:
     """
     LLM决策主函数
@@ -640,6 +687,7 @@ def make_decision(
         overnight_text=overnight_text,
         strategy_directive=strategy_directive,
         data_quality=data_quality,
+        market_quote=market_quote,
     )
 
     # 调用LLM

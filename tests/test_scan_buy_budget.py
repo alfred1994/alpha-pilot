@@ -23,6 +23,7 @@ class BuyBudgetTest(unittest.TestCase):
         scope = dict(plan=plan, top_candidates=candidates, top_k=3,
                      max_weight=0.1, regime='sideways', directive={"valid_for_date": valid_policy},
                      min_lot_affordable=lambda *a, **kw: True,
+                     target_buy_weight=pipeline.target_buy_weight,
                      TradeOrder=pipeline.TradeOrder, logger=pipeline.logger)
         exec(compile(ast.fix_missing_locations(ast.Module(body=[copy.deepcopy(loop)], type_ignores=[])),
                      '<fast_scan order block>', 'exec'), scope)
