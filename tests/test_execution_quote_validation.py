@@ -164,8 +164,11 @@ def test_historical_cb_replay_does_not_request_realtime_context():
 def main():
     print("自动执行行情校验测试")
     test_validation_contract()
-    test_automatic_execution_rejects_stale_quote()
-    test_automatic_sell_rejects_stale_quote()
+    # 实盘执行路径要求“交易日盘中”；固定为交易日，避免用例在周末/节假日运行时
+    # 因日历而非行情校验被提前拦截（市场状态已显式传入“盘中”）。
+    with patch("scheduler.pipeline.is_trading_day", return_value=True):
+        test_automatic_execution_rejects_stale_quote()
+        test_automatic_sell_rejects_stale_quote()
     test_historical_cb_replay_does_not_request_realtime_context()
     print("自动执行行情校验测试通过")
 
