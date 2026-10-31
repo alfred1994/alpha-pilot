@@ -81,11 +81,12 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 # 动态加载子路由
-from web.routers import status, database, research, returns
+from web.routers import status, database, research, returns, lottery
 app.include_router(status.router, prefix="/api", tags=["Status"])
 app.include_router(database.router, prefix="/api", tags=["Database"])
 app.include_router(research.router, prefix="/api", tags=["Research"])
 app.include_router(returns.router, prefix="/api", tags=["Returns"])
+app.include_router(lottery.router, prefix="/api", tags=["Lottery"])
 
 if workspace_enabled:
     from services.identity import IdentityError

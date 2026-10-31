@@ -272,6 +272,26 @@ def cmd_adjusted_daily_sync(args):
     return {"errors": []}
 
 
+def cmd_lottery(args):
+    """体彩 NBA 纸面验证：出单 / 采集结算 / 导入历史账本（不下单）。"""
+    from lottery import jobs
+    try:
+        if args.lottery_import:
+            result = jobs.import_ledger(args.lottery_import)
+            if result["pending_days"]:
+                result["capture"] = jobs.run_capture(days=result["pending_days"])
+        elif args.lottery_picks:
+            result = jobs.run_picks(day=args.lottery_date)
+        else:
+            days = [args.lottery_date] if args.lottery_date else None
+            result = jobs.run_capture(days=days)
+    except Exception as exc:  # noqa: BLE001 - 以非零退出码暴露给 systemd
+        print(f"体彩任务失败: {type(exc).__name__}: {exc}")
+        return {"errors": ["lottery"]}
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return {"errors": []}
+
+
 def cmd_style_shadow(args):
     """盘后风格池/因子分/大盘仓位上限影子记录（不下单）。"""
     from data.hithink import HiThinkClient
@@ -1012,6 +1032,10 @@ def main():
     group.add_argument("--style-shadow", action="store_true", help="盘后风格池/因子分/大盘仓位上限影子记录（不下单）")
     group.add_argument("--style-shadow-report", action="store_true", help="风格池影子评估与晋级门槛报告（只读）")
     parser.add_argument("--json", action="store_true", help="与 --style-shadow-report 合用：同时输出JSON")
+    group.add_argument("--lottery-picks", action="store_true", help="体彩NBA：抓盘口并在截止前记录纸面注单（不下单）")
+    group.add_argument("--lottery-capture", action="store_true", help="体彩NBA：采集收盘国际线与比分并结算纸面注单")
+    group.add_argument("--lottery-import", metavar="LEDGER_CSV", default=None, help="体彩NBA：导入 nba-prediction-lab 的 ledger.csv")
+    parser.add_argument("--lottery-date", default=None, help="体彩任务的竞彩销售日 YYYY-MM-DD，默认今天/最近两天")
     group.add_argument("--db-vacuum", action="store_true", help="DB维护时执行VACUUM回收空间（建议每周一次）")
     group.add_argument("--shadow-report", action="store_true", help="查看影子策略排行榜与晋级候选(JSON)")
     group.add_argument("--shadow-approve", metavar="VARIANT_ID", default=None, help="批准影子晋级候选（人工闭环，只记审批不改正式参数）")
@@ -1234,6 +1258,8 @@ def main():
         result = cmd_style_shadow(args)
     elif args.style_shadow_report:
         result = cmd_style_shadow_report(args)
+    elif args.lottery_picks or args.lottery_capture or args.lottery_import:
+        result = cmd_lottery(args)
     elif args.realtime:
         cmd_realtime()
         return

@@ -17,6 +17,7 @@
     <link rel="stylesheet" href="css/styles.css?v=2026100901">
     <link rel="stylesheet" href="css/research.css?v=2026100901">
     <link rel="stylesheet" href="css/console.css?v=2026100901">
+    <link rel="stylesheet" href="css/lottery.css?v=2026110101">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -31,13 +32,18 @@
                 </span>
             </a>
             <nav class="main-nav" aria-label="主导航">
-                <span class="nav-label">工作空间</span>
-                <button class="nav-btn active" data-tab="dashboard"><i data-lucide="layout-dashboard"></i><span>账户总览</span></button>
-                <button class="nav-btn" data-tab="returns"><i data-lucide="trending-up"></i><span>收益表现</span></button>
-                <button class="nav-btn" data-tab="research"><i data-lucide="scan-search"></i><span>候选验证</span></button>
-                <button class="nav-btn" data-tab="decisions"><i data-lucide="route"></i><span>决策流水</span></button>
-                <button class="nav-btn" data-tab="evolution"><i data-lucide="brain"></i><span>策略与复盘</span></button>
-                <button class="nav-btn" data-tab="health"><i data-lucide="activity"></i><span>运行健康</span></button>
+                <span class="nav-label">股票 · A 股模拟盘</span>
+                <button class="nav-btn active" data-tab="dashboard" data-domain="stock"><i data-lucide="layout-dashboard"></i><span>账户总览</span></button>
+                <button class="nav-btn" data-tab="returns" data-domain="stock"><i data-lucide="trending-up"></i><span>收益表现</span></button>
+                <button class="nav-btn" data-tab="research" data-domain="stock"><i data-lucide="scan-search"></i><span>候选验证</span></button>
+                <button class="nav-btn" data-tab="decisions" data-domain="stock"><i data-lucide="route"></i><span>决策流水</span></button>
+                <button class="nav-btn" data-tab="evolution" data-domain="stock"><i data-lucide="brain"></i><span>策略与复盘</span></button>
+                <button class="nav-btn" data-tab="health" data-domain="stock"><i data-lucide="activity"></i><span>运行健康</span></button>
+                <span class="nav-label nav-label-group">体彩 · NBA 纸面验证</span>
+                <button class="nav-btn" data-tab="lottery" data-domain="lottery"><i data-lucide="trophy"></i><span>验证总览</span></button>
+                <button class="nav-btn" data-tab="lottery-games" data-domain="lottery"><i data-lucide="scale"></i><span>场次盘口</span></button>
+                <button class="nav-btn" data-tab="lottery-ledger" data-domain="lottery"><i data-lucide="clipboard-list"></i><span>验证账本</span></button>
+                <button class="nav-btn" data-tab="lottery-method" data-domain="lottery"><i data-lucide="book-open"></i><span>方法与数据</span></button>
             </nav>
             <div class="topbar-status">
                 <span class="state-dot" id="status-pulse"></span>
@@ -51,7 +57,7 @@
 
         <main class="page-wrap" id="main-content">
             <div class="workspace-bar">
-                <div class="workspace-location"><span class="workspace-dot"></span><span>A 股模拟盘</span><span class="workspace-divider">/</span><strong id="workspace-section">账户总览</strong></div>
+                <div class="workspace-location"><span class="workspace-dot"></span><span id="workspace-domain">A 股模拟盘</span><span class="workspace-divider">/</span><strong id="workspace-section">账户总览</strong></div>
                 <div class="workspace-tools"><a class="text-button" href="/workspace/">登录工作台<i data-lucide="arrow-up-right" aria-hidden="true"></i></a><span id="workspace-sync">正在同步</span><button class="icon-button" id="refresh-dashboard" aria-label="刷新看板" title="刷新看板"><i data-lucide="refresh-cw"></i></button><span class="read-only-badge"><i data-lucide="eye"></i>只读</span></div>
             </div>
             <p class="data-notice" id="data-notice" role="status" hidden></p>
@@ -252,6 +258,54 @@
                     <article class="card"><div class="section-heading compact"><div><span class="eyebrow">最近动作</span><h2>自动循环记录</h2></div></div><div class="timeline" id="health-event-list"><div class="empty-state">暂无动作记录</div></div></article>
                 </div>
             </section>
+
+            <section class="tab-content" id="tab-lottery">
+                <div class="page-heading"><div><span class="eyebrow">体彩 · NBA · 纸面验证</span><h2>验证总览</h2></div><p>只验证一件事：竞彩让分/总分偏离国际盘口时，按竞彩价格买入长期能否跑赢 15% 抽水。所有记录均为纸面，不构成投注建议。</p></div>
+                <p class="lottery-disclaimer" id="lottery-disclaimer" role="note">纸面验证记录，不构成投注建议；不代购、不荐彩。理性购彩，未满 18 周岁禁止购彩。</p>
+                <p class="research-note" id="lottery-status" role="status">正在读取纸面账本</p>
+                <section class="metric-grid" aria-label="价格偏离信号摘要">
+                    <article class="metric-card"><span>已结算纸面注单</span><strong id="lottery-settled">-</strong><small id="lottery-pending">-</small></article>
+                    <article class="metric-card"><span>命中率（不含走盘）</span><strong id="lottery-hit">-</strong><small id="lottery-hit-ci">-</small></article>
+                    <article class="metric-card"><span>累计盈亏 / 收益率</span><strong id="lottery-pnl">-</strong><small id="lottery-roi">-</small></article>
+                    <article class="metric-card"><span>平均收盘价差</span><strong id="lottery-clv">-</strong><small id="lottery-clv-note">相对开赛前国际线，正数=买得更便宜</small></article>
+                </section>
+                <div class="two-column">
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">预注册 · 不随结果修改</span><h2>停机规则进度</h2></div></div><div class="lottery-stop-list" id="lottery-stop-list"><div class="empty-state">等待账本</div></div></article>
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">当前门槛</span><h2>入选条件</h2></div></div><div class="fact-list lottery-facts" id="lottery-thresholds"><div class="empty-state">等待参数</div></div></article>
+                </div>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">单位：注（1 注 = 1% 本金）</span><h2>累计纸面盈亏</h2></div></div><p class="chart-status" id="lottery-curve-status" role="status">等待数据</p><div class="chart-container" id="lottery-curve"></div></article>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">分策略 · 分玩法</span><h2>对照表</h2></div></div><div class="table-wrap"><table><caption>各策略已公开纸面注单统计</caption><thead><tr><th scope="col">策略</th><th scope="col">玩法</th><th scope="col">注数</th><th scope="col">赢-输-走</th><th scope="col">命中率</th><th scope="col">保本命中率</th><th scope="col">盈亏</th><th scope="col">收益率</th><th scope="col">平均收盘价差</th></tr></thead><tbody id="lottery-strategy-rows"></tbody></table></div></article>
+            </section>
+
+            <section class="tab-content" id="tab-lottery-games">
+                <div class="page-heading"><div><span class="eyebrow">两家公开盘口对照</span><h2>场次盘口</h2></div><p>开赛前只展示竞彩与国际盘口原始数值；偏离、期望值与纸面注单在开赛后公开。</p></div>
+                <div class="filter-bar"><label>竞彩销售日 <input type="date" id="lottery-games-date"></label><button id="lottery-games-load">查看</button><span id="lottery-games-status" role="status">-</span></div>
+                <div class="table-wrap"><table class="lottery-table"><caption>竞彩 NBA 场次与国际盘口</caption><thead><tr><th scope="col">场次</th><th scope="col">对阵（客 @ 主）</th><th scope="col">开赛（北京）</th><th scope="col">竞彩主队让分</th><th scope="col">国际主队让分</th><th scope="col">竞彩总分</th><th scope="col">国际总分</th><th scope="col">单关</th><th scope="col">比分</th><th scope="col">开赛后分析</th></tr></thead><tbody id="lottery-games-rows"></tbody></table></div>
+            </section>
+
+            <section class="tab-content" id="tab-lottery-ledger">
+                <div class="page-heading"><div><span class="eyebrow">只追加，不改写</span><h2>验证账本</h2></div><p>每条纸面注单在销售截止前记录一次，赛后只补结果与收盘价差。开赛前的注单不公开。</p></div>
+                <div class="filter-bar">
+                    <label>策略 <select id="lottery-ledger-strategy"><option value="">全部</option><option value="sharp">价格偏离（主信号）</option><option value="model_legacy">模型对照组（已停用）</option></select></label>
+                    <label>玩法 <select id="lottery-ledger-market"><option value="">全部</option><option value="让分">让分</option><option value="大小分">大小分</option></select></label>
+                    <button id="lottery-ledger-prev" disabled>上一页</button><span id="lottery-ledger-page" role="status">-</span><button id="lottery-ledger-next" disabled>下一页</button>
+                </div>
+                <div class="table-wrap"><table class="lottery-table"><caption>纸面注单明细</caption><thead><tr><th scope="col">销售日</th><th scope="col">场次</th><th scope="col">对阵</th><th scope="col">策略</th><th scope="col">选择</th><th scope="col">赔率</th><th scope="col">偏离</th><th scope="col">估算胜率</th><th scope="col">期望值</th><th scope="col">比分</th><th scope="col">结果</th><th scope="col">盈亏</th><th scope="col">收盘价差</th></tr></thead><tbody id="lottery-ledger-rows"></tbody></table></div>
+            </section>
+
+            <section class="tab-content" id="tab-lottery-method">
+                <div class="page-heading"><div><span class="eyebrow">为什么这样做</span><h2>方法与数据</h2></div><p>先证伪，再建设：模型预测已被否决，只保留“买得更便宜”这一条有理论依据的信号。</p></div>
+                <div class="two-column">
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">已完成的回测</span><h2>结论</h2></div></div><div class="fact-list lottery-facts">
+                        <div><strong>模型预测没有优势</strong><p>16,396 场滚动样本外回测，模型对盘命中率 49.73%；竞彩 1.70 赔率保本需 58.82%，14 个赛季没有一个超过 53%。</p></div>
+                        <div><strong>竞彩抽水实测</strong><p>让分 15.05%、大小分 15.04%、胜分差 33.07%（84 场样本）。换玩法不能降低抽水。</p></div>
+                        <div><strong>唯一保留的信号</strong><p>竞彩线比国际盘口更有利时按竞彩价格买入。每 1 分偏离值多少胜率，用 19,385 场历史收盘线实测换算，期望值 ≥ +2% 才记录。</p></div>
+                        <div><strong>串关不改变单场保本线</strong><p>串关赔率是逐场相乘，每场保本命中率仍是 1/赔率；但方差显著放大，账本按单场口径统计。</p></div>
+                    </div></article>
+                    <article class="card"><div class="section-heading compact"><div><span class="eyebrow">数据源与任务</span><h2>数据健康</h2></div></div><div class="fact-list lottery-facts" id="lottery-health-list"><div class="empty-state">正在读取</div></div></article>
+                </div>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">边界</span><h2>不做什么</h2></div></div><p class="research-note">不下单、不代购、不对外推荐、不对接境外平台；开赛前不公开任何选边。国际盘口来自 ESPN 内嵌快照，不是交易所收盘价；样本少于 150 注时任何命中率都可能是运气。</p></article>
+            </section>
         </main>
 
         <footer class="footer"><span id="footer-update-time">快照抓取时间 - · 底层数据时间未知</span><span>AlphaPilot · 模拟盘研究系统</span></footer>
@@ -268,6 +322,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026100901" type="module"></script>
+    <script src="js/app.js?v=2026110101" type="module"></script>
 </body>
 </html>

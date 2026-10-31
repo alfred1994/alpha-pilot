@@ -1,0 +1,22 @@
+.nav-label-group { margin-top: 18px; }
+.lottery-disclaimer { margin: 0 0 14px; padding: 10px 14px; border: 1px solid #dfc58b33; border-radius: 8px; background: #dfc58b0d; color: var(--amber); font-size: 11px; line-height: 1.8; }
+.lottery-stop-list { display: grid; gap: 12px; margin-top: 16px; }
+.lottery-stop { padding: 12px 14px; border: 1px solid var(--line); border-radius: 8px; background: #ffffff03; }
+.lottery-stop header { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; }
+.lottery-stop p { margin: 6px 0 0; color: var(--muted); font-size: 10px; line-height: 1.8; }
+.lottery-progress { height: 4px; margin-top: 9px; border-radius: 4px; background: var(--line); overflow: hidden; }
+.lottery-progress span { display: block; height: 100%; background: var(--accent); }
+.lottery-tag { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 10px; background: #ffffff08; color: var(--muted); }
+.lottery-tag.pass, .lottery-tag.win { background: #c0dfa115; color: var(--accent); }
+.lottery-tag.stop, .lottery-tag.loss { background: #f2908315; color: var(--up); }
+.lottery-tag.pending { background: #dfc58b12; color: var(--amber); }
+.lottery-table td { white-space: nowrap; }
+.lottery-table td.analysis { white-space: normal; min-width: 220px; }
+#lottery-curve { height: 260px; }
+#lottery-curve.is-empty { display: none; }
+@media (max-width: 760px) { .main-nav { overflow-x: auto; flex-wrap: nowrap; max-width: 62vw; } .nav-label-group { display: none; } }
+.lottery-facts { gap: 0; margin-top: 14px; }
+.lottery-facts > div { padding: 11px 0; border-top: 1px solid var(--line); }
+.lottery-facts > div:first-child { border-top: 0; }
+.lottery-facts strong { display: block; font-size: 11px; font-weight: 500; color: var(--ink); }
+.lottery-facts p { margin: 5px 0 0; font-size: 11px; line-height: 1.8; color: var(--muted); }

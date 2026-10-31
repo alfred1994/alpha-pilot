@@ -12,6 +12,7 @@ Linux/Hermes无人值守任务脚本生成器
   - run_db_maintenance.sh: 每日数据库维护（备份/巡检/清理）
   - run_laya_text.sh: 盘后 Laya 财经文本情绪评分（须当天跑）
   - run_style_shadow.sh: 盘后等比复权日线同步 + 风格池/因子分影子记录
+  - run_lottery_picks.sh / run_lottery_capture.sh: 体彩 NBA 纸面出单 / 收盘线与比分采集结算
   - install_systemd_user.sh: 安装并启用用户级systemd服务/定时器
   - uninstall_systemd_user.sh: 停用并删除用户级systemd服务/定时器
 
@@ -44,6 +45,8 @@ SCRIPT_KEYS = [
     "run_db_maintenance",
     "run_laya_text",
     "run_style_shadow",
+    "run_lottery_picks",
+    "run_lottery_capture",
     "install",
     "uninstall",
 ]
@@ -67,6 +70,10 @@ SERVICE_KEYS = [
     "laya_text_timer",
     "style_shadow_service",
     "style_shadow_timer",
+    "lottery_picks_service",
+    "lottery_picks_timer",
+    "lottery_capture_service",
+    "lottery_capture_timer",
 ]
 LOG_NAMES = {
     "Auto": "auto.log",
@@ -79,6 +86,8 @@ LOG_NAMES = {
     "Maintenance": "db_maintenance.log",
     "LayaText": "laya_text.log",
     "StyleShadow": "style_shadow.log",
+    "LotteryPicks": "lottery_picks.log",
+    "LotteryCapture": "lottery_capture.log",
 }
 
 
@@ -385,6 +394,8 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "run_db_maintenance": join(output_dir, "run_db_maintenance.sh"),
         "run_laya_text": join(output_dir, "run_laya_text.sh"),
         "run_style_shadow": join(output_dir, "run_style_shadow.sh"),
+        "run_lottery_picks": join(output_dir, "run_lottery_picks.sh"),
+        "run_lottery_capture": join(output_dir, "run_lottery_capture.sh"),
         "install": join(output_dir, "install_systemd_user.sh"),
         "uninstall": join(output_dir, "uninstall_systemd_user.sh"),
         "units_dir": units_dir,
@@ -409,6 +420,10 @@ def _expected_paths(output_dir: str, service_prefix: str = DEFAULT_SERVICE_PREFI
         "laya_text_timer": join(units_dir, _unit_name(service_prefix, "laya-text", "timer")),
         "style_shadow_service": join(units_dir, _unit_name(service_prefix, "style-shadow")),
         "style_shadow_timer": join(units_dir, _unit_name(service_prefix, "style-shadow", "timer")),
+        "lottery_picks_service": join(units_dir, _unit_name(service_prefix, "lottery-picks")),
+        "lottery_picks_timer": join(units_dir, _unit_name(service_prefix, "lottery-picks", "timer")),
+        "lottery_capture_service": join(units_dir, _unit_name(service_prefix, "lottery-capture")),
+        "lottery_capture_timer": join(units_dir, _unit_name(service_prefix, "lottery-capture", "timer")),
     })
     return paths
 
@@ -435,6 +450,10 @@ def _install_script(config: LinuxTaskConfig, paths: Dict[str, str]) -> str:
         os.path.basename(paths["laya_text_timer"]),
         os.path.basename(paths["style_shadow_service"]),
         os.path.basename(paths["style_shadow_timer"]),
+        os.path.basename(paths["lottery_picks_service"]),
+        os.path.basename(paths["lottery_picks_timer"]),
+        os.path.basename(paths["lottery_capture_service"]),
+        os.path.basename(paths["lottery_capture_timer"]),
     ]
     unit_lines = "\n".join(
         f"install -m 0644 { _sh_quote(_join_target_path(paths['units_dir'], unit)) } \"$SYSTEMD_USER_DIR/{unit}\""
@@ -446,7 +465,7 @@ set -euo pipefail
 SYSTEMD_USER_DIR="${{XDG_CONFIG_HOME:-$HOME/.config}}/systemd/user"
 mkdir -p "$SYSTEMD_USER_DIR"
 
-chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])} {_sh_quote(paths['run_pooled_ml'])} {_sh_quote(paths['run_db_maintenance'])} {_sh_quote(paths['run_laya_text'])} {_sh_quote(paths['run_style_shadow'])}
+chmod +x {_sh_quote(paths['run_auto'])} {_sh_quote(paths['restart_auto'])} {_sh_quote(paths['run_doctor'])} {_sh_quote(paths['run_report'])} {_sh_quote(paths['run_status'])} {_sh_quote(paths['run_closure_repair'])} {_sh_quote(paths['run_research_sync'])} {_sh_quote(paths['run_pooled_ml'])} {_sh_quote(paths['run_db_maintenance'])} {_sh_quote(paths['run_laya_text'])} {_sh_quote(paths['run_style_shadow'])} {_sh_quote(paths['run_lottery_picks'])} {_sh_quote(paths['run_lottery_capture'])}
 {unit_lines}
 
 systemctl --user daemon-reload
@@ -460,6 +479,8 @@ systemctl --user enable --now {os.path.basename(paths['pooled_ml_timer'])}
 systemctl --user enable --now {os.path.basename(paths['maintenance_timer'])}
 systemctl --user enable --now {os.path.basename(paths['laya_text_timer'])}
 systemctl --user enable --now {os.path.basename(paths['style_shadow_timer'])}
+systemctl --user enable --now {os.path.basename(paths['lottery_picks_timer'])}
+systemctl --user enable --now {os.path.basename(paths['lottery_capture_timer'])}
 
 cat <<'EOF'
 AlphaPilot systemd --user tasks installed.
@@ -497,6 +518,10 @@ def _uninstall_script(service_prefix: str) -> str:
         _unit_name(service_prefix, "laya-text", "timer"),
         _unit_name(service_prefix, "style-shadow"),
         _unit_name(service_prefix, "style-shadow", "timer"),
+        _unit_name(service_prefix, "lottery-picks"),
+        _unit_name(service_prefix, "lottery-picks", "timer"),
+        _unit_name(service_prefix, "lottery-capture"),
+        _unit_name(service_prefix, "lottery-capture", "timer"),
     ]
     units_text = " ".join(units)
     return f"""#!/usr/bin/env bash
@@ -570,6 +595,8 @@ def generate_linux_task_scripts(
             project_dir, python_cmd, "--adjusted-daily-sync", "style_shadow.log", hermes_env_file,
             timeout_seconds=1500, then_args="--style-shadow", then_timeout_seconds=1500,
         ),
+        paths["run_lottery_picks"]: _runner_script(project_dir, python_cmd, "--lottery-picks", "lottery_picks.log", hermes_env_file, timeout_seconds=300),
+        paths["run_lottery_capture"]: _runner_script(project_dir, python_cmd, "--lottery-capture", "lottery_capture.log", hermes_env_file, timeout_seconds=300),
         paths["install"]: _install_script(config, target_paths),
         paths["uninstall"]: _uninstall_script(service_prefix),
     }
@@ -608,6 +635,19 @@ def generate_linux_task_scripts(
             "AlphaPilot 盘后风格池影子（18:30，20:30重试；重跑幂等）",
             os.path.basename(paths["style_shadow_service"]),
             "Mon..Fri *-*-* 18,20:30:00",
+        ),
+        paths["lottery_picks_service"]: _oneshot_service_unit(
+            "AlphaPilot 体彩NBA纸面出单（销售截止前，不下单）", target_paths["run_lottery_picks"], timeout_start_sec=360,
+        ),
+        paths["lottery_picks_timer"]: _calendar_timer_unit(
+            "AlphaPilot 体彩NBA纸面出单（每天21:40）", os.path.basename(paths["lottery_picks_service"]), "*-*-* 21:40:00",
+        ),
+        paths["lottery_capture_service"]: _oneshot_service_unit(
+            "AlphaPilot 体彩NBA收盘线与比分采集结算", target_paths["run_lottery_capture"], timeout_start_sec=360,
+        ),
+        paths["lottery_capture_timer"]: _calendar_timer_unit(
+            "AlphaPilot 体彩NBA收盘线与比分（23:30至次日14:30每30分钟）",
+            os.path.basename(paths["lottery_capture_service"]), "*-*-* 00..14,23:00,30:00",
         ),
     }
     for path, content in {**scripts, **units}.items():
@@ -677,6 +717,8 @@ def _query_systemd_units(service_prefix: str) -> Dict[str, Dict]:
         _unit_name(service_prefix, "pooled-ml", "timer"),
         _unit_name(service_prefix, "laya-text", "timer"),
         _unit_name(service_prefix, "style-shadow", "timer"),
+        _unit_name(service_prefix, "lottery-picks", "timer"),
+        _unit_name(service_prefix, "lottery-capture", "timer"),
     ]
     result = {}
     for unit in units:

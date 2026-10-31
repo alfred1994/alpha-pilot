@@ -12,6 +12,7 @@
 - **本地验证命令**：[测试](#测试)
 - **使用文档**：[本地演示](docs/demo.md) / [AI 驾驶员指南](docs/ai-driver-skill.md) / [部署到 Hermes](docs/hermes-github-actions-deploy.md) / [Vibe-Trading 研究层](docs/vibe-trading.md)
 - **多用户与多市场内测版**：[注册登录、模拟账户及商业化设计](docs/customer-workspace.md)，新增入口 `/workspace/`。
+- **体彩 NBA 纸面验证**：看板新增“体彩”板块，只验证竞彩线偏离国际盘口时的价格信号，开赛前不公开选边，不下单、不荐彩；见 [体彩 NBA 纸面验证](docs/lottery-nba.md)。
 
 面向个人自部署的一对一 A 股 AI 模拟盘交易员。
 

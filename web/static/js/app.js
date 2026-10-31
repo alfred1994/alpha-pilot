@@ -5,6 +5,7 @@ import { DashboardTab } from './modules/dashboard.js?v=2026100901';
 import { DecisionsTab } from './modules/decisions.js?v=2026100901';
 import { EvolutionTab } from './modules/evolution.js?v=2026100901';
 import { HealthTab } from './modules/health.js?v=2026080201';
+import { LotteryTabs } from './modules/lottery.js?v=2026110101';
 
 class App {
     constructor() {
@@ -16,6 +17,7 @@ class App {
         this.refreshSequence = 0;
         this.statusUnavailable = false;
         this.refreshController = null;
+        const lottery = new LotteryTabs(this);
         this.tabs = {
             dashboard: new DashboardTab(this),
             research: new ResearchTab(this),
@@ -23,7 +25,12 @@ class App {
             decisions: new DecisionsTab(this),
             evolution: new EvolutionTab(this),
             health: new HealthTab(this),
+            lottery: lottery.view('lottery'),
+            'lottery-games': lottery.view('lottery-games'),
+            'lottery-ledger': lottery.view('lottery-ledger'),
+            'lottery-method': lottery.view('lottery-method'),
         };
+        this.independentTabs = ['research', 'returns', 'lottery', 'lottery-games', 'lottery-ledger', 'lottery-method'];
         this.init().catch(error => { console.error('Dashboard initialization failed:', error); this.renderUnavailable(); });
     }
 
@@ -59,7 +66,9 @@ class App {
             if (button.dataset.tab === name) button.setAttribute('aria-current', 'page');
             else button.removeAttribute('aria-current');
         });
-        this.setText('workspace-section', document.querySelector(`.nav-btn[data-tab="${name}"]`)?.textContent.trim() || '账户总览');
+        const activeButton = document.querySelector(`.nav-btn[data-tab="${name}"]`);
+        this.setText('workspace-section', activeButton?.textContent.trim() || '账户总览');
+        this.setText('workspace-domain', activeButton?.dataset.domain === 'lottery' ? '体彩 NBA 纸面验证' : 'A 股模拟盘');
         document.querySelectorAll('.tab-content').forEach(section => section.classList.toggle('active', section.id === `tab-${name}`));
         this.currentTab = name;
         if (updateHash) history.replaceState(null, '', `#${name}`);
@@ -100,7 +109,7 @@ class App {
             console.error('Failed to load global status:', error);
             this.statusUnavailable = true;
             this.renderUnavailable();
-            if (['research', 'returns'].includes(this.currentTab)) this.loadCurrentTab();
+            if (this.independentTabs.includes(this.currentTab)) this.loadCurrentTab();
         } finally {
             window.clearTimeout(timeoutId);
             if (this.refreshController === controller) this.refreshController = null;
