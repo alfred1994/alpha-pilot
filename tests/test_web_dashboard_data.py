@@ -227,13 +227,46 @@ def test_trades_keep_unknown_sell_pnl_null_without_prior_buy():
 
 
 def test_performance_appends_today_when_review_is_stale():
-    data = database_router.get_performance(days=10)
-    today = datetime.now().strftime("%Y-%m-%d")
+    import json
+    import shutil
+    import execution.paper_account as paper_account_module
+
+    class FakeAccount:
+        initial_capital = 1000.0
+        positions = {}
+
+        def __init__(self, read_only=False):
+            pass
+
+        def total_assets(self, prices=None):
+            return 1050.0
+
+    reviews_dir = tempfile.mkdtemp(prefix="reviews_")
+    for date_str, assets in (("2026-07-01", 1000.0), ("2026-07-02", 1020.0)):
+        with open(os.path.join(reviews_dir, f"review_{date_str}.json"), "w", encoding="utf-8") as file:
+            json.dump({"total_assets": assets, "daily_pnl": 0.0,
+                       "cumulative_pnl_pct": 0.0, "benchmark_pnl_pct": 0.01}, file)
+
+    old_reviews_dir = database_router._reviews_dir
+    old_now_bj = database_router._now_bj
+    old_account = paper_account_module.PaperAccount
+    database_router._reviews_dir = lambda: reviews_dir
+    database_router._now_bj = lambda: datetime(2026, 7, 3, 15, 30)
+    paper_account_module.PaperAccount = FakeAccount
+    try:
+        data = database_router.get_performance(days=10)
+    finally:
+        database_router._reviews_dir = old_reviews_dir
+        database_router._now_bj = old_now_bj
+        paper_account_module.PaperAccount = old_account
+        shutil.rmtree(reviews_dir, ignore_errors=True)
 
     assert_true(data["success"], "业绩接口返回成功")
-    assert_true(data["performance"], "业绩接口返回记录")
-    assert_true(data["performance"][-1]["date"] == today, "缺少今日复盘时追加今日账户记录")
-    assert_true("daily_pnl" in data["performance"][-1], "今日记录包含daily_pnl")
+    assert_true(len(data["performance"]) == 3, "业绩接口返回复盘记录加今日记录")
+    latest = data["performance"][-1]
+    assert_true(latest["date"] == "2026-07-03", "缺少今日复盘时按北京时间追加今日账户记录")
+    assert_true(latest["daily_pnl"] == 30.0, "今日daily_pnl按上一复盘总资产计算")
+    assert_true(latest["benchmark_pnl_pct"] == 0.01, "今日记录沿用最近基准收益")
 
 
 def test_performance_daily_pnl_matches_adjacent_assets():

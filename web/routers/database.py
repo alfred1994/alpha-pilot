@@ -328,12 +328,16 @@ def get_lessons(limit: int = Query(20, ge=1, le=100)):
     except Exception as e:
         return unavailable()
 
+def _reviews_dir() -> str:
+    project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    return os.path.join(project_dir, "data", "reviews")
+
+
 @router.get("/performance")
 def get_performance(days: int = Query(10, ge=2, le=90)):
     """获取近N天收益及基准(对比沪深300)走势，用于业绩画图"""
     try:
-        project_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        reviews_dir = os.path.join(project_dir, "data", "reviews")
+        reviews_dir = _reviews_dir()
         
         perf_data = []
         if os.path.exists(reviews_dir):
