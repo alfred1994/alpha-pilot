@@ -164,9 +164,14 @@ def import_ledger(path: str, *, db_path: str = None) -> dict:
             if pick["line"] is None or pick["odds"] is None:
                 skipped += 1
                 continue
+            # 已结算注单带比分：同步写入比赛，场次页才会按"已完赛"展示，而不是"未开赛"
+            settled_score = pick["result"] and pick["home_score"] is not None and pick["away_score"] is not None
             store.upsert_game(conn, row["date"], {"home": row["home"], "away": row["away"],
                                                   "matchnum": row.get("matchnum"), "home_cn": row.get("home_cn"),
-                                                  "away_cn": row.get("away_cn")})
+                                                  "away_cn": row.get("away_cn"),
+                                                  "state": "post" if settled_score else None,
+                                                  "home_score": pick["home_score"] if settled_score else None,
+                                                  "away_score": pick["away_score"] if settled_score else None})
             if not pick["result"]:
                 pending_days.add(row["date"])
             if store.add_pick(conn, pick):

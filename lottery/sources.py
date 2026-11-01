@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -23,6 +24,8 @@ JC_URL = "https://trade.500.com/jclq/"
 ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0"}
 TIMEOUT = 25
+RETRY_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = 3
 PLAY_SPREAD, PLAY_TOTAL = 275, 277
 
 
@@ -87,10 +90,23 @@ def parse_jc_page(html: str) -> List[dict]:
     return out
 
 
+def _get(url: str, params: dict, session=None, attempts: int = RETRY_ATTEMPTS):
+    """GET 带有限重试：只重试超时/连接错误/5xx，最坏耗时需低于定时任务的 300 秒上限。"""
+    for attempt in range(1, attempts + 1):
+        try:
+            response = (session or requests).get(url, params=params, headers=HEADERS, timeout=TIMEOUT)
+            if response.status_code < 500 or attempt == attempts:
+                response.raise_for_status()
+                return response
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == attempts:
+                raise
+        time.sleep(RETRY_BACKOFF_SECONDS * attempt)
+    raise RuntimeError("unreachable")
+
+
 def fetch_jc(day: str, playid: int, session=None) -> List[dict]:
-    response = (session or requests).get(JC_URL, params={"date": day, "playid": playid},
-                                         headers=HEADERS, timeout=TIMEOUT)
-    response.raise_for_status()
+    response = _get(JC_URL, {"date": day, "playid": playid}, session)
     response.encoding = "gbk"
     return parse_jc_page(response.text)
 
@@ -160,9 +176,7 @@ def parse_espn(payload: dict) -> List[dict]:
 
 
 def fetch_espn(day: str, session=None) -> List[dict]:
-    response = (session or requests).get(ESPN_URL, params={"dates": day.replace("-", "")},
-                                         headers=HEADERS, timeout=TIMEOUT)
-    response.raise_for_status()
+    response = _get(ESPN_URL, {"dates": day.replace("-", "")}, session)
     return parse_espn(response.json())
 
 

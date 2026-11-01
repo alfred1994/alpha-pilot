@@ -57,6 +57,35 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual(sources.parse_espn(espn(line="PK"))[0]["ref_line"], 0.0)
 
 
+    def test_fetch_retries_timeouts_then_gives_up(self):
+        import requests
+
+        class Response:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return espn(line="POR -2.5")
+
+        class Session:
+            def __init__(self, failures):
+                self.failures, self.calls = failures, 0
+            def get(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls <= self.failures:
+                    raise requests.Timeout("slow")
+                return Response()
+
+        with patch("lottery.sources.time.sleep"):
+            flaky = Session(failures=1)
+            self.assertEqual(len(sources.fetch_espn("2026-10-31", session=flaky)), 1, "一次超时后重试成功")
+            self.assertEqual(flaky.calls, 2)
+            down = Session(failures=5)
+            with self.assertRaises(requests.Timeout):
+                sources.fetch_espn("2026-10-31", session=down)
+            self.assertEqual(down.calls, sources.RETRY_ATTEMPTS, "有限重试，不无限等待")
+
+
 class SignalTests(unittest.TestCase):
     def test_point_value_is_monotonic_and_symmetric(self):
         values = [signals.win_probability(d / 2, "让分") for d in range(0, 21)]
@@ -157,7 +186,11 @@ class JobTests(unittest.TestCase):
         self.assertEqual(jobs.import_ledger(path, db_path=self.db)["added"], 0)
         with store.session(self.db) as conn:
             strategies = sorted(r[0] for r in conn.execute("SELECT strategy FROM picks"))
+            games = {r["sale_date"]: dict(r) for r in conn.execute("SELECT sale_date, state, home_score, away_score FROM games")}
         self.assertEqual(strategies, ["model_legacy", "sharp"])
+        self.assertEqual((games["2026-10-26"]["state"], games["2026-10-26"]["home_score"], games["2026-10-26"]["away_score"]),
+                         ("post", 110, 103), "已结算注单的比分同步到比赛，场次页显示已完赛")
+        self.assertIsNone(games["2026-10-29"]["home_score"], "未结算注单不写比分")
 
 
 class StatsTests(unittest.TestCase):
