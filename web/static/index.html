@@ -19,7 +19,7 @@
     <link rel="stylesheet" href="css/styles.css?v=2026100901">
     <link rel="stylesheet" href="css/research.css?v=2026100901">
     <link rel="stylesheet" href="css/console.css?v=2026100901">
-    <link rel="stylesheet" href="css/lottery.css?v=2026110101">
+    <link rel="stylesheet" href="css/lottery.css?v=2026110203">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -277,22 +277,23 @@
                 </div>
                 <article class="card"><div class="section-heading compact"><div><span class="eyebrow">单位：注（1 注 = 1% 本金）</span><h2>累计纸面盈亏</h2></div></div><p class="chart-status" id="lottery-curve-status" role="status">等待数据</p><div class="chart-container" id="lottery-curve"></div></article>
                 <article class="card"><div class="section-heading compact"><div><span class="eyebrow">分策略 · 分玩法</span><h2>对照表</h2></div></div><div class="table-wrap"><table><caption>各策略已公开纸面注单统计</caption><thead><tr><th scope="col">策略</th><th scope="col">玩法</th><th scope="col">注数</th><th scope="col">赢-输-走</th><th scope="col">命中率</th><th scope="col">保本命中率</th><th scope="col">盈亏</th><th scope="col">收益率</th><th scope="col">平均收盘价差</th></tr></thead><tbody id="lottery-strategy-rows"></tbody></table></div></article>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">出单时的伤停标签 · 只做对照，不参与选单</span><h2>伤停分组对照</h2></div></div><p class="research-note">“24 小时内伤停更新”指双方任一伤停条目在出单前 24 小时内有更新；“有出战成疑球员”指双方有状态不是缺阵/停赛的球员，这类球员是否出战通常在竞彩停售后才确定。标签上线前的注单不计入。</p><div class="table-wrap"><table><caption>按伤停标签分组的纸面注单统计</caption><thead><tr><th scope="col">策略</th><th scope="col">分组</th><th scope="col">注数</th><th scope="col">命中率</th><th scope="col">收益率</th><th scope="col">平均收盘价差</th></tr></thead><tbody id="lottery-injury-rows"></tbody></table></div></article>
             </section>
 
             <section class="tab-content" id="tab-lottery-games">
-                <div class="page-heading"><div><span class="eyebrow">两家公开盘口对照</span><h2>场次盘口</h2></div><p>每天 16:00 抓取竞彩与国际盘口，同时给出每场的偏离、估算胜率、期望值和两个策略的纸面选择。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">竞彩与国际盘口对照</span><h2>场次盘口</h2></div><p>16:00 出单时抓取竞彩与国际盘口，之后每 30 分钟跟踪竞彩到停售、跟踪国际线到开赛。“→ 现”是竞彩最新一次抓到的盘口；展开可看完整时间线和双方伤停。</p></div>
                 <div class="filter-bar"><label>竞彩销售日 <input type="date" id="lottery-games-date"></label><button id="lottery-games-load">查看</button><span id="lottery-games-status" role="status">-</span></div>
-                <div class="table-wrap"><table class="lottery-table"><caption>竞彩 NBA 场次与国际盘口</caption><thead><tr><th scope="col">场次</th><th scope="col">对阵（客 @ 主）</th><th scope="col">开赛（北京）</th><th scope="col">竞彩主队让分</th><th scope="col">国际主队让分</th><th scope="col">竞彩总分</th><th scope="col">国际总分</th><th scope="col">单关</th><th scope="col">比分</th><th scope="col">分析与纸面选择</th></tr></thead><tbody id="lottery-games-rows"></tbody></table></div>
+                <div class="table-wrap"><table class="lottery-table"><caption>竞彩 NBA 场次与国际盘口</caption><thead><tr><th scope="col">场次</th><th scope="col">对阵（客 @ 主）</th><th scope="col">开赛（北京）</th><th scope="col">竞彩停售</th><th scope="col">竞彩主队让分</th><th scope="col">国际主队让分</th><th scope="col">竞彩总分</th><th scope="col">国际总分</th><th scope="col">单关</th><th scope="col">比分</th><th scope="col">分析与纸面选择</th><th scope="col">时间线与伤停</th></tr></thead><tbody id="lottery-games-rows"></tbody></table></div>
             </section>
 
             <section class="tab-content" id="tab-lottery-ledger">
-                <div class="page-heading"><div><span class="eyebrow">只追加，不改写</span><h2>验证账本</h2></div><p>每条纸面注单在每天 16:00 出单时记录并立即公开，之后不改写，赛后只补结果与收盘价差。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">只追加，不改写</span><h2>验证账本</h2></div><p>主信号与全场预测在每天 16:00 出单，停售前影子在竞彩停售前最后一次跟踪时出单；每条记录出单即公开，之后不改写，赛后只补结果与收盘价差。</p></div>
                 <div class="filter-bar">
-                    <label>策略 <select id="lottery-ledger-strategy"><option value="">全部</option><option value="sharp">价格偏离（主信号）</option><option value="all_games">全场预测（每场必出）</option><option value="model_legacy">模型对照组（已停用）</option></select></label>
+                    <label>策略 <select id="lottery-ledger-strategy"><option value="">全部</option><option value="sharp">价格偏离（主信号）</option><option value="sharp_late">价格偏离（停售前，影子）</option><option value="all_games">全场预测（每场必出）</option><option value="model_legacy">模型对照组（已停用）</option></select></label>
                     <label>玩法 <select id="lottery-ledger-market"><option value="">全部</option><option value="让分">让分</option><option value="大小分">大小分</option></select></label>
                     <button id="lottery-ledger-prev" disabled>上一页</button><span id="lottery-ledger-page" role="status">-</span><button id="lottery-ledger-next" disabled>下一页</button>
                 </div>
-                <div class="table-wrap"><table class="lottery-table"><caption>纸面注单明细</caption><thead><tr><th scope="col">销售日</th><th scope="col">场次</th><th scope="col">对阵</th><th scope="col">策略</th><th scope="col">选择</th><th scope="col">赔率</th><th scope="col">偏离</th><th scope="col">估算胜率</th><th scope="col">期望值</th><th scope="col">比分</th><th scope="col">结果</th><th scope="col">盈亏</th><th scope="col">收盘价差</th></tr></thead><tbody id="lottery-ledger-rows"></tbody></table></div>
+                <div class="table-wrap"><table class="lottery-table"><caption>纸面注单明细</caption><thead><tr><th scope="col">销售日</th><th scope="col">场次</th><th scope="col">对阵</th><th scope="col">策略</th><th scope="col">选择</th><th scope="col">赔率</th><th scope="col">偏离</th><th scope="col">估算胜率</th><th scope="col">期望值</th><th scope="col">比分</th><th scope="col">结果</th><th scope="col">盈亏</th><th scope="col">收盘价差</th><th scope="col">出单时伤停</th></tr></thead><tbody id="lottery-ledger-rows"></tbody></table></div>
             </section>
 
             <section class="tab-content" id="tab-lottery-method">
@@ -304,6 +305,8 @@
                         <div><strong>唯一保留的信号</strong><p>竞彩线比国际盘口更有利时按竞彩价格买入。每 1 分偏离值多少胜率，用 19,385 场历史收盘线实测换算，期望值 ≥ +2% 才记录为主信号。</p></div>
                         <div><strong>全场预测单独统计</strong><p>每场让分、大小分各选期望值更高的一侧，不设门槛。多数场次期望值为负（约 -5% 到 -10%），这组记录用来对照主信号，不混入主信号统计。</p></div>
                         <div><strong>串关不改变单场保本线</strong><p>串关赔率是逐场相乘，每场保本命中率仍是 1/赔率；但方差显著放大，账本按单场口径统计。</p></div>
+                        <div><strong>竞彩出票即锁定价格</strong><p>竞彩是固定奖金，让分数、预设总分与 SP 以出票时为准。国际盘口只用作衡量价格的参照：出票后才公布的伤停，对已出的票只是风险，无法再调整。</p></div>
+                        <div><strong>伤停只做标签</strong><p>伤停名单在出单时随注单记录，用来赛后分组比较；公开伤停通常几分钟内就反映在国际盘口里，单靠伤停预测输赢不能覆盖 15% 抽水。</p></div>
                     </div></article>
                     <article class="card"><div class="section-heading compact"><div><span class="eyebrow">数据源与任务</span><h2>数据健康</h2></div></div><div class="fact-list lottery-facts" id="lottery-health-list"><div class="empty-state">正在读取</div></div></article>
                 </div>
@@ -325,6 +328,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026110202" type="module"></script>
+    <script src="js/app.js?v=2026110203" type="module"></script>
 </body>
 </html>

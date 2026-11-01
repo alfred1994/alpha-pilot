@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from lottery import jobs, signals, sources, stats, store
+from lottery import injuries, jobs, signals, sources, stats, store
 
 BJ = ZoneInfo("Asia/Shanghai")
 ROW = ('<tr class="bet-tb-tr  bet-tb-end" data-homesxname="爵士" data-awaysxname="开拓者" data-matchdate="2026-11-01" '
@@ -29,6 +29,18 @@ def espn(state="pre", line="UTAH -1.5", total=234.5, scores=None):
                             {"homeAway": "away", "team": {"abbreviation": "POR"}, "score": str(scores[1]) if scores else "0"}],
             "odds": [{"details": line, "overUnder": total, "provider": {"name": "Draft Kings"}}]}
     return {"events": [{"competitions": [comp]}]}
+
+
+def injury_payload(*rows):
+    """rows: (ESPN 缩写, 球员, 状态, 部位, 更新时间 UTC)"""
+    return {"injuries": [{"displayName": "ignored", "injuries": [
+        {"status": status, "date": updated, "athlete": {"displayName": player, "team": {"abbreviation": abbr}},
+         "details": {"type": kind, "returnDate": None}}
+        for abbr, player, status, kind, updated in rows]}]}
+
+
+def no_injuries():
+    return []
 
 
 class ParsingTests(unittest.TestCase):
@@ -55,6 +67,15 @@ class ParsingTests(unittest.TestCase):
         self.assertEqual((item["home"], item["away"], item["ref_line"], item["ref_total"]), ("Utah", "Portland", 2.5, 234.5))
         self.assertEqual((item["home_score"], item["away_score"], item["completed"]), (110, 100, True))
         self.assertEqual(sources.parse_espn(espn(line="PK"))[0]["ref_line"], 0.0)
+
+    def test_injuries_parse_and_map_teams(self):
+        items = sources.parse_injuries(injury_payload(
+            ("UTAH", "Lauri Markkanen", "Out", "Back", "2026-10-31T02:00Z"),
+            ("POR", "Shaedon Sharpe", "Day-To-Day", "Ankle", "2026-10-30T20:00Z"),
+            ("XXX", "Nobody", "Out", None, None)))
+        self.assertEqual([(i["team"], i["player"], i["status"], i["type"]) for i in items],
+                         [("Utah", "Lauri Markkanen", "Out", "Back"), ("Portland", "Shaedon Sharpe", "Day-To-Day", "Ankle")],
+                         "无法映射的球队被丢弃")
 
 
     def test_fetch_retries_timeouts_then_gives_up(self):
@@ -151,10 +172,10 @@ class JobTests(unittest.TestCase):
         html = ROW.replace("客队让8.5分", jc_home_line_title)
         return lambda day, playid: sources.parse_jc_page(html)
 
-    def run_picks(self, title, ref="UTAH -1.5", hour=21):
+    def run_picks(self, title, ref="UTAH -1.5", hour=21, fetch_injuries=no_injuries):
         now = datetime(2026, 10, 31, hour, 40, tzinfo=BJ)
         return jobs.run_picks(day="2026-10-31", now=now, db_path=self.db, fetch_jc=self.fake_jc(title),
-                              fetch_espn=lambda day: sources.parse_espn(espn(line=ref)))
+                              fetch_espn=lambda day: sources.parse_espn(espn(line=ref)), fetch_injuries=fetch_injuries)
 
     def test_pick_recorded_once_and_never_rewritten(self):
         first = self.run_picks("客队受让1.5分")  # 竞彩主队 -1.5，与国际线相同
@@ -178,13 +199,67 @@ class JobTests(unittest.TestCase):
 
     def test_capture_records_close_line_and_settles_with_clv(self):
         self.run_picks("客队让1.5分")
-        jobs.run_capture(now=datetime(2026, 11, 1, 2, 30, tzinfo=BJ), db_path=self.db,
+        jobs.run_capture(now=datetime(2026, 11, 1, 2, 30, tzinfo=BJ), db_path=self.db, fetch_injuries=no_injuries,
                          fetch_espn=lambda day: sources.parse_espn(espn(line="UTAH -2.5")) if day == "2026-10-31" else [])
-        jobs.run_capture(now=datetime(2026, 11, 1, 6, 0, tzinfo=BJ), db_path=self.db,
+        jobs.run_capture(now=datetime(2026, 11, 1, 6, 0, tzinfo=BJ), db_path=self.db, fetch_injuries=no_injuries,
                          fetch_espn=lambda day: sources.parse_espn(espn(state="post", scores=(100, 105))) if day == "2026-10-31" else [])
         with store.session(self.db) as conn:
             pick = dict(conn.execute("SELECT result, pnl, close_ref, clv FROM picks WHERE strategy='sharp'").fetchone())
         self.assertEqual(pick, {"result": "输", "pnl": -1.0, "close_ref": -2.5, "clv": 4.0})
+
+    def capture(self, hour, minute, title, ref="UTAH -1.5", fetch_injuries=no_injuries, day=31):
+        month = 10 if day == 31 else 11
+        return jobs.run_capture(now=datetime(2026, month, day, hour, minute, tzinfo=BJ), db_path=self.db,
+                                fetch_jc=self.fake_jc(title), fetch_injuries=fetch_injuries,
+                                fetch_espn=lambda d: sources.parse_espn(espn(line=ref)) if d == "2026-10-31" else [])
+
+    def test_capture_tracks_jc_until_close_and_records_late_shadow_pick(self):
+        self.run_picks("客队受让1.5分", hour=16)  # 16:40 出单：竞彩与国际线一致，主信号不出单
+        early = self.capture(18, 0, "客队受让1.5分")
+        self.assertEqual((early["tracked"], early["new_late_picks"]), (1, 0), "停售前 5 小时只跟踪，不出影子单")
+        skipped = self.capture(18, 5, "客队受让1.5分")
+        self.assertEqual(skipped["tracked"], 0, "距上次竞彩抓取不足 10 分钟不重复抓")
+        late = self.capture(22, 30, "客队让1.5分", ref="UTAH -1.5")  # 竞彩主队 +1.5 vs 国际 -1.5 → 偏离 3 分
+        self.assertEqual((late["tracked"], late["new_late_picks"]), (1, 1), "停售前 45 分钟内按主信号规则出影子单")
+        again = self.capture(22, 45, "客队让4.5分")
+        self.assertEqual(again["new_late_picks"], 0, "影子单同样只记第一次")
+        closed = self.capture(23, 30, "客队让4.5分")
+        self.assertEqual(closed["tracked"], 0, "停售后不再抓竞彩")
+        with store.session(self.db) as conn:
+            sources_seen = [r[0] for r in conn.execute("SELECT source FROM snapshots ORDER BY id")]
+            late_pick = dict(conn.execute("SELECT side, line, edge, injury_tags FROM picks WHERE strategy='sharp_late'").fetchone())
+            sharp = conn.execute("SELECT COUNT(*) FROM picks WHERE strategy='sharp'").fetchone()[0]
+        self.assertEqual(sources_seen, ["picks", "track", "capture", "track", "track", "capture"],
+                         "跟踪快照已含国际线；没抓竞彩的时刻只记国际线")
+        self.assertEqual(late_pick, {"side": "主", "line": 1.5, "edge": 3.0, "injury_tags": None},
+                         "伤停不可用时标签留空，而不是记成无伤停")
+        self.assertEqual(sharp, 0, "影子单不混入主信号")
+
+    def test_jc_failure_during_tracking_does_not_block_close_lines(self):
+        self.run_picks("客队受让1.5分", hour=16)
+
+        def broken(day, playid):
+            raise RuntimeError("500.com down")
+        summary = jobs.run_capture(now=datetime(2026, 10, 31, 20, 0, tzinfo=BJ), db_path=self.db, fetch_jc=broken,
+                                   fetch_injuries=no_injuries,
+                                   fetch_espn=lambda d: sources.parse_espn(espn(line="UTAH -2.5")) if d == "2026-10-31" else [])
+        self.assertEqual((summary["jc_errors"], summary["tracked"], summary["close_lines"]), (1, 0, 1))
+
+    def test_injury_names_saved_on_change_and_tagged_on_picks(self):
+        recent = injury_payload(("UTAH", "Lauri Markkanen", "Out", "Back", "2026-10-31T02:00Z"),
+                                ("POR", "Shaedon Sharpe", "Day-To-Day", "Ankle", "2026-10-29T02:00Z"))
+        self.run_picks("客队让1.5分", hour=16, fetch_injuries=lambda: sources.parse_injuries(recent))
+        with store.session(self.db) as conn:
+            tags = dict(conn.execute("SELECT strategy, injury_tags FROM picks WHERE strategy='sharp'").fetchone())
+            detail = conn.execute("SELECT injury_detail FROM picks WHERE strategy='sharp'").fetchone()[0]
+            first = conn.execute("SELECT COUNT(*) FROM injury_reports").fetchone()[0]
+            self.assertEqual(store.save_injuries(conn, sources.parse_injuries(recent)), 0, "名单不变不追加")
+            changed = injury_payload(("UTAH", "Lauri Markkanen", "Out", "Back", "2026-10-31T09:00Z"))
+            self.assertEqual(store.save_injuries(conn, sources.parse_injuries(changed)), 1, "只有开拓者名单变化")
+            self.assertEqual(store.save_injuries(conn, []), 0, "空名单视为接口异常，不写入")
+        self.assertEqual(first, len(store.ALL_TEAMS), "首次记录全部球队（无伤停的球队为空名单）")
+        self.assertEqual(tags["injury_tags"], f"{injuries.TAG_RECENT},{injuries.TAG_UNCERTAIN}")
+        self.assertIn("Lauri Markkanen", detail)
 
     def test_import_legacy_ledger_is_idempotent(self):
         path = os.path.join(self.folder.name, "ledger.csv")
@@ -230,6 +305,47 @@ class StatsTests(unittest.TestCase):
         self.assertTrue(failing["drawdown_triggered"], "连续 25 注输 = 回撤 25 单位")
         self.assertTrue(failing["triggered"])
 
+    def test_injury_tag_groups_keep_unrecorded_separate(self):
+        rows = self.rows(["赢", "输", "赢"])
+        rows[0]["injury_tags"] = injuries.TAG_RECENT
+        rows[1]["injury_tags"] = ""
+        rows[2]["injury_tags"] = None
+        recent = stats.by_injury_tag(rows)[0]
+        self.assertEqual(recent["tag"], injuries.TAG_RECENT)
+        self.assertEqual((recent["with"]["wins"], recent["without"]["losses"], recent["unrecorded"]), (1, 1, 1))
+
+    def test_jc_movement_counts_line_changes_and_direction(self):
+        def snap(minute, jc_line, ref_line, sp=1.70):
+            return {"captured_at": f"2026-10-31T16:{minute:02d}:00+08:00", "jc_line": jc_line, "ref_line": ref_line,
+                    "jc_sp_home": sp, "jc_sp_away": 1.70, "jc_total": 220.5, "ref_total": 221.5,
+                    "jc_sp_over": 1.70, "jc_sp_under": 1.70}
+        moved = [snap(30, 1.5, -1.5), snap(0, 1.5, -1.5), snap(59, -0.5, -1.5)]  # 乱序输入也按时间排
+        flat = [snap(0, 2.5, 2.5), snap(30, 2.5, 2.5, sp=1.75)]
+        single = [snap(0, 3.5, 0.5)]
+        result = stats.jc_movement([moved, flat, single])
+        spread = result["让分"]
+        self.assertEqual((spread["games"], spread["line_changed"], spread["odds_changed"]), (2, 1, 1), "只抓到一次的场次不计入")
+        self.assertEqual((spread["deviation_narrowed"], spread["deviation_widened"]), (1, 0), "偏离 3 → 1 分：竞彩向国际线靠拢")
+        self.assertEqual(spread["median_minutes_to_change"], 59)
+        self.assertEqual(result["大小分"]["line_changed"], 0)
+
+
+class InjuryRuleTests(unittest.TestCase):
+    def test_context_tags_and_missing_data(self):
+        now = datetime(2026, 10, 31, 16, 0, tzinfo=BJ)
+        items = [{"team": "Utah", "player": "A", "status": "Out", "type": "Knee", "updated": "2026-10-20T00:00Z"}]
+        self.assertEqual(injuries.context(items, "Utah", "Portland", now)["tags"], [], "长期缺阵且无近期更新：不打标签")
+        items.append({"team": "Portland", "player": "B", "status": "Questionable", "type": None, "updated": "2026-10-31T05:00Z"})
+        self.assertEqual(injuries.context(items, "Utah", "Portland", now)["tags"], [injuries.TAG_RECENT, injuries.TAG_UNCERTAIN])
+        self.assertEqual(injuries.context(items, "Boston", "Miami", now)["tags"], [], "其他球队的伤停不影响本场")
+        self.assertIsNone(injuries.context(None, "Utah", "Portland", now), "数据不可用 ≠ 无伤停")
+
+    def test_diff_reports_status_changes_and_removals(self):
+        before = [{"player": "A", "status": "Day-To-Day"}, {"player": "B", "status": "Out"}]
+        after = [{"player": "A", "status": "Out"}, {"player": "C", "status": "Questionable"}]
+        self.assertEqual([(c["player"], c["from"], c["to"]) for c in injuries.diff(before, after)],
+                         [("A", "Day-To-Day", "Out"), ("B", "Out", None), ("C", None, "Questionable")])
+
 
 class PublicApiTests(unittest.TestCase):
     def setUp(self):
@@ -247,7 +363,9 @@ class PublicApiTests(unittest.TestCase):
             p.start()
         jobs.run_picks(day="2026-10-31", now=datetime(2026, 10, 31, 21, 40, tzinfo=BJ), db_path=self.db,
                        fetch_jc=lambda d, p: sources.parse_jc_page(ROW.replace("客队让8.5分", "客队让1.5分")),
-                       fetch_espn=lambda d: sources.parse_espn(espn(line="UTAH -1.5")))
+                       fetch_espn=lambda d: sources.parse_espn(espn(line="UTAH -1.5")),
+                       fetch_injuries=lambda: sources.parse_injuries(injury_payload(
+                           ("POR", "Shaedon Sharpe", "Day-To-Day", "Ankle", "2026-10-29T02:00Z"))))
 
     def tearDown(self):
         for p in self.patches:
@@ -267,11 +385,35 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(ledger["total"], 3, "开赛前即公开：主信号 1 注 + 全场预测 2 条")
         self.assertEqual(sharp_only["items"][0]["selection"], "爵士 +1.5")
         self.assertFalse(sharp_only["items"][0]["started"])
-        self.assertEqual(summary["latest_day_picks"], {"sharp": 1, "all_games": 2})
+        self.assertEqual(summary["latest_day_picks"], {"sharp": 1, "sharp_late": 0, "all_games": 2})
         self.assertEqual([s["key"] for s in summary["strategies"]], ["sharp", "all_games"], "两个策略分开统计")
+        self.assertEqual(sharp_only["items"][0]["injury_tags"], [injuries.TAG_UNCERTAIN])
+        self.assertEqual([g["key"] for g in summary["injury_groups"]], ["sharp", "all_games"])
         self.assertTrue(games["games"][0]["analysis"], "开赛前展示偏离与期望值")
         self.assertEqual(len(games["games"][0]["picks"]), 3)
         self.assertIn("不构成投注建议", summary["disclaimer"])
+
+    def test_games_show_jc_timeline_and_injury_changes(self):
+        later = injury_payload(("POR", "Shaedon Sharpe", "Out", "Ankle", "2026-10-31T14:00Z"))
+        jobs.run_capture(now=datetime(2026, 10, 31, 22, 30, tzinfo=BJ), db_path=self.db,
+                         fetch_jc=lambda d, p: sources.parse_jc_page(ROW.replace("客队让8.5分", "客队让2.5分")),
+                         fetch_espn=lambda d: sources.parse_espn(espn(line="UTAH -2.5")) if d == "2026-10-31" else [],
+                         fetch_injuries=lambda: sources.parse_injuries(later))
+        with self.at(23):
+            game = self.client.get("/api/lottery/games?sale_date=2026-10-31").json()["games"][0]
+            health = self.client.get("/api/lottery/health").json()
+            summary = self.client.get("/api/lottery/summary").json()
+        self.assertEqual(game["buy_end"], "2026-10-31T23:00:00+08:00")
+        self.assertEqual((game["jc_line"], game["jc_latest"]["jc_line"]), (1.5, 2.5), "出单时与最新竞彩线并列")
+        self.assertEqual([(s["source"], s["jc_line"], s["ref_line"]) for s in game["timeline"]],
+                         [("出单", 1.5, -1.5), ("竞彩跟踪", 2.5, -2.5)])
+        self.assertEqual([r["player"] for r in game["injuries"]["away"]], ["Shaedon Sharpe"])
+        self.assertEqual(game["injuries"]["home"], [], "主队出单时无伤停")
+        self.assertEqual([(c["player"], c["from"], c["to"]) for c in game["injuries"]["changes"]],
+                         [("Shaedon Sharpe", "每日观察", "缺阵")])
+        self.assertEqual(health["jc_movement_30d"]["让分"]["line_changed"], 1)
+        self.assertEqual(health["jobs"]["capture"]["detail"]["new_late_picks"], 1, "停售前 30 分钟偏离 5 分 → 影子单")
+        self.assertIn("sharp_late", [s["key"] for s in summary["strategies"]])
 
     def test_picks_visible_after_tip(self):
         with self.at(4, day=1):

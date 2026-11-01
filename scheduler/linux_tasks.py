@@ -643,11 +643,11 @@ def generate_linux_task_scripts(
             "AlphaPilot 体彩NBA纸面出单（每天16:00）", os.path.basename(paths["lottery_picks_service"]), "*-*-* 16:00:00",
         ),
         paths["lottery_capture_service"]: _oneshot_service_unit(
-            "AlphaPilot 体彩NBA收盘线与比分采集结算", target_paths["run_lottery_capture"], timeout_start_sec=360,
+            "AlphaPilot 体彩NBA竞彩跟踪、收盘线与比分采集结算", target_paths["run_lottery_capture"], timeout_start_sec=360,
         ),
         paths["lottery_capture_timer"]: _calendar_timer_unit(
-            "AlphaPilot 体彩NBA收盘线与比分（23:30至次日14:30每30分钟）",
-            os.path.basename(paths["lottery_capture_service"]), "*-*-* 00..14,23:00,30:00",
+            "AlphaPilot 体彩NBA竞彩跟踪与收盘线（16:00至次日14:30每30分钟）",
+            os.path.basename(paths["lottery_capture_service"]), "*-*-* 00..14,16..23:00,30:00",
         ),
     }
     for path, content in {**scripts, **units}.items():

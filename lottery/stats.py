@@ -2,11 +2,15 @@
 from __future__ import annotations
 
 import math
+import statistics
 from collections import OrderedDict
-from typing import Dict, Iterable, List
+from datetime import datetime, timezone
+from typing import Dict, Iterable, List, Optional
 
-STRATEGY_LABELS = {"sharp": "价格偏离（主信号）", "all_games": "全场预测（每场必出）",
-                   "model_legacy": "模型对照组（已停用）"}
+from lottery import injuries
+
+STRATEGY_LABELS = {"sharp": "价格偏离（主信号）", "sharp_late": "价格偏离（停售前，影子）",
+                   "all_games": "全场预测（每场必出）", "model_legacy": "模型对照组（已停用）"}
 BANKROLL_UNITS = 100.0          # 1 注 = 1 单位 = 1% 本金
 STOP_RULES = (
     {"at": 50, "metric": "hit_rate", "threshold": 0.55, "label": "累计 50 注时命中率 < 55% → 停"},
@@ -84,3 +88,77 @@ def curve(rows: List[dict]) -> List[dict]:
             running[strategy] = running.get(strategy, 0.0) + pnl
         points.append({"date": day, **{k: round(v, 4) for k, v in running.items()}})
     return points
+
+
+def by_injury_tag(rows: Iterable[dict]) -> List[dict]:
+    """按出单时的伤停标签分组；伤停未记录的注单（历史注单、抓取失败）单独计数，不归入“无”。"""
+    rows = list(rows)
+    out = []
+    for tag in injuries.TAGS:
+        groups = {True: [], False: []}
+        unknown = 0
+        for row in rows:
+            flag = injuries.tag_group(row.get("injury_tags"), tag)
+            if flag is None:
+                unknown += 1
+            else:
+                groups[flag].append(row)
+        out.append({"tag": tag, "with": summarize(groups[True]), "without": summarize(groups[False]),
+                    "unrecorded": unknown})
+    return out
+
+
+# (玩法, 竞彩线字段, 国际线字段, 赔率字段)
+_MOVEMENT_MARKETS = (
+    ("让分", "jc_line", "ref_line", ("jc_sp_home", "jc_sp_away")),
+    ("大小分", "jc_total", "ref_total", ("jc_sp_over", "jc_sp_under")),
+)
+
+
+def _at(value) -> Optional[datetime]:
+    return injuries.parse_time(value)
+
+
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def jc_movement(games: Iterable[List[dict]]) -> Dict[str, dict]:
+    """竞彩在首次抓取（16:00 出单）之后到停售前有没有调线、朝哪个方向调。
+
+    输入每场一组竞彩快照（含同一时刻的国际线），按时间排序。偏离 = |竞彩线 - 国际线|；
+    “偏离缩小”说明竞彩在向国际线靠拢，也就是 16:00 看到的便宜价格之后被收回了。
+    """
+    out = {}
+    games = [sorted(g, key=lambda s: _at(s.get("captured_at")) or _EPOCH) for g in games]
+    for market, jc_key, ref_key, sp_keys in _MOVEMENT_MARKETS:
+        tracked = changed = sp_changed = narrowed = widened = 0
+        first_devs, last_devs, minutes = [], [], []
+        for snaps in games:
+            rows = [s for s in snaps if s.get(jc_key) is not None]
+            if len(rows) < 2:
+                continue
+            tracked += 1
+            first, last = rows[0], rows[-1]
+            if any(r.get(jc_key) != first[jc_key] for r in rows[1:]):
+                changed += 1
+                moved = next(r for r in rows[1:] if r.get(jc_key) != first[jc_key])
+                start, when = _at(first.get("captured_at")), _at(moved.get("captured_at"))
+                if start and when:
+                    minutes.append((when - start).total_seconds() / 60)
+            if any(tuple(r.get(k) for k in sp_keys) != tuple(first.get(k) for k in sp_keys) for r in rows[1:]):
+                sp_changed += 1
+            if first.get(ref_key) is not None and last.get(ref_key) is not None:
+                d0 = abs(first[jc_key] - first[ref_key])
+                d1 = abs(last[jc_key] - last[ref_key])
+                first_devs.append(d0)
+                last_devs.append(d1)
+                narrowed += d1 < d0
+                widened += d1 > d0
+        out[market] = {
+            "games": tracked, "line_changed": changed, "odds_changed": sp_changed,
+            "deviation_narrowed": narrowed, "deviation_widened": widened, "deviation_pairs": len(first_devs),
+            "avg_deviation_first": sum(first_devs) / len(first_devs) if first_devs else None,
+            "avg_deviation_last": sum(last_devs) / len(last_devs) if last_devs else None,
+            "median_minutes_to_change": statistics.median(minutes) if minutes else None,
+        }
+    return out

@@ -3,17 +3,22 @@
 - ``snapshots``：每次抓取的竞彩与国际盘口快照，只追加；
 - ``games``：每场比赛的赛程、状态、比分与开赛前最后一次国际线（收盘近似）；
 - ``picks``：纸面注单，同一 (销售日, 主, 客, 策略, 玩法) 只记第一次决定，之后不改写；
-  结算只补结果字段；
+  结算只补结果字段；出单时的伤停标签与名单一并写入；
+- ``injury_reports``：每支球队的伤停名单，只在名单（球员/状态/部位）变化时追加一条；
 - ``runs``：定时任务运行记录，供健康页使用。
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from contextlib import closing, contextmanager
 from datetime import datetime
+from typing import Dict, List
 
 from config import DATA_DIR
+from lottery import injuries as injury_rules
+from lottery.teams import ABBR2KEY
 
 LOTTERY_DB = os.environ.get("LOTTERY_DB", os.path.join(DATA_DIR, "lottery.db"))
 
@@ -43,7 +48,17 @@ SCHEMA = (
     """CREATE TABLE IF NOT EXISTS runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, started_at TEXT NOT NULL,
         finished_at TEXT, status TEXT, detail TEXT)""",
+    """CREATE TABLE IF NOT EXISTS injury_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, captured_at TEXT NOT NULL, team TEXT NOT NULL,
+        digest TEXT NOT NULL, items TEXT NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_injury_reports_team ON injury_reports(team, id)",
 )
+# 已上线数据库的增量列：(表, 列, 类型)
+MIGRATIONS = (
+    ("picks", "injury_tags", "TEXT"),
+    ("picks", "injury_detail", "TEXT"),
+)
+ALL_TEAMS = sorted(set(ABBR2KEY.values()))
 
 
 def connect(db_path: str = None) -> sqlite3.Connection:
@@ -54,6 +69,10 @@ def connect(db_path: str = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     for statement in SCHEMA:
         conn.execute(statement)
+    for table, column, kind in MIGRATIONS:
+        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
     return conn
 
 
@@ -99,7 +118,8 @@ def add_pick(conn, pick: dict) -> bool:
     """记录纸面注单；同一场同一策略同一玩法已有记录时不改写，返回是否新增。"""
     columns = ["created_at", "sale_date", "matchnum", "home", "away", "home_cn", "away_cn", "strategy", "market",
                "side", "line", "odds", "ref_line", "edge", "p_win", "ev", "single_open", "stake", "tip_at",
-               "result", "pnl", "home_score", "away_score", "close_ref", "clv", "settled_at", "source"]
+               "result", "pnl", "home_score", "away_score", "close_ref", "clv", "settled_at", "source",
+               "injury_tags", "injury_detail"]
     row = {"created_at": _now(), "stake": 1.0, "source": "alphapilot", **pick}
     cursor = conn.execute(
         f"INSERT OR IGNORE INTO picks ({','.join(columns)}) VALUES ({','.join('?' * len(columns))})",
@@ -110,6 +130,45 @@ def add_pick(conn, pick: dict) -> bool:
 def count_picks(conn, sale_date: str, strategy: str) -> int:
     return conn.execute("SELECT COUNT(*) FROM picks WHERE sale_date=? AND strategy=?",
                         (sale_date, strategy)).fetchone()[0]
+
+
+def save_injuries(conn, items: List[dict], captured_at: str = None) -> int:
+    """按球队比较名单指纹，只为名单变化的球队追加一条；返回变化的球队数。
+
+    不在名单里的球队记为空名单（全员可出战）。整份名单为空多半是接口异常或休赛期，不写入。
+    """
+    if not items:
+        return 0
+    captured_at = captured_at or _now()
+    grouped = injury_rules.by_team(items)
+    changed = 0
+    for team in ALL_TEAMS:
+        rows = [injury_rules.compact(r) for r in grouped.get(team, [])]
+        digest = injury_rules.digest(rows)
+        last = conn.execute("SELECT digest FROM injury_reports WHERE team=? ORDER BY id DESC LIMIT 1", (team,)).fetchone()
+        if last and last[0] == digest:
+            continue
+        conn.execute("INSERT INTO injury_reports (captured_at, team, digest, items) VALUES (?,?,?,?)",
+                     (captured_at, team, digest, json.dumps(rows, ensure_ascii=False)))
+        changed += 1
+    return changed
+
+
+def injury_history(conn, teams) -> Dict[str, List[dict]]:
+    """球队名单历史，按记录先后排列：``{team: [{captured_at, items}]}``。"""
+    teams = list(teams)
+    out: Dict[str, List[dict]] = {team: [] for team in teams}
+    if not teams:
+        return out
+    for row in conn.execute(
+            f"SELECT team, captured_at, items FROM injury_reports WHERE team IN ({','.join('?' * len(teams))}) ORDER BY id",
+            teams):
+        try:
+            items = json.loads(row["items"])
+        except ValueError:
+            continue
+        out[row["team"]].append({"captured_at": row["captured_at"], "items": items})
+    return out
 
 
 def start_run(conn, job: str) -> int:

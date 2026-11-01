@@ -4,6 +4,8 @@
   每行 ``data-subactive`` 标明单关/过关是否开售，例如 ``rfsfdg:0,rfsfgg:1`` 表示让分只开过关。
 - ESPN：``scoreboard?dates=<美国日期>``，内嵌一家国际博彩公司的让分与总分（通常为
   DraftKings），只是抓取时点的快照；开赛前多次抓取的最后一条作为“收盘线”近似。
+- ESPN 伤停：``injuries``，全联盟当前伤停名单（球员、状态、伤病部位、最近更新时间），
+  汇总自球队与联盟官方伤停报告；只是抓取时点的名单，历史由本库按变化追加保存。
 竞彩销售日（北京时间）与 ESPN 的美国比赛日相同：北京 D 日销售的场次在美国 D 日开打。
 """
 from __future__ import annotations
@@ -22,6 +24,7 @@ from lottery.teams import ABBR2KEY, CN2KEY
 BEIJING = ZoneInfo("Asia/Shanghai")
 JC_URL = "https://trade.500.com/jclq/"
 ESPN_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+ESPN_INJURIES_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/injuries"
 HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0"}
 TIMEOUT = 25
 RETRY_ATTEMPTS = 3
@@ -178,6 +181,29 @@ def parse_espn(payload: dict) -> List[dict]:
 def fetch_espn(day: str, session=None) -> List[dict]:
     response = _get(ESPN_URL, {"dates": day.replace("-", "")}, session)
     return parse_espn(response.json())
+
+
+def parse_injuries(payload: dict) -> List[dict]:
+    """把 ESPN 伤停名单转成 ``{team, player, status, type, updated, return_date}``；只保留能映射的球队。"""
+    out = []
+    for team in (payload or {}).get("injuries", []):
+        for entry in team.get("injuries") or []:
+            athlete = entry.get("athlete") or {}
+            key = ABBR2KEY.get(((athlete.get("team") or {}).get("abbreviation") or "").upper())
+            player = (athlete.get("displayName") or "").strip()
+            status = (entry.get("status") or "").strip()
+            if not key or not player or not status:
+                continue
+            details = entry.get("details") or {}
+            out.append({"team": key, "player": player, "status": status,
+                        "type": (details.get("type") or "").strip() or None,
+                        "updated": entry.get("date"), "return_date": details.get("returnDate")})
+    return out
+
+
+def fetch_injuries(session=None) -> List[dict]:
+    response = _get(ESPN_INJURIES_URL, {}, session)
+    return parse_injuries(response.json())
 
 
 def now_beijing() -> datetime:

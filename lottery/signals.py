@@ -39,6 +39,8 @@ MAX_PICKS_PER_DAY = int(os.environ.get("LOTTERY_MAX_PICKS", "3"))
 MAX_EDGE_POINTS = 8.0  # 偏离过大多半是数据错配（换线、伤停未同步），不入选
 STRATEGY = "sharp"
 FULL_CARD_STRATEGY = "all_games"  # 每场每玩法都出一个选择，不设期望值门槛
+LATE_STRATEGY = "sharp_late"  # 与主信号同一规则，改在竞彩停售前最后一次采集时出单（影子对照）
+LATE_WINDOW_MINUTES = float(os.environ.get("LOTTERY_LATE_WINDOW_MINUTES", "45"))
 
 
 def win_probability(points: float, market: str) -> float:
