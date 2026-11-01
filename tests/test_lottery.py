@@ -1,4 +1,4 @@
-"""体彩 NBA 纸面验证：解析、点值换算、出单只记一次、结算与收盘价差、公开边界。"""
+"""体彩 NBA 纸面验证：解析、点值换算、出单只记一次、全场预测、结算与收盘价差、公开接口。"""
 import csv
 import os
 import sys
@@ -109,6 +109,18 @@ class SignalTests(unittest.TestCase):
         game.update(jc_total=233.5, ref_total=228.5)
         self.assertEqual({c["market"]: c for c in signals.candidates(game)}["大小分"]["side"], "小")
 
+    def test_full_card_picks_every_open_market(self):
+        game = {"jc_line": 1.5, "ref_line": -1.5, "jc_sp_home": 1.70, "jc_sp_away": 1.75,
+                "jc_total": 230.5, "ref_total": 230.5, "jc_sp_over": 1.70, "jc_sp_under": 1.80}
+        by_market = {c["market"]: c for c in signals.full_card(game)}
+        self.assertEqual(set(by_market), {"让分", "大小分"}, "每个开售玩法都出一个选择")
+        self.assertEqual((by_market["让分"]["side"], by_market["让分"]["edge"]), ("主", 3.0), "有偏离时选便宜的一侧")
+        self.assertEqual(by_market["大小分"]["side"], "小", "无偏离时选赔率更高的一侧")
+        self.assertLess(by_market["大小分"]["ev"], 0, "不设门槛：负期望值也记录")
+        no_ref = signals.full_card({"jc_line": -3.5, "jc_sp_home": 1.65, "jc_sp_away": 1.80})
+        self.assertEqual([(c["market"], c["side"], c["p_win"], c["ev"]) for c in no_ref], [("让分", "客", None, None)],
+                         "缺国际线按赔率选边，胜率留空；未开售的大小分跳过")
+
     def test_selection_caps_and_ignores_suspicious_gaps(self):
         base = {"jc_sp_home": 1.70, "jc_sp_away": 1.70}
         games = [{**base, "jc_line": 4.5, "ref_line": 0.5}, {**base, "jc_line": 3.5, "ref_line": 0.5},
@@ -146,19 +158,23 @@ class JobTests(unittest.TestCase):
 
     def test_pick_recorded_once_and_never_rewritten(self):
         first = self.run_picks("客队受让1.5分")  # 竞彩主队 -1.5，与国际线相同
-        self.assertEqual(first["new_picks"], 0, "竞彩与国际线一致时不出单")
+        self.assertEqual(first["new_picks"], 0, "竞彩与国际线一致时主信号不出单")
+        self.assertEqual(first["new_full_card"], 2, "全场预测不设门槛：让分、大小分各一条")
         summary = self.run_picks("客队让1.5分")  # 竞彩主队 +1.5，国际主队 -1.5 → 偏离 3 分
-        self.assertEqual(summary["new_picks"], 1)
+        self.assertEqual((summary["new_picks"], summary["new_full_card"]), (1, 0), "全场预测同样只记第一次")
         again = self.run_picks("客队让4.5分")
         self.assertEqual(again["new_picks"], 0, "同场同玩法只记第一次决定")
         with store.session(self.db) as conn:
-            rows = conn.execute("SELECT side, line, edge FROM picks").fetchall()
+            rows = conn.execute("SELECT side, line, edge FROM picks WHERE strategy='sharp'").fetchall()
+            full = conn.execute("SELECT market, line FROM picks WHERE strategy='all_games' ORDER BY market").fetchall()
             snaps = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
         self.assertEqual([tuple(r) for r in rows], [("主", 1.5, 3.0)])
+        self.assertEqual([tuple(r) for r in full], [("大小分", 234.5), ("让分", -1.5)], "全场预测保留首次出单时的线")
         self.assertEqual(snaps, 3, "每次抓取都追加快照")
 
     def test_no_pick_after_sales_close(self):
-        self.assertEqual(self.run_picks("客队让1.5分", hour=23)["new_picks"], 0)
+        result = self.run_picks("客队让1.5分", hour=23)
+        self.assertEqual((result["new_picks"], result["new_full_card"]), (0, 0))
 
     def test_capture_records_close_line_and_settles_with_clv(self):
         self.run_picks("客队让1.5分")
@@ -167,7 +183,7 @@ class JobTests(unittest.TestCase):
         jobs.run_capture(now=datetime(2026, 11, 1, 6, 0, tzinfo=BJ), db_path=self.db,
                          fetch_espn=lambda day: sources.parse_espn(espn(state="post", scores=(100, 105))) if day == "2026-10-31" else [])
         with store.session(self.db) as conn:
-            pick = dict(conn.execute("SELECT result, pnl, close_ref, clv FROM picks").fetchone())
+            pick = dict(conn.execute("SELECT result, pnl, close_ref, clv FROM picks WHERE strategy='sharp'").fetchone())
         self.assertEqual(pick, {"result": "输", "pnl": -1.0, "close_ref": -2.5, "clv": 4.0})
 
     def test_import_legacy_ledger_is_idempotent(self):
@@ -242,26 +258,32 @@ class PublicApiTests(unittest.TestCase):
         month = 10 if day == 31 else 11
         return patch.object(self.router, "now_beijing", return_value=datetime(2026, month, day, hour, 0, tzinfo=BJ))
 
-    def test_pregame_picks_are_hidden(self):
+    def test_picks_public_as_soon_as_recorded(self):
         with self.at(22):
             ledger = self.client.get("/api/lottery/ledger").json()
             summary = self.client.get("/api/lottery/summary").json()
             games = self.client.get("/api/lottery/games").json()
-        self.assertEqual(ledger["total"], 0)
-        self.assertEqual(summary["hidden_pregame_picks"], 1)
-        self.assertIsNone(games["games"][0]["analysis"])
-        self.assertEqual(games["games"][0]["picks"], [])
+            sharp_only = self.client.get("/api/lottery/ledger?strategy=sharp").json()
+        self.assertEqual(ledger["total"], 3, "开赛前即公开：主信号 1 注 + 全场预测 2 条")
+        self.assertEqual(sharp_only["items"][0]["selection"], "爵士 +1.5")
+        self.assertFalse(sharp_only["items"][0]["started"])
+        self.assertEqual(summary["latest_day_picks"], {"sharp": 1, "all_games": 2})
+        self.assertEqual([s["key"] for s in summary["strategies"]], ["sharp", "all_games"], "两个策略分开统计")
+        self.assertTrue(games["games"][0]["analysis"], "开赛前展示偏离与期望值")
+        self.assertEqual(len(games["games"][0]["picks"]), 3)
         self.assertIn("不构成投注建议", summary["disclaimer"])
 
     def test_picks_visible_after_tip(self):
         with self.at(4, day=1):
-            ledger = self.client.get("/api/lottery/ledger").json()
+            ledger = self.client.get("/api/lottery/ledger?strategy=sharp").json()
             games = self.client.get("/api/lottery/games?sale_date=2026-10-31").json()
             health = self.client.get("/api/lottery/health").json()
         self.assertEqual(ledger["total"], 1)
         self.assertEqual(ledger["items"][0]["selection"], "爵士 +1.5")
+        self.assertTrue(ledger["items"][0]["started"])
         self.assertTrue(games["games"][0]["analysis"])
         self.assertEqual(health["jobs"]["picks"]["last_status"], "ok")
+        self.assertEqual(health["jobs"]["picks"]["detail"]["new_full_card"], 2)
         self.assertNotIn(self.folder.name, str(health), "不暴露内部路径")
 
     def test_missing_database_is_unavailable_not_created(self):

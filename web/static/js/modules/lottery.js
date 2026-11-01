@@ -3,7 +3,7 @@ const pct = (value, digits = 1) => known(value) ? `${(value * 100).toFixed(digit
 const signed = (value, digits = 2) => known(value) ? `${value > 0 ? '+' : ''}${value.toFixed(digits)}` : '—';
 const line = value => known(value) ? `${value > 0 ? '+' : ''}${value.toFixed(1)}` : '—';
 const total = value => known(value) ? value.toFixed(1) : '—';
-const LABELS = { sharp: '价格偏离（主信号）', model_legacy: '模型对照组（已停用）' };
+const LABELS = { sharp: '价格偏离（主信号）', all_games: '全场预测（每场必出）', model_legacy: '模型对照组（已停用）' };
 
 function cell(row, text, className) {
     const td = document.createElement('td');
@@ -74,8 +74,9 @@ export class LotteryTabs {
         if (data.disclaimer) this.text('lottery-disclaimer', data.disclaimer);
         const sharp = (data.strategies || []).find(item => item.key === 'sharp') || { overall: {} };
         const o = sharp.overall || {};
-        const hidden = data.hidden_pregame_picks ? ` · 另有 ${data.hidden_pregame_picks} 注未开赛，开赛后公开` : '';
-        this.text('lottery-status', `价格偏离信号的纸面记录 · 最近销售日 ${data.latest_sale_date || '—'}${hidden}`);
+        const latest = data.latest_day_picks || {};
+        const today = data.latest_sale_date ? ` · ${data.latest_sale_date} 全场预测 ${latest.all_games ?? 0} 条、主信号 ${latest.sharp ?? 0} 注` : '';
+        this.text('lottery-status', `价格偏离信号的纸面记录${today}`);
         this.text('lottery-settled', o.settled ?? 0);
         this.text('lottery-pending', `待结算 ${o.pending ?? 0} 注`);
         this.text('lottery-hit', pct(o.hit_rate));
@@ -126,8 +127,9 @@ export class LotteryTabs {
             ['期望值门槛', `≥ ${pct(t.min_ev, 0)}（按竞彩实际赔率与历史点值换算胜率）`],
             ['1.70 赔率下所需偏离', `让分 ≥ ${t.required_edge_at_1_70?.['让分'] ?? '—'} 分 · 大小分 ≥ ${t.required_edge_at_1_70?.['大小分'] ?? '—'} 分`],
             ['1.70 赔率保本命中率', pct(t.breakeven_at_1_70)],
-            ['每日上限', `${t.max_picks_per_day ?? '—'} 注 × 1 单位（1% 本金）`],
-            ['记录时点', '每天 21:40 一次，销售截止前；之后不改写'],
+            ['主信号每日上限', `${t.max_picks_per_day ?? '—'} 注 × 1 单位（1% 本金）`],
+            ['全场预测', '每场让分、大小分各选期望值更高的一侧，不设门槛，单独统计'],
+            ['记录时点', '每天北京时间 16:00 一次，出单即公开；之后不改写'],
         ];
         for (const [name, value] of facts) {
             const item = document.createElement('div');
@@ -198,25 +200,22 @@ export class LotteryTabs {
             body?.replaceChildren();
             if (!data.available || !data.games.length) { this.text('lottery-games-status', '该销售日没有竞彩 NBA 场次记录'); return; }
             if (input && !input.value) input.value = data.sale_date;
-            this.text('lottery-games-status', `销售日 ${data.sale_date} · ${data.games.length} 场${data.hidden_pregame_picks ? ` · ${data.hidden_pregame_picks} 注纸面记录开赛后公开` : ''}`);
+            this.text('lottery-games-status', `销售日 ${data.sale_date} · ${data.games.length} 场`);
             for (const g of data.games) {
                 const row = document.createElement('tr');
                 cell(row, g.matchnum);
                 cell(row, `${g.away} @ ${g.home}`);
                 cell(row, beijingTime(g.tip_at));
                 cell(row, `${line(g.jc_line)} (${(g.jc_odds || []).map(v => known(v) ? v.toFixed(2) : '—').join('/')})`);
-                cell(row, `${line(g.ref_line)}${g.started && known(g.close_ref_line) ? ` → 收盘 ${line(g.close_ref_line)}` : ''}`);
+                cell(row, `${line(g.ref_line)}${known(g.close_ref_line) ? ` → 收盘 ${line(g.close_ref_line)}` : ''}`);
                 cell(row, `${total(g.jc_total)} (${(g.jc_total_odds || []).map(v => known(v) ? v.toFixed(2) : '—').join('/')})`);
-                cell(row, `${total(g.ref_total)}${g.started && known(g.close_ref_total) ? ` → 收盘 ${total(g.close_ref_total)}` : ''}`);
+                cell(row, `${total(g.ref_total)}${known(g.close_ref_total) ? ` → 收盘 ${total(g.close_ref_total)}` : ''}`);
                 cell(row, `让分${g.single_spread ? '开' : '未开'} · 总分${g.single_total ? '开' : '未开'}`);
                 cell(row, g.score || (g.started ? '进行中' : '未开赛'));
                 const analysis = cell(row, '', 'analysis');
-                if (!g.started) analysis.textContent = '开赛后公开';
-                else {
-                    const parts = (g.analysis || []).map(a => `${a.market} 偏离 ${a.edge.toFixed(1)} 分 · 估算胜率 ${pct(a.p_win)} · 期望 ${pct(a.ev)}`);
-                    const picks = (g.picks || []).map(p => `纸面：${p.selection} @${p.odds.toFixed(2)}${p.result ? ` ${p.result}` : ''}`);
-                    analysis.textContent = [...parts, ...picks].join('；') || '无可比盘口';
-                }
+                const parts = (g.analysis || []).map(a => `${a.market} 有利 ${known(a.edge) ? `${a.edge.toFixed(1)} 分` : '—'} · 估算胜率 ${pct(a.p_win)} · 期望 ${pct(a.ev)}`);
+                const picks = (g.picks || []).map(p => `${p.strategy_label}：${p.selection} @${p.odds.toFixed(2)}${p.result ? ` ${p.result}` : ''}`);
+                analysis.textContent = [...parts, ...picks].join('；') || '无可比盘口';
                 body?.append(row);
             }
         } catch {
@@ -267,7 +266,7 @@ export class LotteryTabs {
             const data = await getJson(`${this.app.apiBase}/lottery/health`);
             list?.replaceChildren();
             if (!data.available) { list.textContent = '体彩任务尚未运行'; return; }
-            const names = { picks: '出单任务（每天 21:40）', capture: '收盘线与比分采集（每 30 分钟）' };
+            const names = { picks: '出单任务（每天 16:00）', capture: '收盘线与比分采集（每 30 分钟）' };
             const facts = Object.entries(data.jobs || {}).map(([job, info]) => [names[job] || job,
                 `最近运行 ${beijingTime(info.last_started_at)} · ${info.last_status === 'ok' ? '成功' : info.last_status || '未运行'} · 近 7 天失败 ${info.failures_7d} 次`]);
             facts.push(['最新盘口快照', beijingTime(data.latest_snapshot_at)]);

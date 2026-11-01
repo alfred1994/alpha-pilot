@@ -162,7 +162,7 @@ def main():
         assert_true("main.py --lottery-picks" in _read(paths["run_lottery_picks"]), "体彩出单脚本已生成")
         assert_true("main.py --lottery-capture" in _read(paths["run_lottery_capture"]), "体彩采集脚本已生成")
         assert_true("export BROKER_MODE=paper" in _read(paths["run_lottery_capture"]), "体彩脚本默认模拟盘")
-        assert_true("*-*-* 21:40:00" in _read(paths["lottery_picks_timer"]), "体彩出单在销售截止前运行")
+        assert_true("*-*-* 16:00:00" in _read(paths["lottery_picks_timer"]), "体彩出单每天北京时间16:00运行")
         assert_true("systemctl --user enable --now alpha-pilot-test-lottery-capture.timer" in install, "安装脚本启用体彩采集timer")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto.service" in install, "安装脚本启用Auto服务")
         assert_true("systemctl --user enable --now alpha-pilot-test-auto-restart.timer" in install, "安装脚本启用Auto-Restart timer")

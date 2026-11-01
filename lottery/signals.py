@@ -38,6 +38,7 @@ MIN_EV = float(os.environ.get("LOTTERY_MIN_EV", "0.02"))
 MAX_PICKS_PER_DAY = int(os.environ.get("LOTTERY_MAX_PICKS", "3"))
 MAX_EDGE_POINTS = 8.0  # 偏离过大多半是数据错配（换线、伤停未同步），不入选
 STRATEGY = "sharp"
+FULL_CARD_STRATEGY = "all_games"  # 每场每玩法都出一个选择，不设期望值门槛
 
 
 def win_probability(points: float, market: str) -> float:
@@ -113,6 +114,45 @@ def select_picks(games: List[dict], *, min_ev: float = None, max_picks: int = No
                 pool.append({**cand, "game": game})
     pool.sort(key=lambda item: item["ev"], reverse=True)
     return pool[:max(0, limit)]
+
+
+# (玩法, 竞彩线字段, 国际线字段, 第一侧, 第一侧赔率字段, 第二侧, 第二侧赔率字段, 单关字段)
+_MARKETS = (
+    ("让分", "jc_line", "ref_line", "主", "jc_sp_home", "客", "jc_sp_away", "single_spread"),
+    ("大小分", "jc_total", "ref_total", "大", "jc_sp_over", "小", "jc_sp_under", "single_total"),
+)
+
+
+def _first_side_points(market: str, jc: float, ref: float) -> float:
+    """第一侧（主 / 大）相对国际线的有利分数；负数表示第二侧（客 / 小）更便宜。"""
+    return jc - ref if market == "让分" else ref - jc
+
+
+def full_card(game: dict) -> List[dict]:
+    """每场比赛每个玩法都给出一个选择：两侧中期望值更高的一侧，不设门槛。
+
+    有国际线时按点值表估算两侧胜率（偏离为 0 时两侧各约 50%，于是选赔率更高的一侧）；
+    缺国际线时无法估算胜率，只按赔率更高的一侧记录，胜率与期望值留空。
+    竞彩线或赔率缺失（未开售）的玩法跳过。
+    """
+    out = []
+    for market, jc_key, ref_key, side_a, odds_a_key, side_b, odds_b_key, single_key in _MARKETS:
+        jc = _num(game.get(jc_key))
+        odds_a, odds_b = _num(game.get(odds_a_key)), _num(game.get(odds_b_key))
+        if jc is None or not odds_a or not odds_b or odds_a <= 1 or odds_b <= 1:
+            continue
+        ref = _num(game.get(ref_key))
+        if ref is None:
+            side, odds, p, ev, edge = (side_a, odds_a, None, None, None) if odds_a >= odds_b else (side_b, odds_b, None, None, None)
+        else:
+            points = _first_side_points(market, jc, ref)
+            p_a = win_probability(points, market)
+            options = [(side_a, odds_a, p_a, points), (side_b, odds_b, 1.0 - p_a, -points)]
+            side, odds, p, edge = max(options, key=lambda o: (expected_value(o[2], o[1]), o[1]))
+            ev = expected_value(p, odds)
+        out.append({"market": market, "side": side, "line": jc, "ref_line": ref, "edge": edge,
+                    "odds": odds, "p_win": p, "ev": ev, "single_open": game.get(single_key)})
+    return out
 
 
 def required_edge(odds: float, market: str, min_ev: float = None) -> Optional[float]:

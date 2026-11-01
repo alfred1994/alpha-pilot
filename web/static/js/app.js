@@ -5,7 +5,7 @@ import { DashboardTab } from './modules/dashboard.js?v=2026100901';
 import { DecisionsTab } from './modules/decisions.js?v=2026100901';
 import { EvolutionTab } from './modules/evolution.js?v=2026100901';
 import { HealthTab } from './modules/health.js?v=2026080201';
-import { LotteryTabs } from './modules/lottery.js?v=2026110101';
+import { LotteryTabs } from './modules/lottery.js?v=2026110202';
 
 class App {
     constructor() {

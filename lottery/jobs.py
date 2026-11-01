@@ -56,21 +56,32 @@ def run_picks(*, day: str = None, now: datetime = None, db_path: str = None,
 
             open_games = [g for g in games if _still_open(g) and (g.get("state") in (None, "", "pre"))]
             already = store.count_picks(conn, day, signals.STRATEGY)
-            chosen = signals.select_picks(open_games, already=already)
-            new = 0
-            for item in chosen:
+            chosen = [(signals.STRATEGY, item) for item in signals.select_picks(open_games, already=already)]
+            chosen += [(signals.FULL_CARD_STRATEGY, {**item, "game": game})
+                       for game in open_games for item in signals.full_card(game)]
+            new = new_full = 0
+
+            def _round(value, digits):
+                return None if value is None else round(value, digits)
+
+            for strategy, item in chosen:
                 game = item.pop("game")
-                new += store.add_pick(conn, {
+                added = store.add_pick(conn, {
                     "sale_date": day, "matchnum": game["matchnum"], "home": game["home"], "away": game["away"],
-                    "home_cn": game["home_cn"], "away_cn": game["away_cn"], "strategy": signals.STRATEGY,
+                    "home_cn": game["home_cn"], "away_cn": game["away_cn"], "strategy": strategy,
                     "market": item["market"], "side": item["side"], "line": item["line"], "odds": item["odds"],
-                    "ref_line": item["ref_line"], "edge": round(item["edge"], 2),
-                    "p_win": round(item["p_win"], 4), "ev": round(item["ev"], 4),
+                    "ref_line": item["ref_line"], "edge": _round(item["edge"], 2),
+                    "p_win": _round(item["p_win"], 4), "ev": _round(item["ev"], 4),
                     "single_open": None if item["single_open"] is None else int(bool(item["single_open"])),
                     "tip_at": game["tip_at"],
                 })
+                if strategy == signals.STRATEGY:
+                    new += added
+                else:
+                    new_full += added
             summary = {"status": "ok", "date": day, "games": len(games), "with_ref": sum(g.get("ref_line") is not None for g in games),
-                       "open_games": len(open_games), "new_picks": new, "picks_today": already + new}
+                       "open_games": len(open_games), "new_picks": new, "picks_today": already + new,
+                       "new_full_card": new_full, "full_card_today": store.count_picks(conn, day, signals.FULL_CARD_STRATEGY)}
             store.finish_run(conn, run_id, "ok", json.dumps(summary, ensure_ascii=False))
             return summary
         except Exception as exc:

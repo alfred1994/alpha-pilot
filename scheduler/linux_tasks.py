@@ -640,7 +640,7 @@ def generate_linux_task_scripts(
             "AlphaPilot 体彩NBA纸面出单（销售截止前，不下单）", target_paths["run_lottery_picks"], timeout_start_sec=360,
         ),
         paths["lottery_picks_timer"]: _calendar_timer_unit(
-            "AlphaPilot 体彩NBA纸面出单（每天21:40）", os.path.basename(paths["lottery_picks_service"]), "*-*-* 21:40:00",
+            "AlphaPilot 体彩NBA纸面出单（每天16:00）", os.path.basename(paths["lottery_picks_service"]), "*-*-* 16:00:00",
         ),
         paths["lottery_capture_service"]: _oneshot_service_unit(
             "AlphaPilot 体彩NBA收盘线与比分采集结算", target_paths["run_lottery_capture"], timeout_start_sec=360,

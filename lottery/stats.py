@@ -5,7 +5,8 @@ import math
 from collections import OrderedDict
 from typing import Dict, Iterable, List
 
-STRATEGY_LABELS = {"sharp": "价格偏离（主信号）", "model_legacy": "模型对照组（已停用）"}
+STRATEGY_LABELS = {"sharp": "价格偏离（主信号）", "all_games": "全场预测（每场必出）",
+                   "model_legacy": "模型对照组（已停用）"}
 BANKROLL_UNITS = 100.0          # 1 注 = 1 单位 = 1% 本金
 STOP_RULES = (
     {"at": 50, "metric": "hit_rate", "threshold": 0.55, "label": "累计 50 注时命中率 < 55% → 停"},

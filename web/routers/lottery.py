@@ -1,7 +1,7 @@
 """体彩 NBA 纸面验证的只读接口。
 
-公开边界：注单在开赛前不公开（只给数量），开赛或结算后才展示选边、赔率与偏离；
-场次页在开赛前只展示两家公开盘口，不展示计算出的偏离和期望值。
+注单在出单时即公开（选边、赔率、偏离、估算胜率与期望值），赛后补结果与收盘价差；
+场次页同样在开赛前展示偏离与期望值。
 """
 import json
 import sqlite3
@@ -18,9 +18,9 @@ from lottery.teams import KEY2CN
 from web.api_errors import unavailable
 
 router = APIRouter()
-DISCLAIMER = "纸面验证记录，不构成投注建议；不代购、不荐彩。理性购彩，未满 18 周岁禁止购彩。"
+DISCLAIMER = "纸面预测记录，不构成投注建议；不代购、不下单。理性购彩，未满 18 周岁禁止购彩。"
 RUN_DETAIL_KEYS = ("date", "games", "with_ref", "open_games", "new_picks", "picks_today",
-                   "games_updated", "close_lines", "settled")
+                   "new_full_card", "full_card_today", "games_updated", "close_lines", "settled")
 
 
 @contextmanager
@@ -44,10 +44,6 @@ def _started(tip_at: Optional[str], now: datetime) -> bool:
         return bool(tip_at) and datetime.fromisoformat(tip_at) <= now
     except ValueError:
         return False
-
-
-def _visible(row: dict, now: datetime) -> bool:
-    return bool(row.get("result")) or _started(row.get("tip_at"), now)
 
 
 def _pick_view(row: dict) -> dict:
@@ -80,22 +76,21 @@ def lottery_summary():
                 return {"success": True, "available": False, "disclaimer": DISCLAIMER}
             rows = _all_picks(conn)
             last_game_day = conn.execute("SELECT MAX(sale_date) FROM games").fetchone()[0]
-        visible = [r for r in rows if _visible(r, now)]
-        hidden = [r for r in rows if not _visible(r, now)]
         strategies = []
-        for key in ("sharp", "model_legacy"):
-            subset = [r for r in visible if r["strategy"] == key]
+        for key in ("sharp", "all_games", "model_legacy"):
+            subset = [r for r in rows if r["strategy"] == key]
             if not subset and key != "sharp":
                 continue
             by_market = {m: stats.summarize([r for r in subset if r["market"] == m]) for m in ("让分", "大小分")}
             strategies.append({"key": key, "label": stats.STRATEGY_LABELS[key],
                                "overall": stats.summarize(subset), "by_market": by_market})
+        latest_rows = [r for r in rows if r["sale_date"] == last_game_day and r["strategy"] in ("sharp", "all_games")]
         return {
             "success": True, "available": True, "as_of": now.isoformat(timespec="seconds"),
             "latest_sale_date": last_game_day, "strategies": strategies,
-            "stop_rules": stats.stop_status([r for r in visible if r["strategy"] == "sharp"]),
-            "curve": stats.curve(visible),
-            "hidden_pregame_picks": len(hidden),
+            "latest_day_picks": {key: sum(r["strategy"] == key for r in latest_rows) for key in ("sharp", "all_games")},
+            "stop_rules": stats.stop_status([r for r in rows if r["strategy"] == "sharp"]),
+            "curve": stats.curve(rows),
             "thresholds": {
                 "min_ev": signals.MIN_EV, "max_picks_per_day": signals.MAX_PICKS_PER_DAY,
                 "required_edge_at_1_70": {m: signals.required_edge(1.70, m) for m in ("让分", "大小分")},
@@ -140,20 +135,16 @@ def lottery_games(sale_date: Optional[date] = None):
                 "single_spread": None if snap.get("single_spread") is None else bool(snap["single_spread"]),
                 "single_total": None if snap.get("single_total") is None else bool(snap["single_total"]),
                 "ref_provider": snap.get("ref_provider"), "ref_line": snap.get("ref_line"), "ref_total": snap.get("ref_total"),
-                "close_ref_line": game.get("close_ref_line") if started else None,
-                "close_ref_total": game.get("close_ref_total") if started else None,
+                "close_ref_line": game.get("close_ref_line"),
+                "close_ref_total": game.get("close_ref_total"),
                 "captured_at": snap.get("captured_at"),
                 "analysis": None, "picks": [],
             }
-            if started:
-                cands = signals.candidates({**snap, "single_spread": snap.get("single_spread"),
-                                            "single_total": snap.get("single_total")}) if snap else []
-                item["analysis"] = [{k: c[k] for k in ("market", "side", "edge", "odds", "p_win", "ev")} for c in cands]
-                item["picks"] = [_pick_view(p) for p in picks.get(key, [])]
+            cands = signals.full_card(snap) if snap else []
+            item["analysis"] = [{k: c[k] for k in ("market", "side", "edge", "odds", "p_win", "ev")} for c in cands]
+            item["picks"] = [_pick_view(p) for p in sorted(picks.get(key, []), key=lambda p: (p["strategy"], p["market"]))]
             out.append(item)
-        hidden = sum(len(v) for k, v in picks.items()) - sum(len(g["picks"]) for g in out)
-        return {"success": True, "available": True, "sale_date": day, "games": out,
-                "hidden_pregame_picks": hidden, "disclaimer": DISCLAIMER}
+        return {"success": True, "available": True, "sale_date": day, "games": out, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
 
@@ -171,11 +162,10 @@ def lottery_ledger(strategy: Optional[str] = None, market: Optional[str] = None,
             if conn is None:
                 return {"success": True, "available": False, "items": [], "total": 0, "disclaimer": DISCLAIMER}
             rows = _all_picks(conn)
-        rows = [r for r in rows if _visible(r, now)
-                and (not strategy or r["strategy"] == strategy) and (not market or r["market"] == market)]
+        rows = [r for r in rows if (not strategy or r["strategy"] == strategy) and (not market or r["market"] == market)]
         rows.sort(key=lambda r: (r["sale_date"], r["id"]), reverse=True)
-        return {"success": True, "available": True, "total": len(rows),
-                "items": [_pick_view(r) for r in rows[offset:offset + limit]], "disclaimer": DISCLAIMER}
+        items = [{**_pick_view(r), "started": _started(r.get("tip_at"), now)} for r in rows[offset:offset + limit]]
+        return {"success": True, "available": True, "total": len(rows), "items": items, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
 
