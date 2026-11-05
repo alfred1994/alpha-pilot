@@ -102,3 +102,25 @@ python scripts/run_tests.py --run-one tests/test_etf_forward.py
 
 覆盖真实时间截止、训练标签隔离、漏跑/修订阻断、并发幂等、日历扩展、模型校验、
 严格成交门禁与补齐、历史账本不可改变以及观察终止。合成数据测试只检验实现契约，不是收益证据。
+
+## 2026-11-05 停用与替代
+
+服务器上的观察自 2026-10-15 起每日报 `missed_observation_day`（设计上漏记一天即永久阻断、
+不允许回填），三周未产生新证据，因此停用 timer：
+
+```bash
+systemctl --user disable --now alpha-pilot-forward-research.timer
+```
+
+保留已有实验状态与快照，不删除。恢复：重新初始化一个新观察窗口后
+`python scripts/install_forward_research.py --install`。
+
+替代的 ML 前向证据改为风格池影子记录：`strategy.style_shadow.run_daily` 每日为风格池成员
+记录 pooled ML 分（表 `ml_scores`），`python main.py --style-shadow-report` 输出池内逐日 RankIC。
+漏跑某天只少一个样本，不会作废整个实验。达到 5 日成熟信号 ≥20 天且 RankIC ≥0.02 后，
+才考虑把 ML 分用作风格内排序的次要键（仍需人工确认）。
+
+已知问题：pooled ML 的 12 个特征中均线与 ATR 是绝对价位（元），不同价位的股票不可比；
+旧路径 6 维打分中 ML 维度的实测日均 RankIC 约 +0.015（13 天），与此相符。
+风格池影子用等比前复权价（按截至日不复权收盘缩放），与训练用的 `k_daily` 等差前复权
+口径不完全一致，31 只重合样本的分数相关约 0.51。特征标准化需要重训模型，另行处理。

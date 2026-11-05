@@ -99,7 +99,10 @@ positive/neutral/negative 三分类。
   neutral 0.902；两个 miss 为领域细微差（减持→neutral）与关键词带偏
   （"增速符合预期"→positive），属于已知边界；
 - **用法**：盘后 `python -m strategy.laya_text <YYYY-MM-DD>` 对该日候选
-  打分，落盘 `data/laya/text_sentiment_<date>.json`（并刷新
+  （当日 MiMo 判断过的代码 + 当日盘中使用的实盘风格池成员，合并去重，最多 50 只）
+  打分。`CANDIDATE_SOURCE=style_pools` 下 LLM 只做否决，`llm_decisions` 常为空，
+  所以要并入风格池；当日没有任何候选时只评市场头条/热帖，不再判任务失败
+  （2026-11-04/05 曾因此连续失败）。结果落盘 `data/laya/text_sentiment_<date>.json`（并刷新
   `text_sentiment_latest.json`）+ `laya_text_sentiment` 事件；
 - **消费方**：trader brief 的 `text_sentiment` 字段 → 复盘 prompt 追加一行
   证据（"头条/热帖 N利好/N中性/N利空；个股新闻: 代码(利/中/空)"），与

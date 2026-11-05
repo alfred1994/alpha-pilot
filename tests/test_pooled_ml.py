@@ -13,6 +13,7 @@ from data.database import Database
 from strategy.pooled_ml import (
     get_pooled_model_status,
     load_pooled_model,
+    predict_frames,
     predict_pooled,
     train_pooled_model,
 )
@@ -166,5 +167,24 @@ def main():
                 os.unlink(path)
 
 
+def test_predict_frames():
+    """风格池影子打分：特征不全的代码跳过，模型不可用时返回原因。"""
+    from unittest import mock
+    import pandas as pd
+    import strategy.pooled_ml as pm
+    close = pd.Series(10 + np.arange(100) * 0.01 + (np.arange(100) % 5) * 0.1)  # 有涨有跌，RSI 才有定义
+    full = pd.DataFrame({"open": close, "high": close + 0.1, "low": close - 0.1, "close": close,
+                         "volume": 1000.0, "amount": 1e4, "pctChg": close.pct_change() * 100})
+    model = FakeModel()
+    model.mean = 0.6
+    with mock.patch.object(pm, "load_pooled_model", return_value=(model, {"model_version": "v"})):
+        scores, metadata = predict_frames({"600001": full, "600002": full.tail(30)})
+    assert_true(scores == {"600001": 60.0} and metadata["model_version"] == "v", "特征完整的代码打分，历史不足的跳过")
+    with mock.patch.object(pm, "load_pooled_model", return_value=(None, {"reason": "artifact_not_found"})):
+        scores, metadata = predict_frames({"600001": full})
+    assert_true(scores == {} and metadata["reason"] == "artifact_not_found", "模型不可用返回空与原因")
+
+
 if __name__ == "__main__":
     main()
+    test_predict_frames()

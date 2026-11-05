@@ -3,6 +3,7 @@ import os
 import sys
 import tempfile
 import unittest
+from contextlib import closing
 from datetime import datetime
 
 import numpy as np
@@ -125,6 +126,47 @@ class ShadowRunTests(unittest.TestCase):
             self.assertIn("low_vol_defensive", report["styles"])
             self.assertFalse(report["styles"]["low_vol_defensive"]["promotion_ready"], "单日样本不得晋级")
             self.assertIn("晋级门槛", ss.format_report(report))
+
+    def test_ml_shadow_scores_rescale_skip_history_and_report_rank_ic(self):
+        panel = synthetic_panel()
+        panel["raw_close"] = panel["close"] / 3  # 后复权价 ≠ 不复权价
+        dates = list(panel["close"].index)
+        codes = list(panel["close"].columns)
+        frames = ss._ml_frames(panel, dates[-1], codes[:2] + ["999999"])
+        self.assertEqual(sorted(frames), codes[:2])
+        self.assertAlmostEqual(frames[codes[0]]["close"].iloc[-1], panel["raw_close"][codes[0]].iloc[-1])
+        self.assertEqual(len(frames[codes[0]]), ss.ML_HISTORY_BARS)
+
+        with tempfile.TemporaryDirectory() as folder:
+            db = os.path.join(folder, "shadow.db")
+            seen = []
+
+            def fake_predict(frames):
+                seen.append(len(frames))
+                return {code: float(i) for i, code in enumerate(frames)}, {"model_version": "v", "data_cutoff": dates[-1]}
+            with closing(ss.connect(db)) as conn:
+                self.assertEqual(ss.record_ml_scores(conn, panel, dates[-2], codes, fake_predict)["reason"],
+                                 "not_latest_date")
+                self.assertEqual(ss.record_ml_scores(conn, panel, dates[-1], codes, fake_predict)["scored"], len(codes))
+                late = ss.record_ml_scores(conn, panel, dates[-1], codes,
+                                           lambda f: ({"600000": 1.0}, {"data_cutoff": "2999-01-01"}))
+                self.assertEqual(late["status"], "skipped")
+                self.assertEqual(ss.record_ml_scores(conn, panel, dates[-1], codes,
+                                                     lambda f: ({}, {"reason": "artifact_not_found"}))["status"],
+                                 "unavailable")
+                # 植入完美信号：ML 分 = 历史某日之后 5 日真实收益
+                fwd = sp.forward_returns(panel, 5)
+                rows = [(d, c, float(fwd.loc[d, c]), "v") for d in dates[-40:-20] for c in codes]
+                conn.executemany("INSERT OR REPLACE INTO ml_scores VALUES (?,?,?,?)", rows)
+                conn.execute("INSERT INTO style_candidates VALUES (?,?,?,?,?,?)",
+                             (dates[-40], "factor_top", codes[0], 1, 1.0, "{}"))
+                conn.commit()
+            self.assertEqual(seen, [len(codes)] * 1)
+            report = ss.evaluate(db_path=db, main_db=os.path.join(folder, "none.db"), panel=panel, horizons=(5,))
+            self.assertEqual(report["ml"]["5d"]["signal_days"], 20)
+            self.assertGreater(report["ml"]["5d"]["mean_rank_ic"], 0.9)
+            self.assertTrue(report["ml"]["promotion_ready"])
+            self.assertIn("池内 ML 分", ss.format_report(report))
 
     def test_latest_report_calendar(self):
         self.assertEqual(ss.latest_report(datetime(2026, 11, 2)), "2026-3")

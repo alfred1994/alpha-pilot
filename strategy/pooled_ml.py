@@ -562,6 +562,29 @@ def predict_pooled(codes: List[str], db_path: str = None,
     return result
 
 
+def predict_frames(frames: Dict[str, pd.DataFrame], model_path: str = None,
+                   metadata_path: str = None) -> Tuple[Dict[str, float], Dict]:
+    """对调用方已准备好的日线（列同 k_daily）批量打分，返回 ({code: 0-100 分}, 模型元数据)。
+
+    供风格池影子记录使用：数据来自全市场复权库，覆盖面比 k_daily 大；不做数据新鲜度判断，
+    由调用方保证 frames 截止于同一收盘日。模型不可用时返回空字典与原因。
+    """
+    model, metadata = load_pooled_model(model_path, metadata_path)
+    if model is None:
+        return {}, metadata
+    codes, rows = [], []
+    for code, frame in frames.items():
+        features = build_features(frame)
+        last = features[FEATURE_COLS].tail(1)
+        if len(last) and last.notna().all(axis=1).iloc[0]:
+            codes.append(str(code))
+            rows.append(last.to_numpy(dtype=float)[0])
+    if not rows:
+        return {}, metadata
+    probabilities = model.predict_proba(np.vstack(rows))[:, 1]
+    return {code: round(float(p) * 100, 2) for code, p in zip(codes, probabilities)}, metadata
+
+
 def get_pooled_model_status(metadata_path: str = None, model_path: str = None,
                             max_data_age_days: int = MAX_DATA_AGE_DAYS) -> Dict:
     """返回与加载器一致的artifact状态，避免过期模型被展示为 ready。"""

@@ -35,6 +35,9 @@ ROUND_TRIP_COST = 0.0003 * 2 + 0.0005 + 0.0005 * 2  # 佣金双边 + 印花税 +
 INDICATOR_BUDGET = int(os.environ.get("STYLE_INDICATOR_BUDGET", "400"))
 INDICATOR_STALE_DAYS = 120
 PROMOTION_MIN_SIGNAL_DAYS = 20
+ML_HISTORY_BARS = 120          # 计算 pooled ML 特征所需的日线长度（ma60 + 余量）
+ML_PROMOTION_MIN_DAYS = 20     # ML 分进入风格内排序前所需的成熟信号日
+ML_PROMOTION_MIN_RANK_IC = 0.02
 PROMOTION_MIN_EXCESS_5D = 0.003
 
 SCHEMA = (
@@ -51,6 +54,8 @@ SCHEMA = (
         ps_ttm REAL, pcf_ttm REAL, PRIMARY KEY (date, code)) WITHOUT ROWID""",
     """CREATE TABLE IF NOT EXISTS fundamentals (code TEXT PRIMARY KEY, report TEXT, fetched_at TEXT,
         roe REAL, np_yoy REAL, rev_yoy REAL, gross_margin REAL, debt_ratio REAL, cash_content REAL)""",
+    """CREATE TABLE IF NOT EXISTS ml_scores (date TEXT, code TEXT, score REAL, model_version TEXT,
+        PRIMARY KEY (date, code)) WITHOUT ROWID""",
 )
 
 INDICATOR_FIELDS = {
@@ -205,6 +210,55 @@ def _load_snapshot(conn, date: str):
     return valuations, fundamentals
 
 
+def _ml_frames(panel: Dict[str, pd.DataFrame], asof: str, codes: Iterable[str]) -> Dict[str, pd.DataFrame]:
+    """把复权宽表切成 pooled ML 需要的单股日线。
+
+    ML 特征含绝对价位（均线/ATR），训练用 k_daily 前复权口径；这里把后复权价按截至日的
+    不复权收盘整体缩放，得到截至日价位一致的等比前复权序列，涨跌幅取复权收盘的日收益。
+    """
+    pos = list(panel["close"].index).index(asof)
+    window = slice(max(0, pos - ML_HISTORY_BARS + 1), pos + 1)
+    frames = {}
+    for code in codes:
+        if code not in panel["close"].columns:
+            continue
+        adj_close = panel["close"][code].iloc[window]
+        raw_last, adj_last = panel["raw_close"][code].iloc[pos], adj_close.iloc[-1]
+        if not (raw_last > 0 and adj_last > 0):
+            continue
+        scale = raw_last / adj_last
+        frame = pd.DataFrame({column: panel[column][code].iloc[window] * scale
+                              for column in ("open", "high", "low", "close")})
+        frame["volume"] = panel["volume"][code].iloc[window]
+        frame["amount"] = panel["amount"][code].iloc[window]
+        frame["pctChg"] = adj_close.pct_change() * 100
+        frames[code] = frame.dropna(subset=["close"])
+    return frames
+
+
+def record_ml_scores(conn, panel: Dict[str, pd.DataFrame], asof: str, codes: Iterable[str],
+                     predict_fn=None) -> dict:
+    """影子记录风格池成员的 pooled ML 分（不参与选股/交易），供 ``evaluate`` 计算 RankIC。
+
+    只在截至日为面板最新日、且模型数据截止不晚于截至日时记录，避免回补历史时用到未来训练的模型。
+    """
+    if asof != panel["close"].index[-1]:
+        return {"status": "skipped", "reason": "not_latest_date"}
+    if predict_fn is None:
+        from strategy.pooled_ml import predict_frames as predict_fn
+    scores, metadata = predict_fn(_ml_frames(panel, asof, codes))
+    cutoff = str(metadata.get("data_cutoff") or "")
+    if not scores:
+        return {"status": "unavailable", "reason": metadata.get("reason", "no_scores")}
+    if cutoff > asof:
+        return {"status": "skipped", "reason": f"model_cutoff_after_asof({cutoff})"}
+    version = str(metadata.get("model_version") or "")
+    conn.execute("DELETE FROM ml_scores WHERE date=?", (asof,))
+    conn.executemany("INSERT INTO ml_scores VALUES (?,?,?,?)",
+                     [(asof, code, float(score), version) for code, score in scores.items()])
+    return {"status": "ok", "scored": len(scores), "model_version": version}
+
+
 def run_daily(*, date: str = None, client=None, adjusted_db: str = None, db_path: str = None,
               main_db: str = None, fetch_external: bool = True, panel: Dict[str, pd.DataFrame] = None,
               now: datetime = None) -> dict:
@@ -244,6 +298,12 @@ def run_daily(*, date: str = None, client=None, adjusted_db: str = None, db_path
         pools = sp.select_pools(factors, universe, asof, valuations=valuations,
                                 fundamentals=fundamentals if not fundamentals.empty else None, scores=scores)
         exposure = market_exposure(main_db)
+        pool_codes = sorted({code for frame in pools.values() for code in frame["code"]})
+        try:
+            ml = record_ml_scores(conn, panel, asof, pool_codes)
+        except Exception as exc:  # noqa: BLE001 - ML 影子失败不影响风格池
+            logger.warning("风格池 ML 影子打分失败: %s", exc)
+            ml = {"status": "error", "reason": type(exc).__name__}
 
         conn.execute("DELETE FROM style_candidates WHERE date=?", (asof,))
         for style, frame in pools.items():
@@ -267,6 +327,7 @@ def run_daily(*, date: str = None, client=None, adjusted_db: str = None, db_path
             "pools": {style: int(len(frame)) for style, frame in pools.items()},
             "active_factors": {k: round(v["weight"], 3) for k, v in weights.items() if v.get("weight")},
             "market_exposure_cap": exposure["cap"] if exposure else None, "external": external,
+            "ml": ml,
         }
         conn.execute("INSERT OR REPLACE INTO runs VALUES (?,?,?)",
                      (asof, now.isoformat(timespec="seconds"), json.dumps(summary, ensure_ascii=False)))
@@ -324,6 +385,7 @@ def evaluate(*, db_path: str = None, adjusted_db: str = None, main_db: str = Non
                 "win_rate": float((group["ret"] > 0).mean()),
                 "days_beating_universe": float((daily["excess"] > 0).mean()),
             }
+    result["ml"] = _ml_rank_ic(db_path, panel, horizons, since)
     for style, info in result["styles"].items():
         five = info.get("5d") or {}
         legacy = (result["styles"].get("legacy_picker") or {}).get("5d") or {}
@@ -334,6 +396,30 @@ def evaluate(*, db_path: str = None, adjusted_db: str = None, main_db: str = Non
             and five.get("mean_net", -1) > legacy.get("mean_net", -1)
         )
     return result
+
+
+def _ml_rank_ic(db_path, panel, horizons, since) -> dict:
+    """风格池成员内 pooled ML 分与扣费前瞻收益的逐日 Spearman RankIC。"""
+    with closing(connect(db_path, readonly=True)) as conn:
+        scores = pd.read_sql_query("SELECT date, code, score FROM ml_scores" + (" WHERE date>=?" if since else ""),
+                                   conn, params=(since,) if since else ())
+    out = {}
+    if scores.empty:
+        return out
+    for h in horizons:
+        fwd = (sp.forward_returns(panel, h) - ROUND_TRIP_COST).stack().rename("ret").reset_index()
+        fwd.columns = ["date", "code", "ret"]
+        merged = scores.merge(fwd, on=["date", "code"], how="inner").dropna(subset=["ret"])
+        ics = [group["score"].corr(group["ret"], method="spearman")
+               for _, group in merged.groupby("date") if len(group) >= 10 and group["score"].nunique() > 1]
+        ics = [ic for ic in ics if pd.notna(ic)]
+        if ics:
+            out[f"{h}d"] = {"signal_days": len(ics), "mean_rank_ic": float(np.mean(ics)),
+                            "positive_share": float(np.mean([ic > 0 for ic in ics]))}
+    gate = out.get("5d") or {}
+    out["promotion_ready"] = bool(gate.get("signal_days", 0) >= ML_PROMOTION_MIN_DAYS
+                                  and gate.get("mean_rank_ic", 0) >= ML_PROMOTION_MIN_RANK_IC)
+    return out
 
 
 def format_report(report: dict) -> str:
@@ -352,4 +438,11 @@ def format_report(report: dict) -> str:
         lines.append(f"- {label}: " + " | ".join(parts) + ready)
     lines.append(f"晋级门槛: 5日成熟信号≥{PROMOTION_MIN_SIGNAL_DAYS}天、相对等权超额≥{PROMOTION_MIN_EXCESS_5D:.1%}、"
                  "且净收益优于现有选股器；达到后仍需人工确认才切换。")
+    ml = report.get("ml") or {}
+    parts = [f"{h}日: {m['signal_days']}天 RankIC {m['mean_rank_ic']:+.3f}（为正 {m['positive_share']:.0%}）"
+             for h in report["horizons"] if (m := ml.get(f"{h}d"))]
+    if parts:
+        ready = " ✅达到排序门槛(需人工确认)" if ml.get("promotion_ready") else ""
+        lines.append("- 池内 ML 分(影子): " + " | ".join(parts) + ready)
+        lines.append(f"ML 排序门槛: 5日成熟信号≥{ML_PROMOTION_MIN_DAYS}天且 RankIC≥{ML_PROMOTION_MIN_RANK_IC}。")
     return "\n".join(lines)

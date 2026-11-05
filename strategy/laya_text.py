@@ -169,15 +169,40 @@ def _tally(results: List[Dict[str, Any]]) -> Dict[str, int]:
     return counts
 
 
+def _style_pool_codes(date: str, style_db: str = None) -> List[str]:
+    """该日盘中实际使用的风格池候选（上一收盘日生成）；不可用时返回空列表。"""
+    try:
+        import sqlite3
+        from contextlib import closing
+        from config import STYLE_LIVE_STYLES
+        from strategy.style_shadow import STYLE_SHADOW_DB
+        path = os.path.abspath(style_db or STYLE_SHADOW_DB)
+        if not os.path.exists(path):
+            return []
+        styles = tuple(STYLE_LIVE_STYLES)
+        with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=30)) as conn:
+            row = conn.execute("SELECT MAX(date) FROM style_candidates WHERE date < ?", (date or "",)).fetchone()
+            if not row or not row[0]:
+                return []
+            return [str(r[0]) for r in conn.execute(
+                f"SELECT code FROM style_candidates WHERE date=? AND style IN ({','.join('?' * len(styles))}) "
+                "GROUP BY code ORDER BY MIN(rank), code", (row[0], *styles)).fetchall()]
+    except Exception as exc:  # noqa: BLE001 - 风格池不可用只少一组个股文本
+        print(f"[laya_text] 读取风格池候选失败: {exc}", file=sys.stderr)
+        return []
+
+
 def run_text_sentiment(date: str = None,
                        db_path: str = None,
-                       max_codes: int = 50) -> Optional[Dict[str, Any]]:
+                       max_codes: int = 50,
+                       style_db: str = None) -> Optional[Dict[str, Any]]:
     """
-    对指定日期 MiMo 判断过的候选 + 市场头条/微博热帖做 laya 文本情绪分类。
+    对指定日期的候选（MiMo 判断过的 + 当日风格池）+ 市场头条/微博热帖做 laya 文本情绪分类。
 
     盘后运行；结果落盘 data/laya/text_sentiment_<date>.json（并刷新
     text_sentiment_latest.json）并写一条 auto_event
-    （event_type=laya_text_sentiment）。未启用/服务不可用/无候选返回 None。
+    （event_type=laya_text_sentiment）。当日无候选时只评市场文本。
+    未启用/服务不可用/没有任何可评文本返回 None。
     """
     if not is_available():
         return None
@@ -191,13 +216,13 @@ def run_text_sentiment(date: str = None,
                 "WHERE date=? AND action IS NOT NULL ORDER BY code", (date or "",),
             ).fetchall()
         ]
-    if not codes:
-        return None
-    codes = codes[:max_codes]
+    codes = list(dict.fromkeys(codes + _style_pool_codes(date, style_db)))[:max_codes]
 
     headline_texts = _collect_headlines()
     weibo_texts = _collect_weibo()
-    stock_texts, code_of_text, news_counts = _collect_stock_news(codes)
+    stock_texts, code_of_text, news_counts = _collect_stock_news(codes) if codes else ([], [], {})
+    if not (headline_texts or weibo_texts or stock_texts):
+        return None
 
     market_results = score_texts(headline_texts + weibo_texts) if (
         headline_texts or weibo_texts) else []

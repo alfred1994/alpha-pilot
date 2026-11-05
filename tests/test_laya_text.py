@@ -212,16 +212,60 @@ def test_degradation():
                 {"code": "601123", "date": "2026-09-24", "action": "BUY",
                  "llm_response": "{}", "confidence": 0.8, "dimensions": "{}"},
             ])
+            missing_style_db = os.path.join(tmp, "no-style.db")
             with mock.patch.object(laya_text, "is_available", return_value=True), \
                     mock.patch.object(laya_text, "LAYA_DATA_DIR", tmp), \
+                    mock.patch("data.news_aggregator.get_all_news", return_value={"headlines": []}), \
+                    mock.patch("data.sentiment.get_weibo_finance", return_value=[]), \
                     mock.patch.object(laya_text.httpx, "post") as post:
-                assert run_text_sentiment("2099-01-01", db_path=db_path) is None
+                assert run_text_sentiment("2099-01-01", db_path=db_path, style_db=missing_style_db) is None
             assert post.call_count == 0
-            ok("当日无候选时不发起请求并返回 None")
+            ok("无候选且无市场文本时不发起请求并返回 None")
         finally:
             for candidate in (db_path, f"{db_path}-wal", f"{db_path}-shm"):
                 if os.path.exists(candidate):
                     os.unlink(candidate)
+
+
+def test_style_pool_codes_without_llm_decisions():
+    """风格池模式下 LLM 只做否决，llm_decisions 常为空：仍应评风格池候选，且无候选时只评市场。"""
+    import sqlite3
+    from contextlib import closing
+    with tempfile.TemporaryDirectory() as tmp:
+        db_path = os.path.join(tmp, "main.db")
+        _seed_db(db_path, [])
+        style_db = os.path.join(tmp, "style.db")
+        with closing(sqlite3.connect(style_db)) as conn:
+            conn.execute("CREATE TABLE style_candidates (date TEXT, style TEXT, code TEXT, rank INTEGER, "
+                         "score REAL, detail TEXT)")
+            conn.executemany("INSERT INTO style_candidates VALUES (?,?,?,?,?,?)", [
+                ("2026-11-04", "oversold_rebound", "600001", 1, 0, "{}"),
+                ("2026-11-04", "factor_top", "600001", 2, 0, "{}"),
+                ("2026-11-04", "factor_top", "600002", 1, 0, "{}"),
+                ("2026-11-04", "trend_strength", "600099", 1, 0, "{}"),   # 非实盘风格
+                ("2026-11-05", "factor_top", "600003", 1, 0, "{}"),       # 当日收盘后生成，盘中未用
+            ])
+            conn.commit()
+
+        def fake_post(url, json=None, timeout=None):
+            return _http_response(200, {"ok": True, "results": [_fake_result("neutral") for _ in json["states"]]})
+
+        with mock.patch.object(laya_text, "is_available", return_value=True), \
+                mock.patch("config.STYLE_LIVE_STYLES", ("oversold_rebound", "factor_top")), \
+                mock.patch("data.news_aggregator.get_all_news",
+                           return_value={"headlines": [{"source": "同花顺", "title": "市场平稳"}]}), \
+                mock.patch("data.sentiment.get_weibo_finance", return_value=[]), \
+                mock.patch("data.rate_limit"), \
+                mock.patch("data.sentiment.get_stock_news", return_value=[]), \
+                mock.patch.object(laya_text, "LAYA_DATA_DIR", tmp), \
+                mock.patch.object(laya_text.httpx, "post", side_effect=fake_post):
+            summary = run_text_sentiment("2026-11-05", db_path=db_path, style_db=style_db)
+            assert summary is not None and sorted(summary["per_stock"]) == ["600001", "600002"]
+            ok("llm_decisions 为空时取上一收盘日的实盘风格池候选")
+            summary = run_text_sentiment("2026-11-05", db_path=db_path, style_db=os.path.join(tmp, "none.db"))
+            assert summary is not None and summary["stats"]["n_codes"] == 0
+            assert summary["market"]["total"] == 1
+            ok("无任何候选时仍评市场文本，不判失败")
 
 
 def test_load_degrades():
@@ -273,6 +317,7 @@ def main():
     test_stock_news_collector_degrades()
     test_run_text_sentiment_end_to_end()
     test_degradation()
+    test_style_pool_codes_without_llm_decisions()
     test_load_degrades()
     test_trader_brief_integration()
     print("全部通过")
