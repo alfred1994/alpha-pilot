@@ -235,6 +235,18 @@ class JobTests(unittest.TestCase):
                          "伤停不可用时标签留空，而不是记成无伤停")
         self.assertEqual(sharp, 0, "影子单不混入主信号")
 
+    def test_capture_skips_closed_games_while_another_game_is_still_on_sale(self):
+        self.run_picks("客队受让1.5分", hour=16)
+        with store.session(self.db) as conn:  # 同一销售日另有一场次日上午才停售
+            store.upsert_game(conn, "2026-10-31", {"home": "Boston", "away": "Miami", "matchnum": "周六320",
+                                                   "tip_at": "2026-11-01T11:30:00+08:00",
+                                                   "buy_end": "2026-11-01T11:30:00+08:00"})
+        summary = self.capture(23, 30, "客队让4.5分")
+        self.assertEqual(summary["tracked"], 0, "爵士这场 23:00 已停售：页面上的盘口买不到，不记竞彩快照")
+        with store.session(self.db) as conn:
+            sources_seen = [r[0] for r in conn.execute("SELECT source FROM snapshots WHERE home='Utah' ORDER BY id")]
+        self.assertEqual(sources_seen, ["picks", "capture"], "停售后只记国际线")
+
     def test_jc_failure_during_tracking_does_not_block_close_lines(self):
         self.run_picks("客队受让1.5分", hour=16)
 
@@ -414,6 +426,43 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual(health["jc_movement_30d"]["让分"]["line_changed"], 1)
         self.assertEqual(health["jobs"]["capture"]["detail"]["new_late_picks"], 1, "停售前 30 分钟偏离 5 分 → 影子单")
         self.assertIn("sharp_late", [s["key"] for s in summary["strategies"]])
+
+    def test_games_ignore_jc_lines_captured_after_sales_close(self):
+        with store.session(self.db) as conn:  # 历史数据：停售后误记的竞彩跟踪快照
+            store.add_snapshot(conn, "2026-10-31", {"home": "Utah", "away": "Portland", "jc_line": 4.5,
+                                                    "jc_sp_home": 1.70, "jc_sp_away": 1.70, "ref_line": -2.5,
+                                                    "ref_total": 234.5}, "track",
+                               captured_at="2026-10-31T23:30:00+08:00")
+        with self.at(22, day=31):
+            before_close = self.client.get("/api/lottery/games").json()["games"][0]
+        with patch.object(self.router, "now_beijing", return_value=datetime(2026, 10, 31, 23, 45, tzinfo=BJ)):
+            game = self.client.get("/api/lottery/games").json()["games"][0]
+        self.assertFalse(before_close["sale_closed"])
+        self.assertTrue(game["sale_closed"])
+        self.assertIsNone(game["jc_latest"], "停售后的竞彩线不算“最新竞彩”")
+        self.assertEqual([(s["source"], s["jc_line"], s["ref_line"]) for s in game["timeline"]],
+                         [("出单", 1.5, -1.5), ("国际线", None, -2.5)], "停售后时间线只保留国际线")
+
+    def test_games_day_navigation_scores_and_summary(self):
+        jobs.run_capture(now=datetime(2026, 11, 1, 6, 0, tzinfo=BJ), db_path=self.db, fetch_injuries=no_injuries,
+                         fetch_jc=lambda d, p: [],
+                         fetch_espn=lambda d: sources.parse_espn(espn(state="post", scores=(100, 105))) if d == "2026-10-31" else [])
+        with store.session(self.db) as conn:
+            store.upsert_game(conn, "2026-10-29", {"home": "Boston", "away": "Miami", "matchnum": "周四301"})
+        with self.at(7, day=1):
+            day = self.client.get("/api/lottery/games").json()
+            empty = self.client.get("/api/lottery/games?sale_date=2026-10-30").json()
+        self.assertEqual((day["sale_date"], day["latest_sale_date"]), ("2026-10-31", "2026-10-31"))
+        self.assertEqual((day["prev_sale_date"], day["next_sale_date"]), ("2026-10-29", None))
+        game = day["games"][0]
+        self.assertEqual((game["home"], game["home_score"], game["away_score"], game["score"]), ("爵士", 100, 105, "105-100"))
+        summary = {s["key"]: s for s in day["day_summary"]}
+        self.assertEqual(list(summary), ["sharp", "all_games"], "当天汇总按策略分开")
+        self.assertEqual((summary["sharp"]["bets"], summary["sharp"]["losses"], summary["sharp"]["pnl_units"]), (1, 1, -1.0))
+        self.assertEqual(summary["all_games"]["settled"], 2)
+        self.assertEqual(day["thresholds"]["min_ev"], signals.MIN_EV)
+        self.assertEqual((empty["games"], empty["prev_sale_date"], empty["next_sale_date"]), ([], "2026-10-29", "2026-10-31"),
+                         "没有场次的日子也能前后翻页")
 
     def test_picks_visible_after_tip(self):
         with self.at(4, day=1):

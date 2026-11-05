@@ -19,7 +19,7 @@
     <link rel="stylesheet" href="css/styles.css?v=2026100901">
     <link rel="stylesheet" href="css/research.css?v=2026100901">
     <link rel="stylesheet" href="css/console.css?v=2026100901">
-    <link rel="stylesheet" href="css/lottery.css?v=2026110203">
+    <link rel="stylesheet" href="css/lottery.css?v=2026110501">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -42,9 +42,9 @@
                 <button class="nav-btn" data-tab="evolution" data-domain="stock"><i data-lucide="brain"></i><span>策略与复盘</span></button>
                 <button class="nav-btn" data-tab="health" data-domain="stock"><i data-lucide="activity"></i><span>运行健康</span></button>
                 <span class="nav-label nav-label-group">体彩 · NBA 纸面验证</span>
-                <button class="nav-btn" data-tab="lottery" data-domain="lottery"><i data-lucide="trophy"></i><span>验证总览</span></button>
-                <button class="nav-btn" data-tab="lottery-games" data-domain="lottery"><i data-lucide="scale"></i><span>场次盘口</span></button>
-                <button class="nav-btn" data-tab="lottery-ledger" data-domain="lottery"><i data-lucide="clipboard-list"></i><span>验证账本</span></button>
+                <button class="nav-btn" data-tab="lottery-games" data-domain="lottery"><i data-lucide="calendar-days"></i><span>每日比赛</span></button>
+                <button class="nav-btn" data-tab="lottery" data-domain="lottery"><i data-lucide="trophy"></i><span>战绩统计</span></button>
+                <button class="nav-btn" data-tab="lottery-ledger" data-domain="lottery"><i data-lucide="clipboard-list"></i><span>历史注单</span></button>
                 <button class="nav-btn" data-tab="lottery-method" data-domain="lottery"><i data-lucide="book-open"></i><span>方法与数据</span></button>
             </nav>
             <div class="topbar-status">
@@ -262,7 +262,7 @@
             </section>
 
             <section class="tab-content" id="tab-lottery">
-                <div class="page-heading"><div><span class="eyebrow">体彩 · NBA · 纸面验证</span><h2>验证总览</h2></div><p>只验证一件事：竞彩让分/总分偏离国际盘口时，按竞彩价格买入长期能否跑赢 15% 抽水。所有记录均为纸面，不构成投注建议。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">体彩 · NBA · 纸面验证</span><h2>战绩统计</h2></div><p>只验证一件事：竞彩让分/总分偏离国际盘口时，按竞彩价格买入长期能否跑赢 15% 抽水。所有记录均为纸面，不构成投注建议。</p></div>
                 <p class="lottery-disclaimer" id="lottery-disclaimer" role="note">纸面预测记录，不构成投注建议；不代购、不下单。理性购彩，未满 18 周岁禁止购彩。</p>
                 <p class="research-note" id="lottery-status" role="status">正在读取纸面账本</p>
                 <section class="metric-grid" aria-label="价格偏离信号摘要">
@@ -281,13 +281,33 @@
             </section>
 
             <section class="tab-content" id="tab-lottery-games">
-                <div class="page-heading"><div><span class="eyebrow">竞彩与国际盘口对照</span><h2>场次盘口</h2></div><p>16:00 出单时抓取竞彩与国际盘口，之后每 30 分钟跟踪竞彩到停售、跟踪国际线到开赛。“→ 现”是竞彩最新一次抓到的盘口；展开可看完整时间线和双方伤停。</p></div>
-                <div class="filter-bar"><label>竞彩销售日 <input type="date" id="lottery-games-date"></label><button id="lottery-games-load">查看</button><span id="lottery-games-status" role="status">-</span></div>
-                <div class="table-wrap"><table class="lottery-table"><caption>竞彩 NBA 场次与国际盘口</caption><thead><tr><th scope="col">场次</th><th scope="col">对阵（客 @ 主）</th><th scope="col">开赛（北京）</th><th scope="col">竞彩停售</th><th scope="col">竞彩主队让分</th><th scope="col">国际主队让分</th><th scope="col">竞彩总分</th><th scope="col">国际总分</th><th scope="col">单关</th><th scope="col">比分</th><th scope="col">分析与纸面选择</th><th scope="col">时间线与伤停</th></tr></thead><tbody id="lottery-games-rows"></tbody></table></div>
+                <div class="page-heading"><div><span class="eyebrow">体彩 · NBA · 纸面验证</span><h2>每日比赛</h2></div><p>每天北京时间 16:00 记录竞彩盘口和系统选择，之后每 30 分钟跟踪盘口到停售，赛后自动补比分和输赢。所有记录均为纸面，不构成投注建议。</p></div>
+                <p class="lottery-disclaimer" id="lottery-daily-disclaimer" role="note">纸面预测记录，不构成投注建议；不代购、不下单。理性购彩，未满 18 周岁禁止购彩。</p>
+                <div class="filter-bar lottery-day-nav">
+                    <button id="lottery-day-prev" type="button" disabled>← 前一天</button>
+                    <label>竞彩销售日 <input type="date" id="lottery-games-date"></label>
+                    <button id="lottery-day-next" type="button" disabled>后一天 →</button>
+                    <button id="lottery-day-today" type="button">今天</button>
+                    <button id="lottery-day-latest" type="button">最新</button>
+                    <span id="lottery-games-status" role="status">-</span>
+                </div>
+                <section class="metric-grid" aria-label="当日纸面记录汇总">
+                    <article class="metric-card"><span>场次</span><strong id="lottery-day-games">-</strong><small id="lottery-day-games-note">-</small></article>
+                    <article class="metric-card"><span>★ 主信号</span><strong id="lottery-day-sharp">-</strong><small id="lottery-day-sharp-note">-</small></article>
+                    <article class="metric-card"><span>全场预测</span><strong id="lottery-day-all">-</strong><small id="lottery-day-all-note">-</small></article>
+                    <article class="metric-card"><span>待结算</span><strong id="lottery-day-pending">-</strong><small id="lottery-day-pending-note">赛后自动补比分和输赢</small></article>
+                </section>
+                <p class="research-note" id="lottery-day-note" hidden></p>
+                <div class="lottery-legend" aria-label="标签说明">
+                    <span><span class="lottery-tag sharp">★ 主信号</span> 竞彩比国际盘便宜，期望值达到门槛，计入主信号战绩</span>
+                    <span><span class="lottery-tag">仅记录</span> 全场预测：每场每个玩法都选期望值更高的一侧，多数没有优势，只用于对照</span>
+                    <span><strong>价格优势</strong> 竞彩线比国际盘多给的分数，越大越便宜</span>
+                </div>
+                <div class="lottery-game-list" id="lottery-games-list"><div class="empty-state">正在读取</div></div>
             </section>
 
             <section class="tab-content" id="tab-lottery-ledger">
-                <div class="page-heading"><div><span class="eyebrow">只追加，不改写</span><h2>验证账本</h2></div><p>主信号与全场预测在每天 16:00 出单，停售前影子在竞彩停售前最后一次跟踪时出单；每条记录出单即公开，之后不改写，赛后只补结果与收盘价差。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">只追加，不改写</span><h2>历史注单</h2></div><p>主信号与全场预测在每天 16:00 出单，停售前影子在竞彩停售前最后一次跟踪时出单；每条记录出单即公开，之后不改写，赛后只补结果与收盘价差。点销售日可回到当天的每日比赛。</p></div>
                 <div class="filter-bar">
                     <label>策略 <select id="lottery-ledger-strategy"><option value="">全部</option><option value="sharp">价格偏离（主信号）</option><option value="sharp_late">价格偏离（停售前，影子）</option><option value="all_games">全场预测（每场必出）</option><option value="model_legacy">模型对照组（已停用）</option></select></label>
                     <label>玩法 <select id="lottery-ledger-market"><option value="">全部</option><option value="让分">让分</option><option value="大小分">大小分</option></select></label>
@@ -310,6 +330,17 @@
                     </div></article>
                     <article class="card"><div class="section-heading compact"><div><span class="eyebrow">数据源与任务</span><h2>数据健康</h2></div></div><div class="fact-list lottery-facts" id="lottery-health-list"><div class="empty-state">正在读取</div></div></article>
                 </div>
+                <article class="card"><div class="section-heading compact"><div><span class="eyebrow">页面上的词</span><h2>术语说明</h2></div></div><div class="fact-list lottery-facts lottery-glossary">
+                    <div><strong>竞彩销售日</strong><p>竞彩的期号日期。NBA 在美国当晚比赛，北京时间通常是次日上午开赛，所以 11-05 销售日的场次在 11-06 上午开打。</p></div>
+                    <div><strong>竞彩让分 / 国际盘</strong><p>都写成“某队 ±分数”：负数是让分，正数是受让。国际盘取 ESPN 内嵌的盘口（通常为 DraftKings），只用来衡量竞彩价格贵还是便宜。</p></div>
+                    <div><strong>价格优势（偏离）</strong><p>竞彩线比国际盘多给的分数。例如国际盘活塞 -2.5、竞彩活塞 +1.5，买活塞就多得 4 分。</p></div>
+                    <div><strong>估算胜率 / 期望值</strong><p>按历史收盘线把“多得的分数”换算成胜率，再结合竞彩赔率得出每投 1 注的平均回报。期望值为负说明长期会亏。</p></div>
+                    <div><strong>★ 主信号</strong><p>期望值达到门槛的选择，每天最多 3 注，是这个项目真正要验证的信号。</p></div>
+                    <div><strong>全场预测（仅记录）</strong><p>每场让分、大小分各选期望值更高的一侧，不设门槛。和主信号同一选择时只显示一次，战绩分开统计。</p></div>
+                    <div><strong>停售前影子</strong><p>同一规则在竞彩停售前最后一次跟踪时再选一次，用来比较出单时点，只在战绩统计里出现。</p></div>
+                    <div><strong>收盘价差</strong><p>出单时的竞彩线比开赛前最后一次国际盘好多少分，正数说明买得比收盘便宜。</p></div>
+                    <div><strong>单关 / 串关</strong><p>单关是只买一场；串关要多场同时猜中。竞彩 NBA 经常只开串关，纸面记录仍按单场统计。</p></div>
+                </div></article>
                 <article class="card"><div class="section-heading compact"><div><span class="eyebrow">边界</span><h2>不做什么</h2></div></div><p class="research-note">不下单、不代购、不对接境外平台；纸面选择在出单时即公开，不构成投注建议。国际盘口来自 ESPN 内嵌快照，不是交易所收盘价；样本少于 150 注时任何命中率都可能是运气。</p></article>
             </section>
         </main>
@@ -328,6 +359,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026110203" type="module"></script>
+    <script src="js/app.js?v=2026110501" type="module"></script>
 </body>
 </html>

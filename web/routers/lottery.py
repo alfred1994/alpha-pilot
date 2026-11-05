@@ -26,6 +26,7 @@ SUMMARY_STRATEGIES = ("sharp", "sharp_late", "all_games", "model_legacy")
 LIVE_STRATEGIES = ("sharp", "sharp_late", "all_games")
 SNAPSHOT_LABELS = {"picks": "出单", "track": "竞彩跟踪", "capture": "国际线"}
 TIMELINE_FIELDS = ("jc_line", "jc_sp_home", "jc_sp_away", "jc_total", "jc_sp_over", "jc_sp_under", "ref_line", "ref_total")
+JC_FIELDS = TIMELINE_FIELDS[:6]
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
@@ -140,16 +141,20 @@ def lottery_games(sale_date: Optional[date] = None):
         with _open() as conn:
             if conn is None:
                 return {"success": True, "available": False, "games": [], "disclaimer": DISCLAIMER}
-            day = sale_date.isoformat() if sale_date else conn.execute("SELECT MAX(sale_date) FROM games").fetchone()[0]
-            if not day:
+            latest_day = conn.execute("SELECT MAX(sale_date) FROM games").fetchone()[0]
+            if not latest_day:
                 return {"success": True, "available": False, "games": [], "disclaimer": DISCLAIMER}
+            day = sale_date.isoformat() if sale_date else latest_day
+            prev_day = conn.execute("SELECT MAX(sale_date) FROM games WHERE sale_date < ?", (day,)).fetchone()[0]
+            next_day = conn.execute("SELECT MIN(sale_date) FROM games WHERE sale_date > ?", (day,)).fetchone()[0]
             games = [dict(r) for r in conn.execute("SELECT * FROM games WHERE sale_date=? ORDER BY matchnum", (day,))]
             snapshots = {}
             for row in conn.execute("SELECT * FROM snapshots WHERE sale_date=?", (day,)):
                 snapshots.setdefault((row["home"], row["away"]), []).append(dict(row))
+            day_picks = [dict(row) for row in conn.execute("SELECT * FROM picks WHERE sale_date=? ORDER BY id", (day,))]
             picks = {}
-            for row in conn.execute("SELECT * FROM picks WHERE sale_date=?", (day,)):
-                picks.setdefault((row["home"], row["away"]), []).append(dict(row))
+            for row in day_picks:
+                picks.setdefault((row["home"], row["away"]), []).append(row)
             history = {}
             if _has_table(conn, "injury_reports"):
                 from lottery.store import injury_history
@@ -160,14 +165,19 @@ def lottery_games(sale_date: Optional[date] = None):
             snaps = sorted(snapshots.get(key, []), key=lambda s: _time(s.get("captured_at")))
             picked = [s for s in snaps if s["source"] == "picks"]
             snap = picked[-1] if picked else {}
-            jc_snaps = [s for s in snaps if s["source"] in ("picks", "track") and s.get("jc_line") is not None]
+            buy_end = injuries.parse_time(game.get("buy_end"))
+            # 停售后竞彩页面上的盘口买不到：“最新竞彩”只取停售前的快照
+            jc_snaps = [s for s in snaps if s["source"] in ("picks", "track") and s.get("jc_line") is not None
+                        and _before(s, buy_end)]
             latest = jc_snaps[-1] if jc_snaps else {}
             started = _started(game.get("tip_at"), now) or game.get("home_score") is not None
             item = {
                 "matchnum": game.get("matchnum"), "home": game.get("home_cn") or KEY2CN.get(game["home"]),
                 "away": game.get("away_cn") or KEY2CN.get(game["away"]), "tip_at": game.get("tip_at"),
                 "buy_end": game.get("buy_end"), "state": game.get("state"), "started": started,
+                "sale_closed": buy_end is not None and buy_end <= now,
                 "score": f"{game['away_score']}-{game['home_score']}" if game.get("home_score") is not None else None,
+                "home_score": game.get("home_score"), "away_score": game.get("away_score"),
                 "jc_line": snap.get("jc_line"), "jc_odds": [snap.get("jc_sp_home"), snap.get("jc_sp_away")],
                 "jc_total": snap.get("jc_total"), "jc_total_odds": [snap.get("jc_sp_over"), snap.get("jc_sp_under")],
                 "jc_latest": ({"captured_at": latest.get("captured_at"), "jc_line": latest.get("jc_line"),
@@ -181,7 +191,7 @@ def lottery_games(sale_date: Optional[date] = None):
                 "close_ref_line": game.get("close_ref_line"),
                 "close_ref_total": game.get("close_ref_total"),
                 "captured_at": snap.get("captured_at"),
-                "timeline": _timeline(snaps, game.get("tip_at")),
+                "timeline": _timeline(snaps, game.get("tip_at"), game.get("buy_end")),
                 "injuries": _game_injuries(game, snap or (snaps[0] if snaps else {}), history, now),
                 "analysis": None, "picks": [],
             }
@@ -189,27 +199,39 @@ def lottery_games(sale_date: Optional[date] = None):
             item["analysis"] = [{k: c[k] for k in ("market", "side", "edge", "odds", "p_win", "ev")} for c in cands]
             item["picks"] = [_pick_view(p) for p in sorted(picks.get(key, []), key=lambda p: (p["strategy"], p["market"]))]
             out.append(item)
-        return {"success": True, "available": True, "sale_date": day, "games": out, "disclaimer": DISCLAIMER}
+        day_summary = [{"key": key, "label": stats.STRATEGY_LABELS[key],
+                        **stats.summarize([r for r in day_picks if r["strategy"] == key])}
+                       for key in SUMMARY_STRATEGIES if any(r["strategy"] == key for r in day_picks)]
+        return {"success": True, "available": True, "sale_date": day, "latest_sale_date": latest_day,
+                "prev_sale_date": prev_day, "next_sale_date": next_day, "games": out,
+                "day_summary": day_summary, "thresholds": {"min_ev": signals.MIN_EV}, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
 
 
-def _timeline(snaps: list, tip_at: Optional[str]) -> list:
+def _before(snap: dict, moment: Optional[datetime]) -> bool:
+    return moment is None or _time(snap.get("captured_at")) < moment
+
+
+def _timeline(snaps: list, tip_at: Optional[str], buy_end: Optional[str] = None) -> list:
     """开赛前的盘口快照，去掉与上一条完全相同的记录。
 
-    出单/竞彩跟踪快照同时带竞彩与国际线；停售后只有国际线快照，竞彩一栏为空。
+    出单/竞彩跟踪快照同时带竞彩与国际线；停售后只看国际线，竞彩一栏为空
+    （历史上停售后误记的竞彩跟踪也按此处理）。
     """
     tip = injuries.parse_time(tip_at)
+    end = injuries.parse_time(buy_end)
     out, last = [], None
     for s in snaps:
         if tip and _time(s.get("captured_at")) >= tip:
             continue
-        values = tuple(s.get(k) for k in TIMELINE_FIELDS)
+        closed = not _before(s, end)
+        values = tuple(None if closed and k in JC_FIELDS else s.get(k) for k in TIMELINE_FIELDS)
         if values == last:
             continue
         last = values
-        out.append({"at": s.get("captured_at"), "source": SNAPSHOT_LABELS.get(s["source"], s["source"]),
-                    **{k: s.get(k) for k in TIMELINE_FIELDS}})
+        source = SNAPSHOT_LABELS["capture"] if closed else SNAPSHOT_LABELS.get(s["source"], s["source"])
+        out.append({"at": s.get("captured_at"), "source": source, **dict(zip(TIMELINE_FIELDS, values))})
     return out
 
 

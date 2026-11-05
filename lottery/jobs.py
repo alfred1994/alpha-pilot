@@ -170,7 +170,11 @@ def run_capture(*, now: datetime = None, db_path: str = None, days: List[str] = 
                 if any(_still_open(game, now) for game in day_games.values()) and _track_due(conn, day, now):
                     try:
                         jc = sources.merge_jc(fetch_jc(day, sources.PLAY_SPREAD), fetch_jc(day, sources.PLAY_TOTAL))
-                        track = {(g["home"], g["away"]): g for g in _merge_ref(jc, espn) if (g["home"], g["away"]) in day_games}
+                        # 同一销售日停售时间不一（个别场次次日上午才停售）：只跟踪仍在销售的场次，
+                        # 已停售场次在竞彩页面上的盘口买不到，不记为竞彩快照
+                        track = {(g["home"], g["away"]): g for g in _merge_ref(jc, espn)
+                                 if (g["home"], g["away"]) in day_games
+                                 and _still_open(g if g.get("buy_end") else day_games[(g["home"], g["away"])], now)}
                     except Exception as exc:  # noqa: BLE001 - 竞彩页面异常不影响收盘线与结算
                         jc_errors += 1
                         logger.warning("竞彩跟踪获取失败: %s", type(exc).__name__)
