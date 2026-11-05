@@ -298,8 +298,23 @@ def cmd_style_shadow(args):
     from strategy.style_shadow import run_daily
     client = HiThinkClient(timeout=60)
     summary = run_daily(client=client if client.available else None)
+    if summary.get("status") == "ok":
+        # 学习闭环：按影子证据每周至多调整一次风格名额或持有期；失败不影响风格池本身。
+        try:
+            from strategy.style_allocator import run as run_allocator
+            summary["allocation"] = run_allocator(summary.get("date"))
+        except Exception as exc:  # noqa: BLE001
+            summary["allocation"] = {"status": "error", "error": f"{type(exc).__name__}: {exc}"}
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return {"errors": [] if summary.get("status") == "ok" else ["style_shadow"]}
+
+
+def cmd_style_allocation_rollback(args):
+    """撤销最近一次风格名额/持有期自动调整。"""
+    from strategy.style_allocator import describe, rollback
+    state = rollback()
+    print("没有可撤销的调整" if state is None else f"已回滚，当前{describe(state)}")
+    return {"errors": []}
 
 
 def cmd_style_shadow_report(args):
@@ -1031,6 +1046,7 @@ def main():
     parser.add_argument("--adjusted-full", action="store_true", help="与 --adjusted-daily-sync 合用：强制下载10年全量并重建")
     group.add_argument("--style-shadow", action="store_true", help="盘后风格池/因子分/大盘仓位上限影子记录（不下单）")
     group.add_argument("--style-shadow-report", action="store_true", help="风格池影子评估与晋级门槛报告（只读）")
+    group.add_argument("--style-allocation-rollback", action="store_true", help="撤销最近一次风格名额/持有期自动调整")
     parser.add_argument("--json", action="store_true", help="与 --style-shadow-report 合用：同时输出JSON")
     group.add_argument("--lottery-picks", action="store_true", help="体彩NBA：抓盘口并在截止前记录纸面注单（不下单）")
     group.add_argument("--lottery-capture", action="store_true", help="体彩NBA：采集收盘国际线与比分并结算纸面注单")
@@ -1258,6 +1274,8 @@ def main():
         result = cmd_style_shadow(args)
     elif args.style_shadow_report:
         result = cmd_style_shadow_report(args)
+    elif args.style_allocation_rollback:
+        result = cmd_style_allocation_rollback(args)
     elif args.lottery_picks or args.lottery_capture or args.lottery_import:
         result = cmd_lottery(args)
     elif args.realtime:

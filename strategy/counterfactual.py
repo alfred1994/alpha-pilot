@@ -37,13 +37,14 @@ def _scan_id(plan, observed_at: str) -> str:
 def _denial_layer(action: str, hold_reason: str, llm_action: str) -> str:
     """将扫描阶段已知的拒绝原因归类；执行结果必须由执行审计另行产生。"""
     reason = str(hold_reason or "").upper()
-    if reason.startswith("HOLD_SCORE_LOW"):
+    if reason.startswith("HOLD_SCORE_LOW") or reason.startswith("HOLD_FACTOR_LOW"):
         return "score_gate"
     if reason.startswith("HOLD_BUY_BUDGET"):
         return "buy_budget"
     if reason.startswith("HOLD_NOT_TOP"):
         return "ranking_gate"
-    if reason.startswith("HOLD_LLM") or reason.startswith("HOLD_NO_BUY_DECISION"):
+    if (reason.startswith("HOLD_LLM") or reason.startswith("HOLD_NO_BUY_DECISION")
+            or reason.startswith("HOLD_VETO_UNAVAILABLE")):
         return "llm"
     if str(action or "").upper() == "HOLD" or str(llm_action or "").upper() == "HOLD":
         return "hold_unknown"

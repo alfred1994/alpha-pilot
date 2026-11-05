@@ -43,6 +43,7 @@ from config import (
     MIN_BUY_AMOUNT,
     MIN_BUY_ASSET_RATIO,
     DATA_DIR,
+    CANDIDATE_SOURCE,
 )
 
 # P2-8: LLM连续超时自动关闭计数器
@@ -308,6 +309,207 @@ def select_llm_candidates(scored: List[dict], top_k: int, min_score: float,
     return selected, hold_reasons
 
 
+def _legacy_score_candidates(candidates, plan, market_info, remaining):
+    """旧路径：舆情预取 + 六维打分。返回 (scored, data_quality, research_scores_complete)。"""
+    from data.snapshot import get_sentiment_snapshot
+    sentiment_snap = get_sentiment_snapshot(max_age=3600)
+    if not sentiment_snap:
+        # 舆情缓存过期，批量预取（避免每只股票单独调LLM）
+        logger.info("[快链路] 舆情缓存过期，批量预取...")
+        from data.snapshot import prefetch_sentiment
+        codes = [c.code if hasattr(c, 'code') else c.get('code', '') for c in candidates]
+        sentiment_snap = prefetch_sentiment(codes)
+    sentiment_scores = sentiment_snap.get("scores", {}) if sentiment_snap else {}
+    logger.info(f"[快链路] 舆情覆盖: {len(sentiment_scores)}/{len(candidates)}只")
+    data_quality = {
+        "market_snapshot": {
+            "source": market_info.get("source", "unavailable"),
+            "fresh": bool(market_info.get("fresh")),
+            "age_seconds": market_info.get("age_seconds"),
+        },
+        "candidate_pool": {
+            "source": plan.candidate_pool.get("source", "unknown"),
+            "fresh": bool(plan.candidate_pool.get("fresh")),
+            "age_seconds": plan.candidate_pool.get("age_seconds"),
+        },
+        "sentiment": {
+            "available": bool(sentiment_scores),
+            "coverage": round(len(sentiment_scores) / len(candidates), 2) if candidates else 0,
+        },
+        "degraded": [],
+    }
+    if not market_info.get("fresh"):
+        data_quality["degraded"].append("市场涨跌停/资金快照过期或缺失")
+    if not plan.candidate_pool.get("fresh"):
+        data_quality["degraded"].append("候选池过期或使用回退数据")
+    if not sentiment_scores:
+        data_quality["degraded"].append("舆情数据缺失")
+    elif len(sentiment_scores) < len(candidates):
+        data_quality["degraded"].append("部分股票舆情未返回")
+    if data_quality["degraded"]:
+        logger.warning("[快链路] 数据降级进入LLM上下文: %s", data_quality["degraded"])
+
+    # ML信号批量预取：pooled影子模型可用时走本地库批量推理，避免逐股
+    # 临时训练；不可用时各候选自动回退原逐股路径，行为与旧版一致。
+    try:
+        from strategy.qlib_signal import prefetch_pooled_signals
+        prefetch_pooled_signals(
+            [c.code if hasattr(c, "code") else c.get("code", "") for c in candidates]
+        )
+    except Exception as exc:
+        logger.warning(f"[快链路] pooled批量预取跳过: {exc}")
+
+    scored = _parallel_score(candidates, sentiment_scores, timeout=remaining(), errors=plan.errors)
+    return scored, data_quality, len(scored) == len(candidates)
+
+
+def _style_pool_orders(plan, scored, *, directive, regime, remaining, account=None,
+                       realtime_func=None, reviewer=None, scan_date=None, allocation=None):
+    """风格池模式：确定性预检 → 按风格名额轮转 → LLM 否决复核 → 生成 BUY。
+
+    与旧路径的差异：不使用技术分/综合分门槛与两轮稳定性确认；LLM 只能否决，
+    超时/无响应/解析失败一律按否决处理。仓位固定为 STYLE_POSITION_WEIGHT（积极模式
+    不随熊市指令 max_weight/top_k 缩减），受 STYLE_MAX_TOTAL_EXPOSURE、持仓数上限与
+    每日新开仓上限约束；止损、回撤熔断、单日亏损停新仓仍由执行层负责。
+    """
+    from config import (MAX_POSITIONS, STYLE_MAX_DAILY_BUYS, STYLE_MAX_TOTAL_EXPOSURE,
+                        STYLE_MAX_VETO_REVIEWS, STYLE_MIN_FACTOR_SCORE, STYLE_POSITION_WEIGHT,
+                        STYLE_VETO_TIMEOUT)
+    from strategy import llm_veto
+    from strategy.style_allocator import load_allocation
+    from strategy.style_candidates import at_limit_up, select_style_candidates
+
+    if not scored:
+        return
+    _refresh_signal_prices(scored, realtime_func=realtime_func)
+
+    if account is None:
+        try:
+            from execution.paper_account import PaperAccount
+            account = PaperAccount()
+        except Exception as exc:
+            plan.errors.append(f"账户不可用，本轮不开新仓: {type(exc).__name__}")
+            return
+    positions = dict(getattr(account, "positions", {}) or {})
+    total_assets = float(account.total_assets() or 0)
+    cash = float(getattr(account, "cash", 0) or 0)
+    if total_assets <= 0:
+        plan.errors.append("总资产无效，本轮不开新仓")
+        return
+    date = scan_date or plan.date
+    weight = float(STYLE_POSITION_WEIGHT)
+    exposure = max(0.0, 1.0 - cash / total_assets)
+    slots_by_exposure = int((STYLE_MAX_TOTAL_EXPOSURE - exposure) / weight + 1e-9)
+    bought_today = sum(1 for p in positions.values() if str((p or {}).get("buy_date") or "")[:10] == date)
+    daily_left = STYLE_MAX_DAILY_BUYS - bought_today
+    buy_budget = max(0, min(daily_left, slots_by_exposure, MAX_POSITIONS - len(positions)))
+    allocation = allocation or load_allocation()
+
+    eligible = []
+    for s in scored:
+        code = s["code"]
+        price = float(s.get("latest_price") or 0)
+        if code in positions:
+            plan.hold_reasons[code] = "HOLD_ALREADY_HELD(已持有)"
+        elif not s.get("signal_price_available") or price <= 0:
+            plan.hold_reasons[code] = "HOLD_SIGNAL_QUOTE(信号时点实时行情缺失或过期)"
+        elif at_limit_up(code, price, s.get("signal_prev_close")):
+            plan.hold_reasons[code] = "HOLD_LIMIT_UP(涨停无法成交)"
+        elif not min_lot_affordable(price, weight, total_assets=total_assets, trade_unit=100):
+            plan.hold_reasons[code] = f"HOLD_MIN_LOT(price={price:.2f}, weight={weight:.3f})"
+        else:
+            eligible.append(s)
+    selected, reasons = select_style_candidates(
+        eligible, min_factor_score=STYLE_MIN_FACTOR_SCORE, max_reviews=STYLE_MAX_VETO_REVIEWS,
+        quotas=allocation["slots"])
+    plan.hold_reasons.update(reasons)
+    logger.info("[快链路-风格池] 候选%s 预检通过%s 送复核%s 可开仓%s (总仓位%.0f%% 单票%.1f%% 今日已开%s 名额%s)",
+                len(scored), len(eligible), len(selected), buy_budget, exposure * 100, weight * 100,
+                bought_today, allocation["slots"])
+    if not selected:
+        return
+    if directive and not directive.get("valid_for_date", True):
+        for s in selected:
+            plan.hold_reasons[s["code"]] = "HOLD_STALE_DIRECTIVE(当日策略未生成，禁止旧指令开仓)"
+        return
+    if buy_budget <= 0:
+        reason = (f"HOLD_BUY_BUDGET(今日已开{bought_today}/上限{STYLE_MAX_DAILY_BUYS})" if daily_left <= 0 else
+                  f"HOLD_EXPOSURE_CAP(仓位{exposure:.0%}/上限{STYLE_MAX_TOTAL_EXPOSURE:.0%} 持仓{len(positions)}/{MAX_POSITIONS})")
+        for s in selected:
+            plan.hold_reasons[s["code"]] = reason
+        return
+
+    fees = llm_veto.default_fees()
+    review_fn = reviewer or llm_veto.review
+    results = {}
+    executor = concurrent.futures.ThreadPoolExecutor(max_workers=min(5, len(selected)))
+    try:
+        futures = {
+            executor.submit(
+                review_fn, s, date=date, timeout=STYLE_VETO_TIMEOUT, scan_id=plan.scan_id, fees=fees,
+                quote={"price": s.get("latest_price"), "prev_close": s.get("signal_prev_close"),
+                       "at": s.get("signal_price_at"), "target_amount": total_assets * weight},
+            ): s for s in selected
+        }
+        wait_for = max(1.0, min(STYLE_VETO_TIMEOUT + 15, remaining() - 10))
+        done, _ = concurrent.futures.wait(futures, timeout=wait_for)
+        for future in done:
+            try:
+                results[futures[future]["code"]] = future.result()
+            except Exception as exc:  # noqa: BLE001 - 复核异常按否决处理
+                logger.warning("[快链路-风格池] 否决复核异常 %s: %s", futures[future]["code"], exc)
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    buys = 0
+    for s in selected:
+        code = s["code"]
+        verdict = results.get(code)
+        if verdict is None:
+            s.update(llm_action="HOLD", llm_status="timeout", llm_reason="否决复核超时(按否决处理)")
+            plan.hold_reasons[code] = "HOLD_VETO_UNAVAILABLE(复核超时，按否决处理)"
+            continue
+        s.update(llm_action="BUY" if not verdict["veto"] else "HOLD",
+                 llm_confidence=verdict.get("confidence") or 0.0,
+                 llm_reason=verdict.get("reasoning", ""), decision_id=verdict.get("decision_id"),
+                 llm_status="reused" if verdict.get("reused") else ("error" if verdict.get("failed") else "ok"))
+        if verdict.get("failed"):
+            plan.hold_reasons[code] = f"HOLD_VETO_UNAVAILABLE({verdict.get('reasoning', '')[:40]})"
+            continue
+        if verdict["veto"]:
+            plan.hold_reasons[code] = f"HOLD_LLM_VETO({verdict['category']}: {verdict.get('evidence', '')[:40]})"
+            continue
+        if buys >= buy_budget:
+            plan.hold_reasons[code] = f"HOLD_BUY_BUDGET(本轮可开仓={buy_budget})"
+            continue
+        price = float(s["latest_price"])
+        styles = ",".join(s.get("styles") or [])
+        via = s.get("selected_style") or ""
+        plan.orders.append(TradeOrder(
+            code=code, name=s["name"], action="BUY", priority=buys + 1,
+            target_weight=round(weight, 4), max_price=price * 1.02, ref_price=price,
+            reason=f"风格池[{styles}] 因子分{s.get('factor_score', 0):.0f}；{verdict.get('reasoning', '')[:60]}",
+            score=float(s.get("factor_score") or 0), conviction=float(verdict.get("confidence") or 0),
+            market_regime=regime, dimensions=s.get("dimensions", {}),
+            signal_detail=f"style={styles} via={via} factor={s.get('factor_score', 0):.1f}",
+            decision_id=verdict.get("decision_id"),
+        ))
+        buys += 1
+
+
+def held_trading_days(buy_date: str, today: str) -> Optional[int]:
+    """买入日之后已经过的交易日数（买入当日为 0）；日期无效返回 None。"""
+    try:
+        from scheduler.market_calendar import get_trading_days
+        start = str(buy_date or "")[:10]
+        if not start or start > today:
+            return None
+        return max(0, len(get_trading_days(start, today)) - 1)
+    except Exception as exc:  # noqa: BLE001 - 日历不可用时不触发按期退出
+        logger.warning("[快链路-卖出] 交易日历不可用，无法计算持有天数 %s→%s: %s", buy_date, today, exc)
+        return None
+
+
 def fast_scan(
     budget_seconds: int = FAST_SCAN_BUDGET_SECONDS,
     candidate_codes: Optional[List[str]] = None,
@@ -336,7 +538,7 @@ def fast_scan(
     """
     global _llm_timeout_count
     from data.snapshot import (
-        get_market_snapshot_status, get_sentiment_snapshot,
+        get_market_snapshot_status,
         get_candidate_pool_status, save_candidate_pool, with_timeout,
     )
 
@@ -368,7 +570,23 @@ def fast_scan(
 
     # 读候选池(优先用缓存)
     candidates = []
-    if candidate_items:
+    # 风格池模式只替换常规扫描的候选来源；救援扫描/白名单仍走原路径（且救援在该模式下停用）。
+    style_mode = CANDIDATE_SOURCE == "style_pools" and not candidate_items and not candidate_filter
+    style_allocation = None
+    if style_mode:
+        from strategy.style_allocator import load_allocation
+        from strategy.style_candidates import load_style_candidates
+        style_allocation = load_allocation()
+        candidates, plan.candidate_pool = load_style_candidates(scan_date)
+        if candidates:
+            logger.info("[快链路] 风格池候选: %s只 | 池日期=%s 风格=%s",
+                        len(candidates), plan.candidate_pool.get("pool_date"),
+                        ",".join(plan.candidate_pool.get("styles") or []))
+        else:
+            plan.errors.append(
+                f"风格池不可用，本轮不开新仓: {plan.candidate_pool.get('refresh_error') or '无候选'}")
+            logger.warning("[快链路] 风格池不可用: %s", plan.candidate_pool.get("refresh_error"))
+    elif candidate_items:
         from strategy.stock_picker import Candidate
         for c in candidate_items:
             code = str(c.get("code", "")).strip()
@@ -595,55 +813,22 @@ def fast_scan(
         return plan
 
     # ── 30-60s: 并发打分 ──
-    sentiment_snap = get_sentiment_snapshot(max_age=3600)
-    if not sentiment_snap:
-        # 舆情缓存过期，批量预取（避免每只股票单独调LLM）
-        logger.info("[快链路] 舆情缓存过期，批量预取...")
-        from data.snapshot import prefetch_sentiment
-        codes = [c.code if hasattr(c, 'code') else c.get('code', '') for c in candidates]
-        sentiment_snap = prefetch_sentiment(codes)
-    sentiment_scores = sentiment_snap.get("scores", {}) if sentiment_snap else {}
-    logger.info(f"[快链路] 舆情覆盖: {len(sentiment_scores)}/{len(candidates)}只")
-    data_quality = {
-        "market_snapshot": {
-            "source": market_info.get("source", "unavailable"),
-            "fresh": bool(market_info.get("fresh")),
-            "age_seconds": market_info.get("age_seconds"),
-        },
-        "candidate_pool": {
-            "source": plan.candidate_pool.get("source", "unknown"),
-            "fresh": bool(plan.candidate_pool.get("fresh")),
-            "age_seconds": plan.candidate_pool.get("age_seconds"),
-        },
-        "sentiment": {
-            "available": bool(sentiment_scores),
-            "coverage": round(len(sentiment_scores) / len(candidates), 2) if candidates else 0,
-        },
-        "degraded": [],
-    }
-    if not market_info.get("fresh"):
-        data_quality["degraded"].append("市场涨跌停/资金快照过期或缺失")
-    if not plan.candidate_pool.get("fresh"):
-        data_quality["degraded"].append("候选池过期或使用回退数据")
-    if not sentiment_scores:
-        data_quality["degraded"].append("舆情数据缺失")
-    elif len(sentiment_scores) < len(candidates):
-        data_quality["degraded"].append("部分股票舆情未返回")
-    if data_quality["degraded"]:
-        logger.warning("[快链路] 数据降级进入LLM上下文: %s", data_quality["degraded"])
-
-    # ML信号批量预取：pooled影子模型可用时走本地库批量推理，避免逐股
-    # 临时训练；不可用时各候选自动回退原逐股路径，行为与旧版一致。
-    try:
-        from strategy.qlib_signal import prefetch_pooled_signals
-        prefetch_pooled_signals(
-            [c.code if hasattr(c, "code") else c.get("code", "") for c in candidates]
-        )
-    except Exception as exc:
-        logger.warning(f"[快链路] pooled批量预取跳过: {exc}")
-
-    scored = _parallel_score(candidates, sentiment_scores, timeout=remaining(), errors=plan.errors)
-    research_scores_complete = len(scored) == len(candidates)
+    if style_mode:
+        from strategy.style_candidates import to_scored
+        scored = to_scored(candidates)
+        research_scores_complete = True
+        data_quality = {
+            "market_snapshot": {
+                "source": market_info.get("source", "unavailable"),
+                "fresh": bool(market_info.get("fresh")),
+                "age_seconds": market_info.get("age_seconds"),
+            },
+            "candidate_pool": {key: plan.candidate_pool.get(key) for key in ("source", "fresh", "pool_date")},
+            "degraded": [] if candidates else ["风格池不可用"],
+        }
+    else:
+        scored, data_quality, research_scores_complete = _legacy_score_candidates(
+            candidates, plan, market_info, remaining)
 
     # 排序
     scored.sort(key=lambda x: x["composite"], reverse=True)
@@ -687,16 +872,18 @@ def fast_scan(
     # 影子策略：全部变体在同一候选池与同一份打分上推导决策并落库，
     # 复用反事实回填的净收益计算对比指标；晋级只产生候选行，不改变
     # 真实下单。旧 A/B 框架长期 running 的实验顺带过期清理。
+    # 风格池模式下 scored 是因子分而非六维分，旧影子变体无意义，不记录。
     try:
         from strategy.shadow_traders import record_daily_decisions
         from strategy.shadow_eval import expire_stale_ab_tests
         from data.database import Database
         base_params = {"top_k": int(top_k), "min_score": float(min_score), "max_weight": float(max_weight)}
         with Database() as _shadow_db:
-            record_daily_decisions(
-                _shadow_db, plan.date, regime,
-                plan.strategy_version or "legacy-adaptive", scored, base_params,
-            )
+            if not style_mode:
+                record_daily_decisions(
+                    _shadow_db, plan.date, regime,
+                    plan.strategy_version or "legacy-adaptive", scored, base_params,
+                )
             expire_stale_ab_tests(_shadow_db)
     except Exception as e:
         logger.debug(f"[影子] 决策记录失败(非致命): {e}")
@@ -708,8 +895,11 @@ def fast_scan(
         max_llm_candidates = max(1, min(50, int(max_llm_raw)))
     except ValueError:
         max_llm_candidates = 20
+    if style_mode:
+        _style_pool_orders(plan, scored, directive=directive, regime=regime, remaining=remaining,
+                           scan_date=scan_date, allocation=style_allocation)
     top_candidates, gate_reasons = select_llm_candidates(
-        scored, top_k=top_k, min_score=min_score,
+        [] if style_mode else scored, top_k=top_k, min_score=min_score,
         max_llm_candidates=max_llm_candidates,
         trading_date=plan.date,
     )
@@ -1056,6 +1246,30 @@ def fast_scan(
                     except Exception:
                         pass
 
+                    # 风格池模式：退出按回测口径“持有满 N 个交易日”执行，不再用旧六维分
+                    # 让 LLM 逐只判断卖出；止损/止盈/移动止损仍由盘中止损巡检负责。
+                    if style_mode:
+                        _held = held_trading_days(_pos_info.get("buy_date"), scan_date)
+                        _hold_days = style_allocation["hold_days"]
+                        if _held is not None and _held >= _hold_days:
+                            plan.orders.append(TradeOrder(
+                                code=_pos_code,
+                                name=_pos_info.get("name", _pos_code),
+                                action="SELL",
+                                priority=len(plan.orders) + 1,
+                                target_weight=0,
+                                max_price=0,
+                                reason=f"持有期满: 已持有{_held}个交易日(≥{_hold_days})",
+                                score=0,
+                                conviction=1.0,
+                                market_regime=regime,
+                                signal_detail=f"style_hold_days={_held}",
+                            ))
+                            _sell_signal_count += 1
+                        else:
+                            plan.hold_reasons[_pos_code] = f"HOLD_STYLE_HOLDING({_held}/{_hold_days})"
+                        continue
+
                     try:
                         from strategy.decision import compute_dimension_scores, DimensionScore as _DS2
                         _df_sell = None
@@ -1156,7 +1370,7 @@ def fast_scan(
     # === 可转债T+0扫描 ===
     try:
         from config import CB_T0_ENABLED
-        if CB_T0_ENABLED and remaining() > 5 and not (candidate_filter or candidate_items):
+        if CB_T0_ENABLED and remaining() > 5 and not (candidate_filter or candidate_items or style_mode):
             from strategy.cb_t0_strategy import scan_and_score, should_buy
             # 可转债试验预算受限于策略指令 max_weight 与单票上限，默认最高 8%
             _directive_max_weight = 0.08

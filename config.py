@@ -16,7 +16,9 @@ PAPER_ACCOUNT_FILE = os.path.join(DATA_DIR, "paper_account.json")
 # 资金配置
 # ══════════════════════════════════════════════════════════════════
 INITIAL_CAPITAL = 100_000        # 新模拟盘初始资金 10万；已有账户需显式归档后开启新一轮
-MAX_POSITIONS = 5                # 最大持仓数
+MAX_POSITIONS = int(os.environ.get("MAX_POSITIONS", "5"))   # 最大持仓数（风格池积极模式建议 12）
+if not 1 <= MAX_POSITIONS <= 30:
+    raise ValueError("MAX_POSITIONS 必须在 [1, 30] 内")
 MAX_SINGLE_PCT = 0.20            # 单只股票持仓上限 20%
 COMMISSION_RATE = 0.0003         # 佣金费率 万三
 STAMP_TAX_RATE = 0.0005          # 印花税 万五（卖出）
@@ -90,6 +92,34 @@ MAX_SIGNAL_PRICE_DRIFT = float(os.environ.get("MAX_SIGNAL_PRICE_DRIFT", "0.03"))
 # 实际下限 = min(MIN_BUY_AMOUNT, 总资产 × MIN_BUY_ASSET_RATIO)。
 MIN_BUY_AMOUNT = float(os.environ.get("MIN_BUY_AMOUNT", "3000"))
 MIN_BUY_ASSET_RATIO = float(os.environ.get("MIN_BUY_ASSET_RATIO", "0.015"))
+# ── 候选来源与 LLM 角色（docs/scoring-refactor-2026-11.md）──
+# legacy: 旧选股器 + 六维加权分 + 技术分门槛 + LLM 逐只审批（默认，可回滚）
+# style_pools: 收盘后风格池（style_shadow.db）+ 横截面因子分；LLM 只做风险否决
+CANDIDATE_SOURCE = os.environ.get("CANDIDATE_SOURCE", "legacy").strip().lower()
+if CANDIDATE_SOURCE not in ("legacy", "style_pools"):
+    raise ValueError("CANDIDATE_SOURCE 只能是 legacy 或 style_pools")
+# 参与实盘候选的风格池；强势趋势池回测显著为负，不进入。
+STYLE_LIVE_STYLES = tuple(
+    s.strip() for s in os.environ.get(
+        "STYLE_LIVE_STYLES", "oversold_rebound,low_vol_defensive,factor_top").split(",") if s.strip()
+)
+STYLE_MIN_FACTOR_SCORE = float(os.environ.get("STYLE_MIN_FACTOR_SCORE", "0"))    # 因子分下限；回测只用入池口径，默认不另设门槛
+STYLE_POSITION_WEIGHT = float(os.environ.get("STYLE_POSITION_WEIGHT", "0.05"))   # 单票固定目标仓位（不受熊市指令 max_weight 缩减）
+STYLE_MAX_TOTAL_EXPOSURE = float(os.environ.get("STYLE_MAX_TOTAL_EXPOSURE", "0.60"))  # 股票总仓位上限
+STYLE_HOLD_DAYS = int(os.environ.get("STYLE_HOLD_DAYS", "10"))                   # 初始持有期；之后由 data/style_allocation.json 自动调整
+STYLE_MAX_DAILY_BUYS = int(os.environ.get("STYLE_MAX_DAILY_BUYS", "3"))          # 每个交易日最多新开仓数，分批建仓让到期日错开
+STYLE_MAX_VETO_REVIEWS = int(os.environ.get("STYLE_MAX_VETO_REVIEWS", "6"))      # 每轮最多送 LLM 否决复核的候选数
+STYLE_VETO_TIMEOUT = int(os.environ.get("STYLE_VETO_TIMEOUT", "60"))             # 单次否决复核超时(秒)
+STYLE_AUTO_TUNE = os.environ.get("STYLE_AUTO_TUNE", "1") == "1"                  # 盘后按影子证据自动调风格名额/持有期
+for _name, _value, _lo, _hi in (
+    ("STYLE_MIN_FACTOR_SCORE", STYLE_MIN_FACTOR_SCORE, 0, 100),
+    ("STYLE_POSITION_WEIGHT", STYLE_POSITION_WEIGHT, 0.005, 0.20),
+    ("STYLE_MAX_TOTAL_EXPOSURE", STYLE_MAX_TOTAL_EXPOSURE, 0.0, 1.0),
+):
+    if not math.isfinite(_value) or not _lo <= _value <= _hi:
+        raise ValueError(f"{_name} 必须在 [{_lo}, {_hi}] 内")
+if STYLE_HOLD_DAYS < 1 or STYLE_MAX_DAILY_BUYS < 1 or STYLE_MAX_VETO_REVIEWS < 1 or STYLE_VETO_TIMEOUT < 5:
+    raise ValueError("STYLE_HOLD_DAYS/STYLE_MAX_DAILY_BUYS/STYLE_MAX_VETO_REVIEWS 需≥1，STYLE_VETO_TIMEOUT 需≥5")
 # 同一交易日同一股票的 LLM HOLD 结论复用窗口(秒)；输入未实质变化时不重复调用。
 # 只复用 HOLD，BUY/SELL 每次都重新判断。0 表示关闭复用。
 LLM_HOLD_REUSE_SECONDS = int(os.environ.get("LLM_HOLD_REUSE_SECONDS", "3600"))

@@ -26,6 +26,7 @@ from config import (
     AUTO_RESCUE_SCAN_BUDGET_SECONDS,
     AUTO_SCAN_INTERVAL,
     AUTO_STOP_INTERVAL,
+    CANDIDATE_SOURCE,
     AUTO_WATCH_INTERVAL,
     AUTO_REVIEW_AFTER,
     AUTO_NOTIFY_ENABLED,
@@ -824,9 +825,11 @@ def run_auto_cycle(
                         "error": "",
                     })
 
+            # 风格池模式下候选只在收盘后更新，救援扫描依赖旧观察池与旧打分，停用。
             if (
                 watch_result
                 and watch_result.get("rescue_requested")
+                and CANDIDATE_SOURCE != "style_pools"
                 and now_ts - state.last_rescue_scan_at >= AUTO_RESCUE_SCAN_INTERVAL
             ):
                 if run_rescue_scan_func is _run_rescue_scan_default:
