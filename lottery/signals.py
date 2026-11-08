@@ -36,6 +36,7 @@ TABLES = {"让分": SPREAD_TABLE, "大小分": TOTAL_TABLE}
 
 MIN_EV = float(os.environ.get("LOTTERY_MIN_EV", "0.02"))
 MAX_PICKS_PER_DAY = int(os.environ.get("LOTTERY_MAX_PICKS", "3"))
+SINGLE_ONLY = os.environ.get("LOTTERY_SINGLE_ONLY", "").lower() in ("1", "true", "yes")
 MAX_EDGE_POINTS = 8.0  # 偏离过大多半是数据错配（换线、伤停未同步），不入选
 STRATEGY = "sharp"
 FULL_CARD_STRATEGY = "all_games"  # 每场每玩法都出一个选择，不设期望值门槛
@@ -105,13 +106,17 @@ def candidates(game: dict) -> List[dict]:
 
 
 def select_picks(games: List[dict], *, min_ev: float = None, max_picks: int = None,
-                 already: int = 0) -> List[dict]:
-    """全天按期望值排序，取达标且偏离不过大的前 N 注（已出的注单计入上限）。"""
+                 already: int = 0, single_only: bool = None) -> List[dict]:
+    """全天按期望值降序取前 N 注（已出单注数计入上限），支持仅保留体彩开售单关的场次"""
     min_ev = MIN_EV if min_ev is None else min_ev
+    if single_only is None:
+        single_only = os.environ.get("LOTTERY_SINGLE_ONLY", "").lower() in ("1", "true", "yes")
     limit = (MAX_PICKS_PER_DAY if max_picks is None else max_picks) - already
     pool = []
     for game in games:
         for cand in candidates(game):
+            if single_only and not cand.get("single_open"):
+                continue
             if cand["ev"] >= min_ev and cand["edge"] <= MAX_EDGE_POINTS:
                 pool.append({**cand, "game": game})
     pool.sort(key=lambda item: item["ev"], reverse=True)
@@ -199,3 +204,60 @@ def grade(market: str, side: str, line: float, home_score: int, away_score: int,
     if value < 0:
         return "输", -1.0
     return "走", 0.0
+
+
+def recommend_parlays(picks: List[dict], max_combos: int = 3) -> List[dict]:
+    """为出单列表生成推荐的 2 串 1 组合。
+
+    竞彩规则与风控约束：
+    1. 同一场比赛的让分与大小分不能互串（体彩限制）。
+    2. 只做 2 串 1，严禁推荐 3 串 1 及以上（方差过大、胜率骤降）。
+    3. 组合胜率 P = P1 * P2，组合赔率 Odds = SP1 * SP2，组合 EV = P * Odds - 1。
+    4. 标注哪些组合因包含非单关场次而'必须串关'，哪些是'可选串关'。
+    """
+    combos = []
+    n = len(picks)
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = picks[i], picks[j]
+            # 排除同场比赛
+            if (a.get("home"), a.get("away")) == (b.get("home"), b.get("away")):
+                continue
+            if a.get("matchnum") and a.get("matchnum") == b.get("matchnum"):
+                continue
+            odds_a = _num(a.get("odds"))
+            odds_b = _num(b.get("odds"))
+            if not odds_a or not odds_b or odds_a <= 1.0 or odds_b <= 1.0:
+                continue
+            combo_odds = round(odds_a * odds_b, 4)
+            p_a = _num(a.get("p_win"))
+            p_b = _num(b.get("p_win"))
+            if p_a is not None and p_b is not None:
+                combo_p = round(p_a * p_b, 4)
+                combo_ev = round(combo_p * combo_odds - 1.0, 4)
+            else:
+                combo_p = None
+                combo_ev = None
+
+            single_a = bool(a.get("single_open"))
+            single_b = bool(b.get("single_open"))
+            must_parlay = not (single_a and single_b)
+
+            label_a = f"{a.get('matchnum') or ''} {a.get('selection') or ''}".strip()
+            label_b = f"{b.get('matchnum') or ''} {b.get('selection') or ''}".strip()
+
+            combos.append({
+                "type": "2串1",
+                "label": f"{label_a} × {label_b}",
+                "leg_a": a,
+                "leg_b": b,
+                "odds": combo_odds,
+                "p_win": combo_p,
+                "ev": combo_ev,
+                "must_parlay": must_parlay,
+                "note": "含非单关场次，必须串关" if must_parlay else "两场均可单买，可选串关搏高赔",
+            })
+
+    combos.sort(key=lambda c: (1 if c["must_parlay"] else 0, c["ev"] if c["ev"] is not None else -999), reverse=True)
+    return combos[:max_combos]
+

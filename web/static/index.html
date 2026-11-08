@@ -298,6 +298,7 @@
                     <article class="metric-card"><span>待结算</span><strong id="lottery-day-pending">-</strong><small id="lottery-day-pending-note">赛后自动补比分和输赢</small></article>
                 </section>
                 <p class="research-note" id="lottery-day-note" hidden></p>
+                <div id="lottery-games-parlay-box" class="card" style="display:none; margin: 16px 0;"></div>
                 <div class="lottery-legend" aria-label="标签说明">
                     <span><span class="lottery-tag sharp">★ 主信号</span> 竞彩比国际盘便宜，期望值达到门槛，计入主信号战绩</span>
                     <span><span class="lottery-tag">仅记录</span> 全场预测：每场每个玩法都选期望值更高的一侧，多数没有优势，只用于对照</span>
@@ -308,12 +309,14 @@
 
             <section class="tab-content" id="tab-lottery-ledger">
                 <div class="page-heading"><div><span class="eyebrow">只追加，不改写</span><h2>历史注单</h2></div><p>主信号与全场预测在每天 16:00 出单，停售前影子在竞彩停售前最后一次跟踪时出单；每条记录出单即公开，之后不改写，赛后只补结果与收盘价差。点销售日可回到当天的每日比赛。</p></div>
+                <div id="lottery-parlay-box" class="card" style="display:none; margin-bottom: 16px;"></div>
                 <div class="filter-bar">
                     <label>策略 <select id="lottery-ledger-strategy"><option value="">全部</option><option value="sharp">价格偏离（主信号）</option><option value="sharp_late">价格偏离（停售前，影子）</option><option value="all_games">全场预测（每场必出）</option><option value="model_legacy">模型对照组（已停用）</option></select></label>
                     <label>玩法 <select id="lottery-ledger-market"><option value="">全部</option><option value="让分">让分</option><option value="大小分">大小分</option></select></label>
+                    <label>单关 <select id="lottery-ledger-single"><option value="">全部</option><option value="true">仅单关</option><option value="false">仅串关</option></select></label>
                     <button id="lottery-ledger-prev" disabled>上一页</button><span id="lottery-ledger-page" role="status">-</span><button id="lottery-ledger-next" disabled>下一页</button>
                 </div>
-                <div class="table-wrap"><table class="lottery-table"><caption>纸面注单明细</caption><thead><tr><th scope="col">销售日</th><th scope="col">场次</th><th scope="col">对阵</th><th scope="col">策略</th><th scope="col">选择</th><th scope="col">赔率</th><th scope="col">偏离</th><th scope="col">估算胜率</th><th scope="col">期望值</th><th scope="col">比分</th><th scope="col">结果</th><th scope="col">盈亏</th><th scope="col">收盘价差</th><th scope="col">出单时伤停</th></tr></thead><tbody id="lottery-ledger-rows"></tbody></table></div>
+                <div class="table-wrap"><table class="lottery-table"><caption>纸面注单明细</caption><thead><tr><th scope="col">销售日</th><th scope="col">场次</th><th scope="col">对阵</th><th scope="col">策略</th><th scope="col">选择</th><th scope="col">单关</th><th scope="col">赔率</th><th scope="col">偏离</th><th scope="col">估算胜率</th><th scope="col">期望值</th><th scope="col">比分</th><th scope="col">结果</th><th scope="col">盈亏</th><th scope="col">收盘价差</th><th scope="col">出单时伤停</th></tr></thead><tbody id="lottery-ledger-rows"></tbody></table></div>
             </section>
 
             <section class="tab-content" id="tab-lottery-method">

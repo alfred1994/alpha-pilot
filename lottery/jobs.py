@@ -87,6 +87,7 @@ def _record(conn, day: str, chosen: List[tuple], injury_items: Optional[List[dic
 
 
 def run_picks(*, day: str = None, now: datetime = None, db_path: str = None,
+              single_only: bool = None,
               fetch_jc: Callable = sources.fetch_jc, fetch_espn: Callable = sources.fetch_espn,
               fetch_injuries: Callable = sources.fetch_injuries) -> dict:
     """抓当日竞彩与国际线，记录快照与伤停名单；在销售截止前按价格信号记录纸面注单。"""
@@ -114,7 +115,7 @@ def run_picks(*, day: str = None, now: datetime = None, db_path: str = None,
 
             open_games = [g for g in games if _still_open(g, now) and (g.get("state") in (None, "", "pre"))]
             already = store.count_picks(conn, day, signals.STRATEGY)
-            chosen = [(signals.STRATEGY, item) for item in signals.select_picks(open_games, already=already)]
+            chosen = [(signals.STRATEGY, item) for item in signals.select_picks(open_games, already=already, single_only=single_only)]
             chosen += [(signals.FULL_CARD_STRATEGY, {**item, "game": game})
                        for game in open_games for item in signals.full_card(game)]
             added = _record(conn, day, chosen, injury_items, now)
@@ -137,6 +138,7 @@ def _track_due(conn, day: str, now: datetime) -> bool:
 
 
 def run_capture(*, now: datetime = None, db_path: str = None, days: List[str] = None,
+                single_only: bool = None,
                 fetch_espn: Callable = sources.fetch_espn, fetch_jc: Callable = sources.fetch_jc,
                 fetch_injuries: Callable = sources.fetch_injuries) -> dict:
     """每 30 分钟一次：
@@ -200,7 +202,7 @@ def run_capture(*, now: datetime = None, db_path: str = None, days: List[str] = 
                 late = [g for g in track.values() if _in_late_window(g, now) and g.get("state") in (None, "", "pre")]
                 if late:
                     already = store.count_picks(conn, day, signals.LATE_STRATEGY)
-                    chosen = [(signals.LATE_STRATEGY, item) for item in signals.select_picks(late, already=already)]
+                    chosen = [(signals.LATE_STRATEGY, item) for item in signals.select_picks(late, already=already, single_only=single_only)]
                     new_late += _record(conn, day, chosen, injury_items, now).get(signals.LATE_STRATEGY, 0)
             settled = settle(conn)
             summary = {"status": "ok", "days": days, "games_updated": touched, "close_lines": closed, "settled": settled,

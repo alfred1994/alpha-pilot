@@ -202,9 +202,12 @@ def lottery_games(sale_date: Optional[date] = None):
         day_summary = [{"key": key, "label": stats.STRATEGY_LABELS[key],
                         **stats.summarize([r for r in day_picks if r["strategy"] == key])}
                        for key in SUMMARY_STRATEGIES if any(r["strategy"] == key for r in day_picks)]
+        day_sharp = [_pick_view(r) for r in day_picks if r["strategy"] == "sharp"]
+        parlay_recommendations = signals.recommend_parlays(day_sharp) if len(day_sharp) >= 2 else []
         return {"success": True, "available": True, "sale_date": day, "latest_sale_date": latest_day,
                 "prev_sale_date": prev_day, "next_sale_date": next_day, "games": out,
-                "day_summary": day_summary, "thresholds": {"min_ev": signals.MIN_EV}, "disclaimer": DISCLAIMER}
+                "day_summary": day_summary, "parlay_recommendations": parlay_recommendations,
+                "thresholds": {"min_ev": signals.MIN_EV}, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
 
@@ -268,6 +271,7 @@ def _game_injuries(game: dict, first_snap: dict, history: dict, now: datetime) -
 
 @router.get("/lottery/ledger")
 def lottery_ledger(strategy: Optional[str] = None, market: Optional[str] = None,
+                   single_open: Optional[bool] = None,
                    limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
     if strategy and strategy not in stats.STRATEGY_LABELS:
         raise HTTPException(422, "未知策略")
@@ -280,9 +284,18 @@ def lottery_ledger(strategy: Optional[str] = None, market: Optional[str] = None,
                 return {"success": True, "available": False, "items": [], "total": 0, "disclaimer": DISCLAIMER}
             rows = _all_picks(conn)
         rows = [r for r in rows if (not strategy or r["strategy"] == strategy) and (not market or r["market"] == market)]
+        if single_open is not None:
+            rows = [r for r in rows if bool(r.get("single_open")) is single_open]
         rows.sort(key=lambda r: (r["sale_date"], r["id"]), reverse=True)
         items = [{**_pick_view(r), "started": _started(r.get("tip_at"), now)} for r in rows[offset:offset + limit]]
-        return {"success": True, "available": True, "total": len(rows), "items": items, "disclaimer": DISCLAIMER}
+        parlay_recs = []
+        if rows:
+            latest_day = rows[0]["sale_date"]
+            latest_sharp = [_pick_view(r) for r in rows if r["sale_date"] == latest_day and r["strategy"] == "sharp"]
+            if len(latest_sharp) >= 2:
+                parlay_recs = signals.recommend_parlays(latest_sharp)
+        return {"success": True, "available": True, "total": len(rows), "items": items,
+                "parlay_recommendations": parlay_recs, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
 

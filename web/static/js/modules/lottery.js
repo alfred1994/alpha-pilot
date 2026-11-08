@@ -81,7 +81,7 @@ export class LotteryTabs {
         document.getElementById('lottery-day-next')?.addEventListener('click', () => { if (this.gamesNav.next) go(this.gamesNav.next); });
         document.getElementById('lottery-day-today')?.addEventListener('click', () => go(beijingParts(new Date()).day));
         document.getElementById('lottery-day-latest')?.addEventListener('click', () => go(null));
-        for (const id of ['lottery-ledger-strategy', 'lottery-ledger-market']) {
+        for (const id of ['lottery-ledger-strategy', 'lottery-ledger-market', 'lottery-ledger-single']) {
             document.getElementById(id)?.addEventListener('change', () => { this.ledgerOffset = 0; this.loadLedger(); });
         }
         document.getElementById('lottery-ledger-prev')?.addEventListener('click', () => { this.ledgerOffset = Math.max(0, this.ledgerOffset - this.ledgerLimit); this.loadLedger(); });
@@ -304,6 +304,16 @@ export class LotteryTabs {
         const range = first ? `北京时间 ${first.md} ${first.hm}${last && (last.day !== first.day || last.hm !== first.hm) ? ` – ${last.day !== first.day ? `${last.md} ` : ''}${last.hm}` : ''} 开赛` : '';
         this.text('lottery-games-status', `销售日 ${day} · ${games.length} 场${range ? ` · ${range}` : ''}`);
         this.renderDayNote(games);
+        const parlayBox = document.getElementById('lottery-games-parlay-box');
+        if (parlayBox) {
+            if (data.parlay_recommendations && data.parlay_recommendations.length > 0) {
+                this.renderParlays(parlayBox, data.parlay_recommendations);
+                parlayBox.style.display = 'block';
+            } else {
+                parlayBox.style.display = 'none';
+                parlayBox.replaceChildren();
+            }
+        }
         list?.replaceChildren(...games.map((g, index) => this.gameCard(g, groups[index], day, data.thresholds || {})));
     }
 
@@ -412,6 +422,11 @@ export class LotteryTabs {
                     const choice = this.stacked([`${entry.selection} @${known(entry.odds) ? entry.odds.toFixed(2) : '—'}`]);
                     const [label, kind] = this.choiceTag(entry, thresholds.min_ev);
                     choice.append(tag(label, kind));
+                    if (entry.single_open === true) {
+                        choice.append(tag('单关', 'sharp'));
+                    } else if (entry.single_open === false) {
+                        choice.append(tag('仅串关', 'push'));
+                    }
                     tr.append(choice, this.resultCell(entry, g));
                 }
                 tbody.append(tr);
@@ -560,8 +575,10 @@ export class LotteryTabs {
         const params = new URLSearchParams({ limit: this.ledgerLimit, offset: this.ledgerOffset });
         const strategy = document.getElementById('lottery-ledger-strategy')?.value;
         const market = document.getElementById('lottery-ledger-market')?.value;
+        const single = document.getElementById('lottery-ledger-single')?.value;
         if (strategy) params.set('strategy', strategy);
         if (market) params.set('market', market);
+        if (single) params.set('single_open', single);
         const body = document.getElementById('lottery-ledger-rows');
         try {
             const data = await getJson(`${this.app.apiBase}/lottery/ledger?${params}`);
@@ -570,6 +587,16 @@ export class LotteryTabs {
             this.text('lottery-ledger-page', data.total ? `${this.ledgerOffset + 1}–${end} / ${data.total}` : '暂无记录');
             document.getElementById('lottery-ledger-prev').disabled = this.ledgerOffset === 0;
             document.getElementById('lottery-ledger-next').disabled = end >= data.total;
+            const parlayBox = document.getElementById('lottery-parlay-box');
+            if (parlayBox) {
+                if (data.parlay_recommendations && data.parlay_recommendations.length > 0) {
+                    this.renderParlays(parlayBox, data.parlay_recommendations);
+                    parlayBox.style.display = 'block';
+                } else {
+                    parlayBox.style.display = 'none';
+                    parlayBox.replaceChildren();
+                }
+            }
             for (const p of data.items) {
                 const row = document.createElement('tr');
                 const dayCell = cell(row, '');
@@ -582,6 +609,14 @@ export class LotteryTabs {
                 cell(row, p.matchup);
                 cell(row, p.strategy_label);
                 cell(row, `${p.market} ${p.selection}`);
+                const singleCell = cell(row, '');
+                if (p.single_open === true) {
+                    singleCell.append(tag('单关', 'sharp'));
+                } else if (p.single_open === false) {
+                    singleCell.append(tag('串关', 'push'));
+                } else {
+                    singleCell.textContent = '—';
+                }
                 cell(row, known(p.odds) ? p.odds.toFixed(2) : '—');
                 cell(row, known(p.edge) ? `${p.edge.toFixed(1)} 分` : '—');
                 cell(row, pct(p.p_win));
@@ -597,6 +632,41 @@ export class LotteryTabs {
         } catch {
             this.text('lottery-ledger-page', '读取失败，请稍后重试');
         }
+    }
+
+
+    renderParlays(container, parlays) {
+        container.replaceChildren();
+        const head = el('div', 'section-heading compact');
+        const titleDiv = el('div');
+        titleDiv.append(el('span', 'eyebrow', '实操建议'));
+        titleDiv.append(el('h3', '', '当日串关推荐（2串1组合）'));
+        head.append(titleDiv);
+        head.append(tag('两两搭配控制方差', 'sharp'));
+        container.append(head);
+
+        const tip = el('p', '', '体彩部分场次不支持单买。若包含非单关场次，系统已根据正期望组合自动计算最优 2 串 1 搭配与预期收益。严禁打 3 串 1，以免方差急剧放大。');
+        tip.style.cssText = 'font-size:12px;color:var(--muted);margin:8px 0 12px;line-height:1.5;';
+        container.append(tip);
+
+        const list = el('div', 'parlay-list');
+        for (const item of parlays) {
+            const card = el('div', 'parlay-item');
+            card.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;padding:10px 14px;background:#ffffff06;border:1px solid #ffffff0a;border-radius:6px;margin-bottom:8px;gap:8px;';
+            const left = el('div');
+            left.style.cssText = 'display:flex;align-items:center;gap:8px;';
+            left.append(tag(item.type, 'sharp'));
+            left.append(el('strong', '', item.label));
+            left.append(tag(item.must_parlay ? '必须串关' : '可选串关', item.must_parlay ? 'stop' : 'pass'));
+
+            const right = el('div');
+            right.style.cssText = 'font-size:12px;color:var(--muted);display:flex;gap:12px;';
+            right.innerHTML = `组合赔率 <strong style="color:var(--ink);">${item.odds.toFixed(2)}</strong> ｜ 估算胜率 <strong>${pct(item.p_win)}</strong> ｜ 期望值 <strong style="color:${item.ev > 0 ? 'var(--accent)' : 'var(--up)'};">${signed(pct(item.ev))}</strong>`;
+
+            card.append(left, right);
+            list.append(card);
+        }
+        container.append(list);
     }
 
     async loadHealth() {

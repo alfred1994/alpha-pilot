@@ -142,6 +142,34 @@ class SignalTests(unittest.TestCase):
         self.assertEqual([(c["market"], c["side"], c["p_win"], c["ev"]) for c in no_ref], [("让分", "客", None, None)],
                          "缺国际线按赔率选边，胜率留空；未开售的大小分跳过")
 
+    def test_recommend_parlays_two_legs_and_rules(self):
+        picks = [
+            {"matchnum": "301", "home": "A", "away": "B", "odds": 1.70, "p_win": 0.60, "selection": "A -1.5", "single_open": False},
+            {"matchnum": "302", "home": "C", "away": "D", "odds": 1.75, "p_win": 0.58, "selection": "C +3.5", "single_open": True},
+            {"matchnum": "301", "home": "A", "away": "B", "odds": 1.65, "p_win": 0.55, "selection": "大 220", "single_open": False},
+        ]
+        combos = signals.recommend_parlays(picks)
+        self.assertEqual(len(combos), 2, "同场比赛不得互串，排除 301 让分 x 301 大小分")
+        self.assertEqual(combos[0]["type"], "2串1")
+        self.assertAlmostEqual(combos[0]["odds"], 1.70 * 1.75, places=3)
+        self.assertTrue(combos[0]["must_parlay"], "包含 301 非单关，标记必须串关")
+
+    def test_selection_single_only_filter(self):
+        base = {"jc_sp_home": 1.70, "jc_sp_away": 1.70}
+        g_nosingle = {**base, "jc_line": 4.5, "ref_line": 0.5, "single_spread": False}
+        g_single = {**base, "jc_line": 3.5, "ref_line": 0.5, "single_spread": True}
+        chosen_all = signals.select_picks([g_nosingle, g_single], max_picks=3, single_only=False)
+        self.assertEqual(len(chosen_all), 2)
+        self.assertEqual(chosen_all[0]["edge"], 4.0)
+        chosen_single = signals.select_picks([g_nosingle, g_single], max_picks=3, single_only=True)
+        self.assertEqual(len(chosen_single), 1)
+        self.assertEqual(chosen_single[0]["edge"], 3.0)
+        self.assertTrue(chosen_single[0]["single_open"])
+        with patch.dict(os.environ, {"LOTTERY_SINGLE_ONLY": "true"}):
+            chosen_env = signals.select_picks([g_nosingle, g_single], max_picks=3)
+            self.assertEqual(len(chosen_env), 1)
+            self.assertEqual(chosen_env[0]["edge"], 3.0)
+
     def test_selection_caps_and_ignores_suspicious_gaps(self):
         base = {"jc_sp_home": 1.70, "jc_sp_away": 1.70}
         games = [{**base, "jc_line": 4.5, "ref_line": 0.5}, {**base, "jc_line": 3.5, "ref_line": 0.5},
@@ -394,8 +422,13 @@ class PublicApiTests(unittest.TestCase):
             summary = self.client.get("/api/lottery/summary").json()
             games = self.client.get("/api/lottery/games").json()
             sharp_only = self.client.get("/api/lottery/ledger?strategy=sharp").json()
+            single_only = self.client.get("/api/lottery/ledger?single_open=true").json()
+            parlay_only = self.client.get("/api/lottery/ledger?single_open=false").json()
         self.assertEqual(ledger["total"], 3, "开赛前即公开：主信号 1 注 + 全场预测 2 条")
         self.assertEqual(sharp_only["items"][0]["selection"], "爵士 +1.5")
+        self.assertTrue(all(it["single_open"] is True for it in single_only["items"]))
+        self.assertTrue(all(it["single_open"] is False for it in parlay_only["items"]))
+        self.assertEqual(single_only["total"] + parlay_only["total"], ledger["total"])
         self.assertFalse(sharp_only["items"][0]["started"])
         self.assertEqual(summary["latest_day_picks"], {"sharp": 1, "sharp_late": 0, "all_games": 2})
         self.assertEqual([s["key"] for s in summary["strategies"]], ["sharp", "all_games"], "两个策略分开统计")
