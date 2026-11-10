@@ -87,7 +87,6 @@ def _record(conn, day: str, chosen: List[tuple], injury_items: Optional[List[dic
 
 
 def run_picks(*, day: str = None, now: datetime = None, db_path: str = None,
-              single_only: bool = None,
               fetch_jc: Callable = sources.fetch_jc, fetch_espn: Callable = sources.fetch_espn,
               fetch_injuries: Callable = sources.fetch_injuries) -> dict:
     """抓当日竞彩与国际线，记录快照与伤停名单；在销售截止前按价格信号记录纸面注单。"""
@@ -115,10 +114,11 @@ def run_picks(*, day: str = None, now: datetime = None, db_path: str = None,
 
             open_games = [g for g in games if _still_open(g, now) and (g.get("state") in (None, "", "pre"))]
             already = store.count_picks(conn, day, signals.STRATEGY)
-            chosen = [(signals.STRATEGY, item) for item in signals.select_picks(open_games, already=already, single_only=single_only)]
+            chosen = [(signals.STRATEGY, item) for item in signals.select_picks(open_games, already=already)]
             chosen += [(signals.FULL_CARD_STRATEGY, {**item, "game": game})
                        for game in open_games for item in signals.full_card(game)]
             added = _record(conn, day, chosen, injury_items, now)
+            _sync_research(conn)
             new, new_full = added.get(signals.STRATEGY, 0), added.get(signals.FULL_CARD_STRATEGY, 0)
             summary = {"status": "ok", "date": day, "games": len(games), "with_ref": sum(g.get("ref_line") is not None for g in games),
                        "open_games": len(open_games), "new_picks": new, "picks_today": already + new,
@@ -138,7 +138,6 @@ def _track_due(conn, day: str, now: datetime) -> bool:
 
 
 def run_capture(*, now: datetime = None, db_path: str = None, days: List[str] = None,
-                single_only: bool = None,
                 fetch_espn: Callable = sources.fetch_espn, fetch_jc: Callable = sources.fetch_jc,
                 fetch_injuries: Callable = sources.fetch_injuries) -> dict:
     """每 30 分钟一次：
@@ -202,7 +201,7 @@ def run_capture(*, now: datetime = None, db_path: str = None, days: List[str] = 
                 late = [g for g in track.values() if _in_late_window(g, now) and g.get("state") in (None, "", "pre")]
                 if late:
                     already = store.count_picks(conn, day, signals.LATE_STRATEGY)
-                    chosen = [(signals.LATE_STRATEGY, item) for item in signals.select_picks(late, already=already, single_only=single_only)]
+                    chosen = [(signals.LATE_STRATEGY, item) for item in signals.select_picks(late, already=already)]
                     new_late += _record(conn, day, chosen, injury_items, now).get(signals.LATE_STRATEGY, 0)
             settled = settle(conn)
             summary = {"status": "ok", "days": days, "games_updated": touched, "close_lines": closed, "settled": settled,
@@ -215,8 +214,56 @@ def run_capture(*, now: datetime = None, db_path: str = None, days: List[str] = 
             raise
 
 
+def _sync_research(conn) -> int:
+    """把还没有研究票的主信号收成单关或串关。同一天同一策略只记第一次。"""
+    added = 0
+    days = conn.execute(
+        "SELECT DISTINCT sale_date, strategy FROM picks WHERE strategy IN (?, ?)",
+        signals.RESEARCH_STRATEGIES).fetchall()
+    for day, strategy in days:
+        exists = conn.execute(
+            "SELECT 1 FROM tickets WHERE sale_date=? AND strategy=? AND role='研究' AND kind IN ('单关','2串1','3串1')",
+            (day, strategy)).fetchone()
+        if exists:
+            continue
+        sharp = [dict(row) for row in conn.execute(
+            "SELECT * FROM picks WHERE sale_date=? AND strategy=?", (day, strategy))]
+        companions = [dict(row) for row in conn.execute(
+            "SELECT * FROM picks WHERE sale_date=? AND strategy=?", (day, signals.FULL_CARD_STRATEGY))]
+        for ticket in signals.recommend_tickets(sharp, companions):
+            if ticket["type"] not in signals.STUDY_TYPES:
+                continue
+            added += int(store.add_ticket(conn, day, strategy, ticket))
+    return added
+
+
+def _settle_tickets(conn) -> int:
+    """各腿都有赛果后，按整张票结算。赔率用出票时锁定的 SP。"""
+    rows = conn.execute("SELECT * FROM tickets WHERE result IS NULL").fetchall()
+    settled = 0
+    for row in rows:
+        legs = json.loads(row["legs"])
+        resolved, pending = [], False
+        for leg in legs:
+            found = conn.execute(
+                """SELECT result FROM picks WHERE sale_date=? AND home=? AND away=? AND market=? AND strategy=?""",
+                (row["sale_date"], leg.get("home"), leg.get("away"), leg.get("market"),
+                 leg.get("strategy") or row["strategy"])).fetchone()
+            if not found or found["result"] not in ("赢", "输", "走"):
+                pending = True
+                break
+            resolved.append({**leg, "result": found["result"]})
+        if pending:
+            continue
+        result, pnl = signals.grade_ticket(resolved)
+        conn.execute("UPDATE tickets SET result=?, pnl=?, settled_at=? WHERE id=?",
+                     (result, pnl, store._now(), row["id"]))
+        settled += 1
+    return settled
+
+
 def settle(conn) -> int:
-    """为已完赛比赛的未结算注单补结果、盈亏与收盘价差。"""
+    """为已完赛比赛的未结算注单补结果、盈亏与收盘价差，并结算已经凑齐的研究票。"""
     rows = conn.execute(
         """SELECT p.id, p.market, p.side, p.line, p.odds, g.home_score, g.away_score,
                   g.close_ref_line, g.close_ref_total
@@ -228,6 +275,8 @@ def settle(conn) -> int:
         clv = signals.clv_points(row["market"], row["side"], row["line"], close_ref)
         conn.execute("UPDATE picks SET result=?, pnl=?, home_score=?, away_score=?, close_ref=?, clv=?, settled_at=? WHERE id=?",
                      (result, pnl, row["home_score"], row["away_score"], close_ref, clv, store._now(), row["id"]))
+    _sync_research(conn)
+    _settle_tickets(conn)
     return len(rows)
 
 

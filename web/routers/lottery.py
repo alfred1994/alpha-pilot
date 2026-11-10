@@ -92,6 +92,40 @@ def _all_picks(conn):
     return [dict(row) for row in conn.execute("SELECT * FROM picks ORDER BY sale_date, id")]
 
 
+def _stored_tickets(conn) -> list:
+    if not _has_table(conn, "tickets"):
+        return []
+    out = []
+    for row in conn.execute("SELECT * FROM tickets ORDER BY id"):
+        item = dict(row)
+        try:
+            item["legs"] = json.loads(item.pop("legs"))
+        except (TypeError, ValueError):
+            item["legs"] = []
+        item["type"] = item.pop("kind")
+        item["label"] = " × ".join(
+            f"{leg.get('matchnum') or ''} {leg.get('selection') or ''}".strip() for leg in item["legs"])
+        out.append(item)
+    return out
+
+
+def _public_ticket(ticket: dict) -> dict:
+    fields = ("matchnum", "selection", "market", "odds", "p_win", "ev", "companion", "result", "single_open")
+    return {
+        "sale_date": ticket.get("sale_date"), "strategy": ticket.get("strategy"),
+        "type": ticket.get("type"), "role": ticket.get("role"), "label": ticket.get("label"),
+        "legs": [{key: leg.get(key) for key in fields} for leg in ticket.get("legs") or []],
+        "odds": ticket.get("odds"), "p_win": ticket.get("p_win"), "ev": ticket.get("ev"),
+        "breakeven": ticket.get("breakeven"), "note": ticket.get("note"),
+        "result": ticket.get("result"), "pnl": ticket.get("pnl"),
+    }
+
+
+def _research_view(picks: list, stored: list):
+    tickets = signals.collect_tickets(picks, stored)
+    return tickets, signals.research_records(tickets, picks)
+
+
 @router.get("/lottery/summary")
 def lottery_summary():
     now = now_beijing()
@@ -100,13 +134,22 @@ def lottery_summary():
             if conn is None:
                 return {"success": True, "available": False, "disclaimer": DISCLAIMER}
             rows = _all_picks(conn)
+            stored = _stored_tickets(conn)
             last_game_day = conn.execute("SELECT MAX(sale_date) FROM games").fetchone()[0]
+        tickets, research = _research_view(rows, stored)
         strategies = []
         for key in SUMMARY_STRATEGIES:
-            subset = [r for r in rows if r["strategy"] == key]
+            if key in signals.RESEARCH_STRATEGIES:
+                subset = [r for r in research if r["strategy"] == key]
+                markets = ("让分", "大小分", "串关")
+            else:
+                subset = [r for r in rows if r["strategy"] == key]
+                markets = ("让分", "大小分")
             if not subset and key != "sharp":
                 continue
-            by_market = {m: stats.summarize([r for r in subset if r["market"] == m]) for m in ("让分", "大小分")}
+            by_market = {m: stats.summarize([r for r in subset if r.get("market") == m]) for m in markets}
+            if "串关" in by_market and not by_market["串关"]["bets"]:
+                del by_market["串关"]
             strategies.append({"key": key, "label": stats.STRATEGY_LABELS[key],
                                "overall": stats.summarize(subset), "by_market": by_market})
         injury_groups = []
@@ -115,13 +158,19 @@ def lottery_summary():
             if any(r.get("injury_tags") is not None for r in subset):
                 injury_groups.append({"key": key, "label": stats.STRATEGY_LABELS[key], "groups": stats.by_injury_tag(subset)})
         latest_rows = [r for r in rows if r["sale_date"] == last_game_day and r["strategy"] in LIVE_STRATEGIES]
+        latest_research = [r for r in research if r.get("sale_date") == last_game_day]
+        curve_rows = [r for r in rows if r["strategy"] not in signals.RESEARCH_STRATEGIES] + research
         return {
             "success": True, "available": True, "as_of": now.isoformat(timespec="seconds"),
             "latest_sale_date": last_game_day, "strategies": strategies,
-            "latest_day_picks": {key: sum(r["strategy"] == key for r in latest_rows) for key in LIVE_STRATEGIES},
+            "latest_day_picks": {
+                "sharp": sum(r["strategy"] == "sharp" for r in latest_research),
+                "sharp_late": sum(r["strategy"] == "sharp_late" for r in latest_research),
+                "all_games": sum(r["strategy"] == "all_games" for r in latest_rows),
+            },
             "injury_groups": injury_groups,
-            "stop_rules": stats.stop_status([r for r in rows if r["strategy"] == "sharp"]),
-            "curve": stats.curve(rows),
+            "stop_rules": stats.stop_status([r for r in research if r["strategy"] == "sharp"]),
+            "curve": stats.curve(curve_rows),
             "thresholds": {
                 "min_ev": signals.MIN_EV, "max_picks_per_day": signals.MAX_PICKS_PER_DAY,
                 "late_window_minutes": signals.LATE_WINDOW_MINUTES,
@@ -152,6 +201,7 @@ def lottery_games(sale_date: Optional[date] = None):
             for row in conn.execute("SELECT * FROM snapshots WHERE sale_date=?", (day,)):
                 snapshots.setdefault((row["home"], row["away"]), []).append(dict(row))
             day_picks = [dict(row) for row in conn.execute("SELECT * FROM picks WHERE sale_date=? ORDER BY id", (day,))]
+            stored = [t for t in _stored_tickets(conn) if t["sale_date"] == day]
             picks = {}
             for row in day_picks:
                 picks.setdefault((row["home"], row["away"]), []).append(row)
@@ -199,14 +249,20 @@ def lottery_games(sale_date: Optional[date] = None):
             item["analysis"] = [{k: c[k] for k in ("market", "side", "edge", "odds", "p_win", "ev")} for c in cands]
             item["picks"] = [_pick_view(p) for p in sorted(picks.get(key, []), key=lambda p: (p["strategy"], p["market"]))]
             out.append(item)
-        day_summary = [{"key": key, "label": stats.STRATEGY_LABELS[key],
-                        **stats.summarize([r for r in day_picks if r["strategy"] == key])}
-                       for key in SUMMARY_STRATEGIES if any(r["strategy"] == key for r in day_picks)]
-        day_sharp = [_pick_view(r) for r in day_picks if r["strategy"] == "sharp"]
-        parlay_recommendations = signals.recommend_parlays(day_sharp) if len(day_sharp) >= 2 else []
+        tickets, research = _research_view(day_picks, stored)
+        day_summary = []
+        for key in SUMMARY_STRATEGIES:
+            if key in signals.RESEARCH_STRATEGIES:
+                subset = [r for r in research if r["strategy"] == key]
+            else:
+                subset = [r for r in day_picks if r["strategy"] == key]
+            if subset:
+                day_summary.append({"key": key, "label": stats.STRATEGY_LABELS[key], **stats.summarize(subset)})
+        public_tickets = [_public_ticket(t) for t in tickets if t.get("strategy") == "sharp"]
         return {"success": True, "available": True, "sale_date": day, "latest_sale_date": latest_day,
                 "prev_sale_date": prev_day, "next_sale_date": next_day, "games": out,
-                "day_summary": day_summary, "parlay_recommendations": parlay_recommendations,
+                "day_summary": day_summary, "tickets": public_tickets,
+                "parlay_recommendations": public_tickets,
                 "thresholds": {"min_ev": signals.MIN_EV}, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
@@ -282,20 +338,21 @@ def lottery_ledger(strategy: Optional[str] = None, market: Optional[str] = None,
         with _open() as conn:
             if conn is None:
                 return {"success": True, "available": False, "items": [], "total": 0, "disclaimer": DISCLAIMER}
-            rows = _all_picks(conn)
-        rows = [r for r in rows if (not strategy or r["strategy"] == strategy) and (not market or r["market"] == market)]
+            all_rows = _all_picks(conn)
+            stored = _stored_tickets(conn)
+        tickets, _research = _research_view(all_rows, stored)
+        rows = [r for r in all_rows if (not strategy or r["strategy"] == strategy) and (not market or r["market"] == market)]
         if single_open is not None:
             rows = [r for r in rows if bool(r.get("single_open")) is single_open]
         rows.sort(key=lambda r: (r["sale_date"], r["id"]), reverse=True)
         items = [{**_pick_view(r), "started": _started(r.get("tip_at"), now)} for r in rows[offset:offset + limit]]
-        parlay_recs = []
-        if rows:
-            latest_day = rows[0]["sale_date"]
-            latest_sharp = [_pick_view(r) for r in rows if r["sale_date"] == latest_day and r["strategy"] == "sharp"]
-            if len(latest_sharp) >= 2:
-                parlay_recs = signals.recommend_parlays(latest_sharp)
+        focus = strategy if strategy in signals.RESEARCH_STRATEGIES else "sharp"
+        show_tickets = strategy in (None, *signals.RESEARCH_STRATEGIES)
+        dated = [t for t in tickets if t.get("strategy") == focus and t.get("sale_date")]
+        latest_day = max((t["sale_date"] for t in dated), default=None)
+        public_tickets = [_public_ticket(t) for t in dated if show_tickets and t.get("sale_date") == latest_day]
         return {"success": True, "available": True, "total": len(rows), "items": items,
-                "parlay_recommendations": parlay_recs, "disclaimer": DISCLAIMER}
+                "tickets": public_tickets, "parlay_recommendations": public_tickets, "disclaimer": DISCLAIMER}
     except Exception:
         return unavailable()
 

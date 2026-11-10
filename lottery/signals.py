@@ -36,12 +36,13 @@ TABLES = {"让分": SPREAD_TABLE, "大小分": TOTAL_TABLE}
 
 MIN_EV = float(os.environ.get("LOTTERY_MIN_EV", "0.02"))
 MAX_PICKS_PER_DAY = int(os.environ.get("LOTTERY_MAX_PICKS", "3"))
-SINGLE_ONLY = os.environ.get("LOTTERY_SINGLE_ONLY", "").lower() in ("1", "true", "yes")
 MAX_EDGE_POINTS = 8.0  # 偏离过大多半是数据错配（换线、伤停未同步），不入选
 STRATEGY = "sharp"
 FULL_CARD_STRATEGY = "all_games"  # 每场每玩法都出一个选择，不设期望值门槛
 LATE_STRATEGY = "sharp_late"  # 与主信号同一规则，改在竞彩停售前最后一次采集时出单（影子对照）
 LATE_WINDOW_MINUTES = float(os.environ.get("LOTTERY_LATE_WINDOW_MINUTES", "45"))
+STUDY_TYPES = ("单关", "2串1", "3串1")
+RESEARCH_STRATEGIES = (STRATEGY, LATE_STRATEGY)
 
 
 def win_probability(points: float, market: str) -> float:
@@ -106,17 +107,16 @@ def candidates(game: dict) -> List[dict]:
 
 
 def select_picks(games: List[dict], *, min_ev: float = None, max_picks: int = None,
-                 already: int = 0, single_only: bool = None) -> List[dict]:
-    """全天按期望值降序取前 N 注（已出单注数计入上限），支持仅保留体彩开售单关的场次"""
+                 already: int = 0) -> List[dict]:
+    """全天按期望值降序取前 N 注（已出单注数计入上限）。
+
+    不按单关开售过滤。没开单关的腿留在这里，研究时由 ``recommend_tickets`` 合成串关。
+    """
     min_ev = MIN_EV if min_ev is None else min_ev
-    if single_only is None:
-        single_only = os.environ.get("LOTTERY_SINGLE_ONLY", "").lower() in ("1", "true", "yes")
     limit = (MAX_PICKS_PER_DAY if max_picks is None else max_picks) - already
     pool = []
     for game in games:
         for cand in candidates(game):
-            if single_only and not cand.get("single_open"):
-                continue
             if cand["ev"] >= min_ev and cand["edge"] <= MAX_EDGE_POINTS:
                 pool.append({**cand, "game": game})
     pool.sort(key=lambda item: item["ev"], reverse=True)
@@ -206,58 +206,331 @@ def grade(market: str, side: str, line: float, home_score: int, away_score: int,
     return "走", 0.0
 
 
-def recommend_parlays(picks: List[dict], max_combos: int = 3) -> List[dict]:
-    """为出单列表生成推荐的 2 串 1 组合。
+def _match_key(pick: dict):
+    """同一场比赛的身份。有场次号就用场次号，否则用主客队；两边都空则无法组票。"""
+    if pick.get("matchnum"):
+        return ("num", str(pick["matchnum"]))
+    if pick.get("home") and pick.get("away"):
+        return ("teams", pick["home"], pick["away"])
+    return None
 
-    竞彩规则与风控约束：
-    1. 同一场比赛的让分与大小分不能互串（体彩限制）。
-    2. 只做 2 串 1，严禁推荐 3 串 1 及以上（方差过大、胜率骤降）。
-    3. 组合胜率 P = P1 * P2，组合赔率 Odds = SP1 * SP2，组合 EV = P * Odds - 1。
-    4. 标注哪些组合因包含非单关场次而'必须串关'，哪些是'可选串关'。
+
+def _selection(pick: dict) -> str:
+    if pick.get("selection"):
+        return pick["selection"]
+    line = _num(pick.get("line"))
+    if pick.get("market") and pick.get("side") and line is not None:
+        home = pick.get("home_cn") or pick.get("home") or ""
+        away = pick.get("away_cn") or pick.get("away") or ""
+        return describe(pick["market"], pick["side"], line, home, away)
+    return ""
+
+
+def _leg_view(pick: dict, *, companion: bool = False) -> dict:
+    opened = pick.get("single_open")
+    return {
+        "matchnum": pick.get("matchnum"), "home": pick.get("home"), "away": pick.get("away"),
+        "market": pick.get("market"), "side": pick.get("side"), "line": _num(pick.get("line")),
+        "selection": _selection(pick), "odds": _num(pick.get("odds")), "p_win": _num(pick.get("p_win")),
+        "ev": _num(pick.get("ev")), "single_open": None if opened is None else bool(opened),
+        "result": pick.get("result"), "clv": pick.get("clv"), "companion": companion,
+        "strategy": pick.get("strategy"),
+    }
+
+
+def _price(legs: List[dict]) -> Optional[dict]:
+    """组合赔率、胜率、期望、保本胜率。各场按独立估算，胜率和赔率都是连乘。"""
+    odds = p = 1.0
+    for leg in legs:
+        leg_odds, leg_p = leg.get("odds"), leg.get("p_win")
+        if leg_odds is None or leg_p is None or leg_odds <= 1:
+            return None
+        odds *= leg_odds
+        p *= leg_p
+    return {"odds": round(odds, 4), "p_win": round(p, 4), "ev": round(p * odds - 1.0, 4),
+            "breakeven": round(1.0 / odds, 4)}
+
+
+def grade_ticket(legs: List[dict]):
+    """整张票的输赢。任一腿未结束则待结算；任一腿输则整张 -1；走盘的腿按赔率 1 继续。"""
+    if not legs:
+        return None, None
+    results = [leg.get("result") for leg in legs]
+    if any(result not in ("赢", "输", "走") for result in results):
+        return None, None
+    if any(result == "输" for result in results):
+        return "输", -1.0
+    if all(result == "走" for result in results):
+        return "走", 0.0
+    effect = 1.0
+    for leg in legs:
+        if leg["result"] != "赢":
+            continue
+        leg_odds = _num(leg.get("odds"))
+        if leg_odds is None or leg_odds <= 1:
+            return None, None
+        effect *= leg_odds
+    return "赢", round(effect - 1.0, 4)
+
+
+def _label(legs: List[dict]) -> str:
+    return " × ".join(f"{leg.get('matchnum') or ''} {leg.get('selection') or ''}".strip() for leg in legs)
+
+
+def _assemble(kind: str, role: str, picks: List[dict], note: str, companions: List[bool]) -> Optional[dict]:
+    legs = [_leg_view(pick, companion=flag) for pick, flag in zip(picks, companions)]
+    priced = _price(legs)
+    if priced is None:
+        return None
+    result, pnl = grade_ticket(legs)
+    return {"type": kind, "role": role, "label": _label(legs), "legs": legs, "note": note,
+            "result": result, "pnl": pnl, **priced}
+
+
+def _unplaced(pick: dict, note: str) -> dict:
+    leg = _leg_view(pick)
+    return {"type": "无法出票", "role": "研究", "label": _label([leg]), "legs": [leg], "note": note,
+            "odds": None, "p_win": leg.get("p_win"), "ev": None, "breakeven": None,
+            "result": None, "pnl": None}
+
+
+def _ev_of(pick: dict) -> float:
+    value = _num(pick.get("ev"))
+    return value if value is not None else -999.0
+
+
+def _best_cover(pool: List[dict]) -> List[dict]:
+    """2 场出一张 2 串 1；3 场出一张 3 串 1，并给出期望最高的 2 串 1 作备选。"""
+    pool = sorted(pool, key=_ev_of, reverse=True)
+    extra, pool = pool[3:], pool[:3]
+    tickets = []
+    if len(pool) == 2:
+        made = _assemble("2串1", "研究", pool, "两场都未开单关，按 2 串 1 研究。胜率与赔率均按两腿相乘。", [False, False])
+        if made:
+            tickets.append(made)
+    elif len(pool) == 3:
+        made = _assemble("3串1", "研究", pool,
+                         "三场都未开单关，按 3 串 1 研究。旁边的 2 串 1 是备选，不要和这张一起计入研究。",
+                         [False, False, False])
+        if made:
+            tickets.append(made)
+        pairs = [(pool[i], pool[j]) for i in range(3) for j in range(i + 1, 3)]
+
+        def pair_key(pair):
+            priced = _price([_leg_view(pick) for pick in pair])
+            names = tuple(sorted(str(pick.get("matchnum") or "") for pick in pair))
+            return (-(priced["ev"] if priced else -999), names)
+
+        best = min(pairs, key=pair_key)
+        alt = _assemble("2串1", "备选", list(best), "备选 2 串 1：命中率更高，有一场主信号不在这张票里。", [False, False])
+        if alt:
+            tickets.append(alt)
+    for pick in extra:
+        tickets.append(_unplaced(pick, "同一策略当天最多把 3 场编进一张研究票"))
+    return tickets
+
+
+def _filler(leg: dict, companions: List[dict], min_ev: float, blocked=()) -> Optional[dict]:
+    """只有一场不能单买时，用其他场的全场预测凑票。组合期望达不到门槛就不出。
+
+    已经单独研究的单关场次不再拿来搭配，避免同一场同时出现在两张研究票里。
     """
-    combos = []
-    n = len(picks)
-    for i in range(n):
-        for j in range(i + 1, n):
-            a, b = picks[i], picks[j]
-            # 排除同场比赛
-            if (a.get("home"), a.get("away")) == (b.get("home"), b.get("away")):
+    used = {_match_key(leg), *blocked}
+    cands = []
+    for pick in companions:
+        key = _match_key(pick)
+        if key is None or key in used or pick.get("p_win") is None or not _num(pick.get("odds")):
+            continue
+        cands.append(pick)
+    best = None
+    for cand in cands:
+        ticket = _assemble("2串1", "研究", [leg, cand],
+                           "只有一场未开单关。搭配另一场后，组合期望仍达到门槛，按 2 串 1 研究。",
+                           [False, True])
+        if ticket and ticket["ev"] >= min_ev and (best is None or ticket["ev"] > best["ev"]):
+            best = ticket
+    if best:
+        return best
+    best3 = None
+    for i, first in enumerate(cands):
+        for second in cands[i + 1:]:
+            if _match_key(first) == _match_key(second):
                 continue
-            if a.get("matchnum") and a.get("matchnum") == b.get("matchnum"):
+            ticket = _assemble("3串1", "研究", [leg, first, second],
+                               "2 串 1 达不到期望门槛。三场组合期望仍达到门槛，按 3 串 1 研究。",
+                               [False, True, True])
+            if ticket and ticket["ev"] >= min_ev and (best3 is None or ticket["ev"] > best3["ev"]):
+                best3 = ticket
+    return best3
+
+
+def recommend_tickets(sharp: List[dict], companions: List[dict] = None, *, min_ev: float = None) -> List[dict]:
+    """把一天的主信号变成可研究的票。
+
+    开了单关的，各自一张单关。没开单关的，同一场只留期望更高的玩法，再按场数合成
+    2 串 1 或 3 串 1。组合胜率 = 各腿胜率相乘，组合赔率 = 各腿 SP 相乘，
+    组合期望 = 组合胜率 × 组合赔率 − 1。凑不出达到门槛的票时标成「无法出票」，
+    不按单场冒充研究结果。单关是否开售未知的历史注单不编入。
+    """
+    min_ev = MIN_EV if min_ev is None else min_ev
+    companions = companions or []
+    singles, parlay_pool, dropped = [], {}, []
+    single_matches = set()
+    for pick in sharp:
+        if pick.get("single_open") is None:
+            continue
+        if bool(pick.get("single_open")):
+            singles.append(pick)
+            key = _match_key(pick)
+            if key:
+                single_matches.add(key)
+            continue
+        key = _match_key(pick)
+        if key is None:
+            dropped.append((pick, "缺少场次身份，不能编入串关"))
+            continue
+        current = parlay_pool.get(key)
+        if current is None or _ev_of(pick) > _ev_of(current):
+            if current is not None:
+                dropped.append((current, "同一场的另一玩法不能互串，未编入研究票"))
+            parlay_pool[key] = pick
+        else:
+            dropped.append((pick, "同一场的另一玩法不能互串，未编入研究票"))
+    tickets = []
+    for pick in singles:
+        made = _assemble("单关", "研究", [pick], "本场此玩法开了单关，按单场研究。", [False])
+        if made:
+            tickets.append(made)
+    pool = list(parlay_pool.values())
+    if len(pool) >= 2:
+        tickets.extend(_best_cover(pool))
+    elif len(pool) == 1:
+        made = _filler(pool[0], companions, min_ev, single_matches)
+        tickets.append(made or _unplaced(pool[0], "未开单关，且找不到组合期望仍达到门槛的搭配"))
+    tickets.extend(_unplaced(pick, note) for pick, note in dropped)
+    return tickets
+
+
+def ticket_leg_key(ticket: dict) -> str:
+    parts = []
+    for leg in ticket.get("legs") or []:
+        parts.append("|".join((leg.get("matchnum") or "", leg.get("home") or "", leg.get("away") or "", leg.get("market") or "")))
+    return ",".join(sorted(parts))
+
+
+def _find_leg(picks: List[dict], ticket: dict, leg: dict) -> Optional[dict]:
+    strategy = leg.get("strategy") or ticket.get("strategy")
+    for pick in picks:
+        if ticket.get("sale_date") and pick.get("sale_date") not in (None, ticket.get("sale_date")):
+            continue
+        if strategy and pick.get("strategy") not in (None, strategy):
+            continue
+        if pick.get("market") != leg.get("market"):
+            continue
+        if leg.get("home") and (pick.get("home"), pick.get("away")) != (leg.get("home"), leg.get("away")):
+            continue
+        if not leg.get("home") and leg.get("matchnum") and pick.get("matchnum") != leg.get("matchnum"):
+            continue
+        return pick
+    return None
+
+
+def resolve_tickets(tickets: List[dict], picks: List[dict]) -> List[dict]:
+    """用各腿当前的赛果给整张票结算。赔率仍用出票时锁定的 SP。"""
+    out = []
+    for ticket in tickets:
+        legs = []
+        for leg in ticket.get("legs") or []:
+            merged = dict(leg)
+            pick = _find_leg(picks, ticket, leg)
+            if pick is not None:
+                merged["result"] = pick.get("result")
+                if pick.get("clv") is not None:
+                    merged["clv"] = pick.get("clv")
+            legs.append(merged)
+        item = {**ticket, "legs": legs}
+        if ticket.get("type") in STUDY_TYPES:
+            result, pnl = grade_ticket(legs)
+            item["result"], item["pnl"] = result, pnl
+        out.append(item)
+    return out
+
+
+def merge_day_tickets(sharp: List[dict], companions: List[dict], stored: List[dict]) -> List[dict]:
+    """已落库的研究票优先，避免之后改规则改写样本；无法出票仍按当前规则说明。"""
+    derived = recommend_tickets(sharp, companions)
+    stored_study = [t for t in stored if t.get("role") == "研究" and t.get("type") in STUDY_TYPES]
+    if not stored_study:
+        return derived
+    chosen = [t for t in stored if t.get("type") in STUDY_TYPES]
+    covered = set()
+    for ticket in chosen:
+        if ticket.get("role") != "研究":
+            continue
+        for leg in ticket.get("legs") or []:
+            covered.add(_match_key(leg))
+    for ticket in derived:
+        if ticket["type"] != "无法出票":
+            continue
+        key = _match_key(ticket["legs"][0]) if ticket.get("legs") else None
+        if key not in covered:
+            chosen.append(ticket)
+    return chosen
+
+
+def collect_tickets(picks: List[dict], stored: List[dict]) -> List[dict]:
+    """按销售日、策略把主信号收成研究票，并按各腿赛果结算。"""
+    by_day: Dict[str, Dict[str, List[dict]]] = {}
+    for pick in picks:
+        if pick.get("strategy") not in (*RESEARCH_STRATEGIES, FULL_CARD_STRATEGY):
+            continue
+        by_day.setdefault(pick["sale_date"], {STRATEGY: [], LATE_STRATEGY: [], FULL_CARD_STRATEGY: []})
+        by_day[pick["sale_date"]][pick["strategy"]].append(pick)
+    stored_by: Dict[tuple, List[dict]] = {}
+    for ticket in stored:
+        stored_by.setdefault((ticket.get("sale_date"), ticket.get("strategy")), []).append(ticket)
+    out = []
+    seen = set()
+    for day, bucket in by_day.items():
+        day_picks = [pick for rows in bucket.values() for pick in rows]
+        for strategy in RESEARCH_STRATEGIES:
+            if not bucket[strategy]:
                 continue
-            odds_a = _num(a.get("odds"))
-            odds_b = _num(b.get("odds"))
-            if not odds_a or not odds_b or odds_a <= 1.0 or odds_b <= 1.0:
-                continue
-            combo_odds = round(odds_a * odds_b, 4)
-            p_a = _num(a.get("p_win"))
-            p_b = _num(b.get("p_win"))
-            if p_a is not None and p_b is not None:
-                combo_p = round(p_a * p_b, 4)
-                combo_ev = round(combo_p * combo_odds - 1.0, 4)
-            else:
-                combo_p = None
-                combo_ev = None
+            chosen = merge_day_tickets(bucket[strategy], bucket[FULL_CARD_STRATEGY], stored_by.get((day, strategy), []))
+            stamped = [{**ticket, "sale_date": day, "strategy": strategy} for ticket in chosen]
+            out.extend(resolve_tickets(stamped, day_picks))
+            seen.add((day, strategy))
+    for key, tickets in stored_by.items():
+        if key in seen or key[0] is None:
+            continue
+        out.extend(resolve_tickets(tickets, picks))
+    return out
 
-            single_a = bool(a.get("single_open"))
-            single_b = bool(b.get("single_open"))
-            must_parlay = not (single_a and single_b)
 
-            label_a = f"{a.get('matchnum') or ''} {a.get('selection') or ''}".strip()
-            label_b = f"{b.get('matchnum') or ''} {b.get('selection') or ''}".strip()
+def research_records(tickets: List[dict], picks: List[dict]) -> List[dict]:
+    """研究样本：单关票、串关票，以及单关状态未知的历史腿。
 
-            combos.append({
-                "type": "2串1",
-                "label": f"{label_a} × {label_b}",
-                "leg_a": a,
-                "leg_b": b,
-                "odds": combo_odds,
-                "p_win": combo_p,
-                "ev": combo_ev,
-                "must_parlay": must_parlay,
-                "note": "含非单关场次，必须串关" if must_parlay else "两场均可单买，可选串关搏高赔",
-            })
-
-    combos.sort(key=lambda c: (1 if c["must_parlay"] else 0, c["ev"] if c["ev"] is not None else -999), reverse=True)
-    return combos[:max_combos]
+    已经收成票的那一天，不再把主信号腿重复计入。没开单关又凑不出票的腿不计入。
+    """
+    study = [t for t in tickets if t.get("role") == "研究" and t.get("type") in STUDY_TYPES]
+    covered = {(t.get("sale_date"), t.get("strategy")) for t in study}
+    rows = []
+    for ticket in study:
+        market, clv = "串关", None
+        if ticket.get("type") == "单关" and ticket.get("legs"):
+            market = ticket["legs"][0].get("market") or "让分"
+            clv = ticket["legs"][0].get("clv")
+        rows.append({
+            "sale_date": ticket.get("sale_date"), "strategy": ticket.get("strategy"), "market": market,
+            "result": ticket.get("result"), "pnl": ticket.get("pnl"), "odds": ticket.get("odds"), "clv": clv,
+            "id": ticket.get("id") or 0, "settled_at": ticket.get("settled_at") or "",
+        })
+    for pick in picks:
+        if pick.get("strategy") not in RESEARCH_STRATEGIES:
+            continue
+        if (pick.get("sale_date"), pick.get("strategy")) in covered:
+            continue
+        if pick.get("single_open") is None or bool(pick.get("single_open")):
+            rows.append(pick)
+    return rows
 

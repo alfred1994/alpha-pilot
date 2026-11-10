@@ -25,6 +25,11 @@
 .lottery-detail table { width: auto; margin-bottom: 4px; }
 .lottery-detail th, .lottery-detail td { padding: 4px 12px 4px 0; font-size: 10px; text-align: left; }
 .lottery-detail p { margin: 3px 0; font-size: 10px; line-height: 1.7; color: var(--muted); }
+.lottery-ticket { padding: 12px 14px; border: 1px solid #ffffff14; border-radius: 8px; margin-bottom: 8px; }
+.lottery-ticket-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.lottery-ticket p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lottery-ticket-note { margin: 8px 0 12px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.lottery-ticket-metrics { display: flex; flex-wrap: wrap; gap: 12px; }
 .lottery-tag.sharp { background: #c0dfa122; color: var(--accent); font-weight: 500; }
 .lottery-tag.push { background: #ffffff10; color: var(--ink); }
 .lottery-tag.done { background: #ffffff0c; color: var(--ink); }

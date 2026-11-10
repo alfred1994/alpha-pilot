@@ -4,6 +4,7 @@
 - ``games``：每场比赛的赛程、状态、比分与开赛前最后一次国际线（收盘近似）；
 - ``picks``：纸面注单，同一 (销售日, 主, 客, 策略, 玩法) 只记第一次决定，之后不改写；
   结算只补结果字段；出单时的伤停标签与名单一并写入；
+- ``tickets``：主信号研究票。开了单关的是单关，没开的是 2 串 1 或 3 串 1；同一天同一策略只记第一次；
 - ``injury_reports``：每支球队的伤停名单，只在名单（球员/状态/部位）变化时追加一条；
 - ``runs``：定时任务运行记录，供健康页使用。
 """
@@ -45,6 +46,13 @@ SCHEMA = (
         result TEXT, pnl REAL, home_score INTEGER, away_score INTEGER,
         close_ref REAL, clv REAL, settled_at TEXT, source TEXT NOT NULL DEFAULT 'alphapilot',
         UNIQUE (sale_date, home, away, strategy, market))""",
+    """CREATE TABLE IF NOT EXISTS tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL, sale_date TEXT NOT NULL,
+        strategy TEXT NOT NULL, kind TEXT NOT NULL, role TEXT NOT NULL, leg_key TEXT NOT NULL,
+        odds REAL, p_win REAL, ev REAL, breakeven REAL, legs TEXT NOT NULL, note TEXT,
+        result TEXT, pnl REAL, settled_at TEXT,
+        UNIQUE (sale_date, strategy, role, leg_key))""",
+    "CREATE INDEX IF NOT EXISTS idx_tickets_day ON tickets(sale_date, strategy)",
     """CREATE TABLE IF NOT EXISTS runs (
         id INTEGER PRIMARY KEY AUTOINCREMENT, job TEXT NOT NULL, started_at TEXT NOT NULL,
         finished_at TEXT, status TEXT, detail TEXT)""",
@@ -124,6 +132,24 @@ def add_pick(conn, pick: dict) -> bool:
     cursor = conn.execute(
         f"INSERT OR IGNORE INTO picks ({','.join(columns)}) VALUES ({','.join('?' * len(columns))})",
         [row.get(column) for column in columns])
+    return cursor.rowcount == 1
+
+
+def _ticket_leg_key(ticket: dict) -> str:
+    parts = ["|".join((leg.get("matchnum") or "", leg.get("home") or "", leg.get("away") or "", leg.get("market") or ""))
+             for leg in ticket.get("legs") or []]
+    return ",".join(sorted(parts))
+
+
+def add_ticket(conn, sale_date: str, strategy: str, ticket: dict) -> bool:
+    """记下研究票。同一天、同一策略、同一组腿已有记录时不改写。"""
+    legs = ticket.get("legs") or []
+    cursor = conn.execute(
+        """INSERT OR IGNORE INTO tickets (created_at, sale_date, strategy, kind, role, leg_key, odds, p_win, ev,
+           breakeven, legs, note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (_now(), sale_date, strategy, ticket["type"], ticket["role"], _ticket_leg_key(ticket),
+         ticket.get("odds"), ticket.get("p_win"), ticket.get("ev"), ticket.get("breakeven"),
+         json.dumps(legs, ensure_ascii=False), ticket.get("note")))
     return cursor.rowcount == 1
 
 

@@ -142,33 +142,73 @@ class SignalTests(unittest.TestCase):
         self.assertEqual([(c["market"], c["side"], c["p_win"], c["ev"]) for c in no_ref], [("让分", "客", None, None)],
                          "缺国际线按赔率选边，胜率留空；未开售的大小分跳过")
 
-    def test_recommend_parlays_two_legs_and_rules(self):
+    def test_two_parlay_only_legs_become_one_recalculated_ticket(self):
         picks = [
-            {"matchnum": "301", "home": "A", "away": "B", "odds": 1.70, "p_win": 0.60, "selection": "A -1.5", "single_open": False},
-            {"matchnum": "302", "home": "C", "away": "D", "odds": 1.75, "p_win": 0.58, "selection": "C +3.5", "single_open": True},
-            {"matchnum": "301", "home": "A", "away": "B", "odds": 1.65, "p_win": 0.55, "selection": "大 220", "single_open": False},
+            {"matchnum": "周一303", "market": "让分", "selection": "黄蜂 +10.5", "odds": 1.81, "p_win": 0.5725, "ev": 0.0362, "single_open": False},
+            {"matchnum": "周一306", "market": "让分", "selection": "步行者 +6.5", "odds": 1.70, "p_win": 0.6075, "ev": 0.0327, "single_open": False},
         ]
-        combos = signals.recommend_parlays(picks)
-        self.assertEqual(len(combos), 2, "同场比赛不得互串，排除 301 让分 x 301 大小分")
-        self.assertEqual(combos[0]["type"], "2串1")
-        self.assertAlmostEqual(combos[0]["odds"], 1.70 * 1.75, places=3)
-        self.assertTrue(combos[0]["must_parlay"], "包含 301 非单关，标记必须串关")
+        study = [t for t in signals.recommend_tickets(picks) if t["role"] == "研究"]
+        self.assertEqual([t["type"] for t in study], ["2串1"])
+        self.assertEqual(study[0]["odds"], 3.077)
+        self.assertEqual(study[0]["p_win"], 0.3478)
+        self.assertEqual(study[0]["ev"], 0.0702)
+        self.assertEqual(study[0]["breakeven"], 0.325)
+        self.assertEqual(signals.grade_ticket([
+            {"result": "赢", "odds": 1.81}, {"result": "赢", "odds": 1.70},
+        ]), ("赢", 2.077))
+        self.assertEqual(signals.grade_ticket([
+            {"result": "赢", "odds": 1.81}, {"result": "输", "odds": 1.70},
+        ]), ("输", -1.0))
 
-    def test_selection_single_only_filter(self):
+    def test_single_stays_single_and_same_game_cannot_parlay(self):
+        picks = [
+            {"matchnum": "301", "odds": 1.70, "p_win": 0.60, "ev": 0.02, "selection": "A -1.5", "single_open": False, "market": "让分"},
+            {"matchnum": "302", "odds": 1.75, "p_win": 0.58, "ev": 0.015, "selection": "C +3.5", "single_open": True, "market": "让分"},
+            {"matchnum": "301", "odds": 1.65, "p_win": 0.55, "ev": -0.09, "selection": "大 220.5", "single_open": False, "market": "大小分"},
+        ]
+        tickets = signals.recommend_tickets(picks)
+        self.assertEqual([t["type"] for t in tickets if t["type"] == "单关"], ["单关"])
+        self.assertEqual(tickets[0]["label"], "302 C +3.5")
+        unplaced = [t["label"] for t in tickets if t["type"] == "无法出票"]
+        self.assertEqual(len(unplaced), 2, "没开单关的一场凑不出票；同场另一玩法也不能互串")
+        self.assertTrue(any("A -1.5" in label for label in unplaced))
+        self.assertTrue(any("大 220.5" in label for label in unplaced))
+        self.assertFalse(any("C +3.5" in label for label in unplaced))
+
+    def test_three_parlay_legs_study_as_one_three_leg_ticket(self):
+        picks = [
+            {"matchnum": str(300 + i), "odds": 1.80, "p_win": 0.60, "ev": 0.08, "selection": f"L{i}", "single_open": False}
+            for i in range(3)
+        ]
+        tickets = signals.recommend_tickets(picks)
+        study = [t for t in tickets if t["role"] == "研究"]
+        alt = [t for t in tickets if t["role"] == "备选"]
+        self.assertEqual([t["type"] for t in study], ["3串1"])
+        self.assertEqual(study[0]["odds"], 5.832)
+        self.assertEqual(study[0]["p_win"], 0.216)
+        self.assertEqual(study[0]["ev"], 0.2597)
+        self.assertEqual([t["type"] for t in alt], ["2串1"])
+        self.assertEqual(len(alt[0]["legs"]), 2)
+
+    def test_lone_parlay_leg_needs_a_companion_above_the_threshold(self):
+        sharp = [{"matchnum": "301", "odds": 1.70, "p_win": 0.60, "ev": 0.02, "selection": "A +1.5", "single_open": False}]
+        weak = [{"matchnum": "302", "odds": 1.70, "p_win": 0.50, "ev": -0.15, "selection": "弱", "single_open": False, "strategy": "all_games"}]
+        strong = [{"matchnum": "302", "odds": 1.80, "p_win": 0.58, "ev": 0.044, "selection": "强", "single_open": False, "strategy": "all_games"}]
+        self.assertEqual(signals.recommend_tickets(sharp, weak)[0]["type"], "无法出票")
+        made = signals.recommend_tickets(sharp, strong)[0]
+        self.assertEqual(made["type"], "2串1")
+        self.assertEqual(made["odds"], 3.06)
+        self.assertGreaterEqual(made["ev"], signals.MIN_EV)
+        self.assertTrue(made["legs"][1]["companion"])
+
+    def test_selection_keeps_games_that_are_parlay_only(self):
         base = {"jc_sp_home": 1.70, "jc_sp_away": 1.70}
         g_nosingle = {**base, "jc_line": 4.5, "ref_line": 0.5, "single_spread": False}
         g_single = {**base, "jc_line": 3.5, "ref_line": 0.5, "single_spread": True}
-        chosen_all = signals.select_picks([g_nosingle, g_single], max_picks=3, single_only=False)
-        self.assertEqual(len(chosen_all), 2)
-        self.assertEqual(chosen_all[0]["edge"], 4.0)
-        chosen_single = signals.select_picks([g_nosingle, g_single], max_picks=3, single_only=True)
-        self.assertEqual(len(chosen_single), 1)
-        self.assertEqual(chosen_single[0]["edge"], 3.0)
-        self.assertTrue(chosen_single[0]["single_open"])
         with patch.dict(os.environ, {"LOTTERY_SINGLE_ONLY": "true"}):
-            chosen_env = signals.select_picks([g_nosingle, g_single], max_picks=3)
-            self.assertEqual(len(chosen_env), 1)
-            self.assertEqual(chosen_env[0]["edge"], 3.0)
+            chosen = signals.select_picks([g_nosingle, g_single], max_picks=3)
+        self.assertEqual([c["edge"] for c in chosen], [4.0, 3.0], "没有单关开关，没开单关的场次仍入选")
+        self.assertIs(chosen[0]["single_open"], False)
 
     def test_selection_caps_and_ignores_suspicious_gaps(self):
         base = {"jc_sp_home": 1.70, "jc_sp_away": 1.70}
@@ -234,6 +274,28 @@ class JobTests(unittest.TestCase):
         with store.session(self.db) as conn:
             pick = dict(conn.execute("SELECT result, pnl, close_ref, clv FROM picks WHERE strategy='sharp'").fetchone())
         self.assertEqual(pick, {"result": "输", "pnl": -1.0, "close_ref": -2.5, "clv": 4.0})
+
+    def test_parlay_only_legs_settle_as_one_ticket(self):
+        with store.session(self.db) as conn:
+            store.upsert_game(conn, "2026-11-09", {"home": "A", "away": "B", "matchnum": "周一303", "home_cn": "黄蜂",
+                                                   "away_cn": "骑士", "home_score": 110, "away_score": 100, "state": "post"})
+            store.upsert_game(conn, "2026-11-09", {"home": "C", "away": "D", "matchnum": "周一306", "home_cn": "独行侠",
+                                                   "away_cn": "步行者", "home_score": 90, "away_score": 110, "state": "post"})
+            for home, away, num, side in (("A", "B", "周一303", "主"), ("C", "D", "周一306", "客")):
+                store.add_pick(conn, {
+                    "sale_date": "2026-11-09", "matchnum": num, "home": home, "away": away,
+                    "home_cn": "黄蜂" if home == "A" else "独行侠", "away_cn": "骑士" if away == "B" else "步行者",
+                    "strategy": "sharp", "market": "让分", "side": side, "line": 10.5 if side == "主" else 6.5,
+                    "odds": 1.81 if side == "主" else 1.70, "p_win": 0.5725 if side == "主" else 0.6075,
+                    "ev": 0.0362 if side == "主" else 0.0327, "single_open": 0,
+                })
+            jobs.settle(conn)
+            ticket = dict(conn.execute("SELECT kind, role, odds, p_win, ev, result, pnl FROM tickets").fetchone())
+        self.assertEqual(ticket["kind"], "2串1")
+        self.assertEqual(ticket["role"], "研究")
+        self.assertEqual(ticket["odds"], 3.077)
+        self.assertEqual(ticket["result"], "赢")
+        self.assertEqual(ticket["pnl"], 2.077)
 
     def capture(self, hour, minute, title, ref="UTAH -1.5", fetch_injuries=no_injuries, day=31):
         month = 10 if day == 31 else 11
@@ -436,6 +498,7 @@ class PublicApiTests(unittest.TestCase):
         self.assertEqual([g["key"] for g in summary["injury_groups"]], ["sharp", "all_games"])
         self.assertTrue(games["games"][0]["analysis"], "开赛前展示偏离与期望值")
         self.assertEqual(len(games["games"][0]["picks"]), 3)
+        self.assertEqual([(t["type"], t["role"]) for t in games["tickets"]], [("单关", "研究")])
         self.assertIn("不构成投注建议", summary["disclaimer"])
 
     def test_games_show_jc_timeline_and_injury_changes(self):

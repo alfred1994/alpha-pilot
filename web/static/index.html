@@ -19,7 +19,7 @@
     <link rel="stylesheet" href="css/styles.css?v=2026100901">
     <link rel="stylesheet" href="css/research.css?v=2026100901">
     <link rel="stylesheet" href="css/console.css?v=2026100901">
-    <link rel="stylesheet" href="css/lottery.css?v=2026110501">
+    <link rel="stylesheet" href="css/lottery.css?v=2026110901">
 </head>
 <body>
     <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -281,7 +281,7 @@
             </section>
 
             <section class="tab-content" id="tab-lottery-games">
-                <div class="page-heading"><div><span class="eyebrow">体彩 · NBA · 纸面验证</span><h2>每日比赛</h2></div><p>每天北京时间 16:00 记录竞彩盘口和系统选择，之后每 30 分钟跟踪盘口到停售，赛后自动补比分和输赢。所有记录均为纸面，不构成投注建议。</p></div>
+                <div class="page-heading"><div><span class="eyebrow">体彩 · NBA · 纸面验证</span><h2>每日比赛</h2></div><p>每天北京时间 16:00 记录竞彩盘口和系统选择，之后每 30 分钟跟踪盘口到停售，赛后自动补比分和输赢。开了单关的主信号按单场研究；没开单关的合成 2 串 1 或 3 串 1，胜率、赔率和期望按整张票重算。所有记录均为纸面，不构成投注建议。</p></div>
                 <p class="lottery-disclaimer" id="lottery-daily-disclaimer" role="note">纸面预测记录，不构成投注建议；不代购、不下单。理性购彩，未满 18 周岁禁止购彩。</p>
                 <div class="filter-bar lottery-day-nav">
                     <button id="lottery-day-prev" type="button" disabled>← 前一天</button>
@@ -300,7 +300,7 @@
                 <p class="research-note" id="lottery-day-note" hidden></p>
                 <div id="lottery-games-parlay-box" class="card" style="display:none; margin: 16px 0;"></div>
                 <div class="lottery-legend" aria-label="标签说明">
-                    <span><span class="lottery-tag sharp">★ 主信号</span> 竞彩比国际盘便宜，期望值达到门槛，计入主信号战绩</span>
+                    <span><span class="lottery-tag sharp">★ 主信号</span> 竞彩比国际盘便宜，期望值达到门槛。开了单关按单场研究，没开则进入串关研究票</span>
                     <span><span class="lottery-tag">仅记录</span> 全场预测：每场每个玩法都选期望值更高的一侧，多数没有优势，只用于对照</span>
                     <span><strong>价格优势</strong> 竞彩线比国际盘多给的分数，越大越便宜</span>
                 </div>
@@ -327,7 +327,7 @@
                         <div><strong>竞彩抽水实测</strong><p>让分 15.05%、大小分 15.04%、胜分差 33.07%（84 场样本）。换玩法不能降低抽水。</p></div>
                         <div><strong>唯一保留的信号</strong><p>竞彩线比国际盘口更有利时按竞彩价格买入。每 1 分偏离值多少胜率，用 19,385 场历史收盘线实测换算，期望值 ≥ +2% 才记录为主信号。</p></div>
                         <div><strong>全场预测单独统计</strong><p>每场让分、大小分各选期望值更高的一侧，不设门槛。多数场次期望值为负（约 -5% 到 -10%），这组记录用来对照主信号，不混入主信号统计。</p></div>
-                        <div><strong>串关不改变单场保本线</strong><p>串关赔率是逐场相乘，每场保本命中率仍是 1/赔率；但方差显著放大，账本按单场口径统计。</p></div>
+                        <div><strong>没开单关就按串关研究</strong><p>组合胜率是各腿相乘，组合赔率是各腿 SP 相乘，组合期望是组合胜率 × 组合赔率 − 1。任一腿输，整张票记 −1。开了单关的仍按单场研究。</p></div>
                         <div><strong>竞彩出票即锁定价格</strong><p>竞彩是固定奖金，让分数、预设总分与 SP 以出票时为准。国际盘口只用作衡量价格的参照：出票后才公布的伤停，对已出的票只是风险，无法再调整。</p></div>
                         <div><strong>伤停只做标签</strong><p>伤停名单在出单时随注单记录，用来赛后分组比较；公开伤停通常几分钟内就反映在国际盘口里，单靠伤停预测输赢不能覆盖 15% 抽水。</p></div>
                     </div></article>
@@ -342,7 +342,7 @@
                     <div><strong>全场预测（仅记录）</strong><p>每场让分、大小分各选期望值更高的一侧，不设门槛。和主信号同一选择时只显示一次，战绩分开统计。</p></div>
                     <div><strong>停售前影子</strong><p>同一规则在竞彩停售前最后一次跟踪时再选一次，用来比较出单时点，只在战绩统计里出现。</p></div>
                     <div><strong>收盘价差</strong><p>出单时的竞彩线比开赛前最后一次国际盘好多少分，正数说明买得比收盘便宜。</p></div>
-                    <div><strong>单关 / 串关</strong><p>单关是只买一场；串关要多场同时猜中。竞彩 NBA 经常只开串关，纸面记录仍按单场统计。</p></div>
+                    <div><strong>单关 / 串关</strong><p>单关是只买一场。没开单关时，研究票是 2 串 1 或 3 串 1，两场或三场都要中。同一场的让分和大小分不能互串。</p></div>
                 </div></article>
                 <article class="card"><div class="section-heading compact"><div><span class="eyebrow">边界</span><h2>不做什么</h2></div></div><p class="research-note">不下单、不代购、不对接境外平台；纸面选择在出单时即公开，不构成投注建议。国际盘口来自 ESPN 内嵌快照，不是交易所收盘价；样本少于 150 注时任何命中率都可能是运气。</p></article>
             </section>
@@ -362,6 +362,6 @@
         </div>
     </div>
 
-    <script src="js/app.js?v=2026110501" type="module"></script>
+    <script src="js/app.js?v=2026110901" type="module"></script>
 </body>
 </html>

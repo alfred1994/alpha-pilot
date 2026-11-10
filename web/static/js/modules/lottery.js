@@ -113,7 +113,7 @@ export class LotteryTabs {
         const sharp = (data.strategies || []).find(item => item.key === 'sharp') || { overall: {} };
         const o = sharp.overall || {};
         const latest = data.latest_day_picks || {};
-        const today = data.latest_sale_date ? ` · ${data.latest_sale_date} 全场预测 ${latest.all_games ?? 0} 条、主信号 ${latest.sharp ?? 0} 注、停售前影子 ${latest.sharp_late ?? 0} 注` : '';
+        const today = data.latest_sale_date ? ` · ${data.latest_sale_date} 全场预测 ${latest.all_games ?? 0} 条、主信号研究票 ${latest.sharp ?? 0} 张、停售前影子 ${latest.sharp_late ?? 0} 张` : '';
         this.text('lottery-status', `价格偏离信号的纸面记录${today}`);
         this.text('lottery-settled', o.settled ?? 0);
         this.text('lottery-pending', `待结算 ${o.pending ?? 0} 注`);
@@ -192,7 +192,8 @@ export class LotteryTabs {
             ['期望值门槛', `≥ ${pct(t.min_ev, 0)}（按竞彩实际赔率与历史点值换算胜率）`],
             ['1.70 赔率下所需偏离', `让分 ≥ ${t.required_edge_at_1_70?.['让分'] ?? '—'} 分 · 大小分 ≥ ${t.required_edge_at_1_70?.['大小分'] ?? '—'} 分`],
             ['1.70 赔率保本命中率', pct(t.breakeven_at_1_70)],
-            ['主信号每日上限', `${t.max_picks_per_day ?? '—'} 注 × 1 单位（1% 本金）`],
+            ['主信号每日上限', `${t.max_picks_per_day ?? '—'} 条腿 × 1 单位（1% 本金）。没开单关的腿合成一张 2 串 1 或 3 串 1`],
+            ['未开单关的研究口径', '组合胜率 = 各腿胜率相乘，组合赔率 = 各腿 SP 相乘，组合期望 = 组合胜率 × 组合赔率 − 1。任一腿输，整张票记 -1'],
             ['全场预测', '每场让分、大小分各选期望值更高的一侧，不设门槛，单独统计'],
             ['停售前影子', `与主信号同一规则，在竞彩停售前 ${t.late_window_minutes ?? 45} 分钟内的最后一次跟踪时出单，单独统计，用来比较出单时点`],
             ['记录时点', '主信号与全场预测在北京时间 16:00 出单；之后每 30 分钟跟踪竞彩到停售。出单即公开，之后不改写'],
@@ -292,6 +293,7 @@ export class LotteryTabs {
         const groups = games.map(g => this.groupPicks(g.picks || []));
         this.renderDaySummary(games, groups, data.day_summary || []);
         if (!data.available || !games.length) {
+            this.showTickets(document.getElementById('lottery-games-parlay-box'), []);
             this.text('lottery-games-status', day ? `销售日 ${day} · 没有场次` : '纸面账本尚未生成');
             const empty = el('div', 'empty-state', day
                 ? `${day} 没有竞彩 NBA 场次记录。当天的场次在北京时间 16:00 出单任务运行后出现；没有 NBA 比赛或竞彩未开售的日子不会有记录。`
@@ -304,16 +306,7 @@ export class LotteryTabs {
         const range = first ? `北京时间 ${first.md} ${first.hm}${last && (last.day !== first.day || last.hm !== first.hm) ? ` – ${last.day !== first.day ? `${last.md} ` : ''}${last.hm}` : ''} 开赛` : '';
         this.text('lottery-games-status', `销售日 ${day} · ${games.length} 场${range ? ` · ${range}` : ''}`);
         this.renderDayNote(games);
-        const parlayBox = document.getElementById('lottery-games-parlay-box');
-        if (parlayBox) {
-            if (data.parlay_recommendations && data.parlay_recommendations.length > 0) {
-                this.renderParlays(parlayBox, data.parlay_recommendations);
-                parlayBox.style.display = 'block';
-            } else {
-                parlayBox.style.display = 'none';
-                parlayBox.replaceChildren();
-            }
-        }
+        this.showTickets(document.getElementById('lottery-games-parlay-box'), data.tickets || data.parlay_recommendations);
         list?.replaceChildren(...games.map((g, index) => this.gameCard(g, groups[index], day, data.thresholds || {})));
     }
 
@@ -362,8 +355,8 @@ export class LotteryTabs {
             const spread = listed.filter(g => g.single_spread).length;
             const totals = listed.filter(g => g.single_total).length;
             notes.push(spread || totals
-                ? `单关开售：让分 ${spread}/${listed.length} 场，大小分 ${totals}/${listed.length} 场；其余只能串关。纸面记录按单场统计。`
-                : '这一天让分、大小分单关都未开售，竞彩只能串关购买；纸面记录仍按单场统计。');
+                ? `单关开售：让分 ${spread}/${listed.length} 场，大小分 ${totals}/${listed.length} 场。开了单关的主信号按单场研究；没开的合成 2 串 1 或 3 串 1，胜率、赔率和期望按整张票重算。`
+                : '这一天让分、大小分单关都未开售。主信号按 2 串 1 或 3 串 1 研究，胜率、赔率和期望按整张票重算。');
         }
         note.hidden = !notes.length;
         note.textContent = notes.join(' ');
@@ -587,16 +580,7 @@ export class LotteryTabs {
             this.text('lottery-ledger-page', data.total ? `${this.ledgerOffset + 1}–${end} / ${data.total}` : '暂无记录');
             document.getElementById('lottery-ledger-prev').disabled = this.ledgerOffset === 0;
             document.getElementById('lottery-ledger-next').disabled = end >= data.total;
-            const parlayBox = document.getElementById('lottery-parlay-box');
-            if (parlayBox) {
-                if (data.parlay_recommendations && data.parlay_recommendations.length > 0) {
-                    this.renderParlays(parlayBox, data.parlay_recommendations);
-                    parlayBox.style.display = 'block';
-                } else {
-                    parlayBox.style.display = 'none';
-                    parlayBox.replaceChildren();
-                }
-            }
+            this.showTickets(document.getElementById('lottery-parlay-box'), data.tickets || data.parlay_recommendations);
             for (const p of data.items) {
                 const row = document.createElement('tr');
                 const dayCell = cell(row, '');
@@ -635,38 +619,57 @@ export class LotteryTabs {
     }
 
 
-    renderParlays(container, parlays) {
+    showTickets(container, tickets) {
+        if (!container) return;
+        if (!tickets || !tickets.length) {
+            container.style.display = 'none';
+            container.replaceChildren();
+            return;
+        }
+        container.style.display = 'block';
+        this.renderParlays(container, tickets);
+    }
+
+    renderParlays(container, tickets) {
         container.replaceChildren();
         const head = el('div', 'section-heading compact');
         const titleDiv = el('div');
-        titleDiv.append(el('span', 'eyebrow', '实操建议'));
-        titleDiv.append(el('h3', '', '当日串关推荐（2串1组合）'));
+        titleDiv.append(el('span', 'eyebrow', '研究票'));
+        titleDiv.append(el('h3', '', '按能否单关研究'));
         head.append(titleDiv);
-        head.append(tag('两两搭配控制方差', 'sharp'));
         container.append(head);
-
-        const tip = el('p', '', '体彩部分场次不支持单买。若包含非单关场次，系统已根据正期望组合自动计算最优 2 串 1 搭配与预期收益。严禁打 3 串 1，以免方差急剧放大。');
-        tip.style.cssText = 'font-size:12px;color:var(--muted);margin:8px 0 12px;line-height:1.5;';
-        container.append(tip);
-
+        container.append(el('p', 'lottery-ticket-note', '开了单关的主信号单独成票。没开单关的合成 2 串 1 或 3 串 1：组合胜率、赔率、期望和盈亏都按整张票重算。标成备选的票不要和推荐票一起计入。'));
         const list = el('div', 'parlay-list');
-        for (const item of parlays) {
-            const card = el('div', 'parlay-item');
-            card.style.cssText = 'display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;padding:10px 14px;background:#ffffff06;border:1px solid #ffffff0a;border-radius:6px;margin-bottom:8px;gap:8px;';
-            const left = el('div');
-            left.style.cssText = 'display:flex;align-items:center;gap:8px;';
-            left.append(tag(item.type, 'sharp'));
-            left.append(el('strong', '', item.label));
-            left.append(tag(item.must_parlay ? '必须串关' : '可选串关', item.must_parlay ? 'stop' : 'pass'));
-
-            const right = el('div');
-            right.style.cssText = 'font-size:12px;color:var(--muted);display:flex;gap:12px;';
-            right.innerHTML = `组合赔率 <strong style="color:var(--ink);">${item.odds.toFixed(2)}</strong> ｜ 估算胜率 <strong>${pct(item.p_win)}</strong> ｜ 期望值 <strong style="color:${item.ev > 0 ? 'var(--accent)' : 'var(--up)'};">${signed(pct(item.ev))}</strong>`;
-
-            card.append(left, right);
-            list.append(card);
-        }
+        for (const item of tickets) list.append(this.ticketCard(item));
         container.append(list);
+    }
+
+    ticketCard(item) {
+        const card = el('article', 'lottery-ticket');
+        const head = el('div', 'lottery-ticket-head');
+        head.append(tag(item.type, item.type === '无法出票' ? 'stop' : 'sharp'));
+        head.append(el('strong', '', item.label || '—'));
+        if (item.role === '备选') head.append(tag('备选', 'pass'));
+        else if (item.role === '研究' && item.type !== '无法出票') head.append(tag('研究', 'sharp'));
+        if (item.result) head.append(tag(item.result, RESULT_KIND[item.result] || ''));
+        card.append(head);
+        for (const leg of item.legs || []) {
+            const own = known(leg.ev) ? ` · 本腿期望 ${leg.ev > 0 ? '+' : ''}${pct(leg.ev)}` : '';
+            const mark = leg.companion ? '搭配腿' : leg.market || '腿';
+            card.append(el('p', '', `${mark} ${leg.selection || '—'} @${known(leg.odds) ? leg.odds.toFixed(2) : '—'} · 胜率 ${pct(leg.p_win)}${own}`));
+        }
+        if (known(item.odds)) {
+            const metrics = el('p', 'lottery-ticket-metrics', '');
+            metrics.append(el('span', '', `组合赔率 ${item.odds.toFixed(2)}`));
+            metrics.append(el('span', '', `组合胜率 ${pct(item.p_win)}`));
+            metrics.append(el('span', '', `保本 ${pct(item.breakeven)}`));
+            const ev = el('span', '', `组合期望 ${known(item.ev) ? `${item.ev > 0 ? '+' : ''}${pct(item.ev)}` : '—'}`);
+            metrics.append(ev);
+            if (known(item.pnl)) metrics.append(el('span', '', `盈亏 ${signed(item.pnl)} 注`));
+            card.append(metrics);
+        }
+        if (item.note) card.append(el('p', '', item.note));
+        return card;
     }
 
     async loadHealth() {
